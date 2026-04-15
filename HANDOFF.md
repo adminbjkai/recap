@@ -1,14 +1,16 @@
-# Recap — Phase 1 Handoff (+ Phase 2 checklist complete)
+# Recap — Phase 1 Handoff (+ Phase 2 checklist complete, + first Phase 3 slice)
 
 This document closes out Phase 1 of Recap and records the Phase 2
 slices approved and implemented so far: Stage 5 candidate frame
 extraction, and the combined pHash + SSIM duplicate marking with
 Tesseract OCR novelty scoring. All checklist items in
-`TASKS.md` Phase 2 are ticked; transcript-window alignment, OpenCLIP
-similarity, chaptering, VLM verification, and export formats remain
-Phase 3/4 work. This file reflects the current code in this
-repository — not a plan, not a roadmap. Anything not listed here is
-explicitly deferred.
+`TASKS.md` Phase 2 are ticked. The first Phase 3 slice is also
+implemented: transcript-window alignment per candidate frame
+(`recap window` → `frame_windows.json`). The remainder of Phase 3
+(chaptering, OpenCLIP similarity, keep/reject rules) and all of
+Phase 4 (VLM verification, export formats) remain out of scope. This
+file reflects the current code in this repository — not a plan, not a
+roadmap. Anything not listed here is explicitly deferred.
 
 Binding references: `MASTER_BRIEF.md`, `ARCHITECTURE.md`, `TASKS.md`,
 `DECISIONS.md`, `AGENTS.md`, `README.md`, `PRD.md`.
@@ -81,8 +83,33 @@ Both Phase 2 entry points are opt-in. `recap run` continues to execute
 the Phase 1 stages only. Stage 5 runs via `recap scenes --job <path>`;
 pHash + SSIM duplicate marking with OCR novelty runs via
 `recap dedupe --job <path>`. All Phase 2 checklist items are
-implemented; broader Stage 6 work (transcript-window alignment,
-OpenCLIP similarity) remains Phase 3.
+implemented.
+
+## What the first Phase 3 slice includes
+
+- **Transcript-window alignment.** Read `transcript.json` and
+  `scenes.json` and write `frame_windows.json`. For each candidate
+  frame, compute `window_start = max(0.0, midpoint_seconds - 6.0)` and
+  `window_end = midpoint_seconds + 6.0` (clamped to `transcript.duration`
+  when present), collect the transcript segments that overlap the
+  window with strict inequalities (`segment.start < window_end` and
+  `segment.end > window_start`), record their ids in transcript order,
+  and concatenate their text with a single space after whitespace
+  normalization. `WINDOW_SECONDS = 6.0` is a fixed code-level constant
+  at the midpoint of the brief's ±5 to ±7 second range. No new Python
+  or system dependencies are introduced; no ML model is loaded. The
+  stage is marking-only: it does not touch transcript, scenes,
+  candidate frames, `frame_scores.json`, or `report.md`. Per-frame
+  entries are `scene_index`, `frame_file`, `midpoint_seconds`,
+  `window_start`, `window_end`, `segment_ids`, `window_text`; top-level
+  keys are `video`, `transcript_source`, `scenes_source`,
+  `window_seconds`, `frame_count`, `frames_with_text_count`, `frames`.
+
+This Phase 3 slice is opt-in. `recap run` continues to execute the
+Phase 1 stages only. Transcript-window alignment runs via
+`recap window --job <path>`. The remaining Phase 3 checklist items
+(chapter proposal, OpenCLIP similarity, keep/reject rules) and all of
+Phase 4 remain deferred.
 
 ## Running Phase 1 locally
 
@@ -99,6 +126,7 @@ python3.12 -m venv .venv
 .venv/bin/python -m recap transcribe --job jobs/<job_id> --model small
 .venv/bin/python -m recap scenes     --job jobs/<job_id>
 .venv/bin/python -m recap dedupe     --job jobs/<job_id>
+.venv/bin/python -m recap window     --job jobs/<job_id>
 .venv/bin/python -m recap assemble   --job jobs/<job_id>
 .venv/bin/python -m recap status     --job jobs/<job_id>
 ```
@@ -181,6 +209,20 @@ Running `recap scenes --job <path>` adds the Stage 5 outputs:
   `end_frame`, `midpoint_seconds`, and `frame_file`.
 - `candidate_frames/scene-NNN.jpg` — one representative JPEG per scene.
 
+Running `recap window --job <path>` adds the first Phase 3 slice
+output:
+
+- `frame_windows.json` — top-level `video`, `transcript_source`,
+  `scenes_source`, `window_seconds` (`6.0`), `frame_count`,
+  `frames_with_text_count`, and a `frames` list with one entry per
+  scene: `scene_index`, `frame_file`, `midpoint_seconds`,
+  `window_start` (`max(0.0, midpoint_seconds - window_seconds)`),
+  `window_end` (`midpoint_seconds + window_seconds`, clamped to
+  `transcript.duration` when present), `segment_ids` (ordered list of
+  transcript segment ids that overlap the window), and `window_text`
+  (whitespace-normalized concatenation of the overlapping segments'
+  text joined with single spaces).
+
 Running `recap dedupe --job <path>` adds the pHash + SSIM + OCR slice
 output:
 
@@ -201,10 +243,10 @@ output:
   `ssim_duplicate_threshold`; else null). OCR does not influence
   `duplicate_of`.
 
-The `stages.scenes` and `stages.dedupe` entries on `job.json` appear
-the first time each stage runs (they are intentionally not pre-populated
-for new jobs, so the rollup is not held back by unmet Phase 2
-obligations).
+The `stages.scenes`, `stages.dedupe`, and `stages.window` entries on
+`job.json` appear the first time each stage runs (they are intentionally
+not pre-populated for new jobs, so the rollup is not held back by unmet
+Phase 2 or Phase 3 obligations).
 
 Job directories are created under `./jobs/` by default (the directory is
 in `.gitignore`). Job IDs have the form `YYYYMMDD-HHMMSS-<8hex>`.
@@ -227,16 +269,28 @@ transcript segments — whatever is actually on disk.
   refuses and exits 2 with a message naming both sources. Re-running with
   `--force` replaces the original and invalidates the downstream artifacts
   (`metadata.json`, `analysis.mp4`, `audio.wav`, `transcript.json`,
-  `transcript.srt`, `scenes.json`, `frame_scores.json`, `report.md`,
-  and the `candidate_frames/` directory) and resets the `normalize`,
-  `transcribe`, `scenes`, `dedupe`, and `assemble` stage entries to
-  `pending`, so the next `recap run` (plus an explicit `recap scenes`
-  and `recap dedupe` if the Phase 2 slices were in use) regenerates them
+  `transcript.srt`, `scenes.json`, `frame_scores.json`,
+  `frame_windows.json`, `report.md`, and the `candidate_frames/`
+  directory) and resets the `normalize`, `transcribe`, `scenes`,
+  `dedupe`, `window`, and `assemble` stage entries to `pending`, so the
+  next `recap run` (plus an explicit `recap scenes`, `recap dedupe`,
+  and `recap window` if those slices were in use) regenerates them
   cleanly from the new source.
 - **Stage 5 restart.** `recap scenes` skips when `scenes.json` is
   present and every `frame_file` it lists is on disk; otherwise it
   recomputes. `recap scenes --force` removes `scenes.json` and the
   `candidate_frames/` directory in full before re-running.
+- **`recap window` restart.** `recap window` skips when
+  `frame_windows.json` already matches the current `transcript.json`
+  and `scenes.json` — same `transcript_source`, same `scenes_source`,
+  same `window_seconds` (`6.0`), and the same ordered
+  `(scene_index, frame_file, midpoint_seconds)` triples as the current
+  `scenes.json`. Any drift triggers a recompute. `recap window --force`
+  removes `frame_windows.json` before recomputing. Missing
+  `transcript.json`, missing `scenes.json`, malformed JSON in either
+  file, a missing `segments` list on the transcript, a missing or empty
+  `scenes` list, or a scene entry missing `index`, `frame_file`, or
+  `midpoint_seconds` exits 2 with a one-line `error: ...` message.
 - **`recap dedupe` restart.** `recap dedupe` skips when
   `frame_scores.json` already matches the current `scenes.json` and
   `candidate_frames/` — same metric (`phash+ssim+ocr`), hash size,
@@ -318,11 +372,10 @@ Per `AGENTS.md`, `DECISIONS.md`, and `TASKS.md`, the following belong to
 later phases and are **not** present in the current codebase:
 
 - Phase 3: chapter proposal from transcript/scene fusion
-  (`chapter_candidates.json`), fuzzy transcript-window alignment,
-  OpenCLIP similarity scoring, and the screenshot keep/reject rules.
-  The target-architecture Stage 6 in the brief also places transcript
-  alignment and OpenCLIP similarity inside Stage 6; both are deferred
-  to Phase 3 by design.
+  (`chapter_candidates.json`), OpenCLIP similarity scoring, and the
+  screenshot keep/reject rules. Transcript-window alignment — the first
+  Phase 3 slice — is implemented (see above); the remaining Phase 3
+  bullets are not.
 - Phase 4: optional VLM verification on finalists only
   (`selected_frames.json`), caption generation, chapter-aware Markdown
   assembly with embedded screenshots, and optional DOCX / HTML / Notion /
@@ -333,7 +386,7 @@ These names are preserved in the binding docs and the artifact layout
 section of `ARCHITECTURE.md`, but no code, interface, stub, or
 configuration for any of them exists in the repo.
 
-## Phase 1 closeout (+ Phase 2 checklist complete)
+## Phase 1 closeout (+ Phase 2 checklist complete, + first Phase 3 slice)
 
 Phase 1 is complete, audited, hardened, and validated end-to-end on a
 real speech sample. The required artifacts are produced, the pipeline
@@ -343,10 +396,13 @@ points are implemented: Stage 5 candidate frame extraction
 (`recap scenes` → `scenes.json` + `candidate_frames/`) and the combined
 pHash + SSIM duplicate marking with Tesseract OCR novelty scoring
 (`recap dedupe` → `frame_scores.json`). Every item in the `TASKS.md`
-Phase 2 checklist is now ticked. Both entry points have been validated
-against a multi-scene sample and the single-scene fallback, including
-legacy-metric auto-recompute, skip-on-rerun, `--force` recompute, and
-clean `error: ... / exit 2` paths for missing `scenes.json`, missing
-`candidate_frames/`, malformed `scenes.json`, and missing `tesseract`.
-No Phase 3+ scaffolding has been introduced. Further work should
-begin a separate, explicitly approved Phase 3 chunk.
+Phase 2 checklist is now ticked. The first Phase 3 slice is also
+implemented: transcript-window alignment per candidate frame
+(`recap window` → `frame_windows.json`), a deterministic ±6 second
+window around each scene midpoint with the overlapping transcript
+segment ids and their concatenated text. All three opt-in entry points
+have been validated against a multi-scene sample and the single-scene
+fallback, including skip-on-rerun, `--force` recompute, and clean
+`error: ... / exit 2` paths for missing or malformed inputs. No other
+Phase 3+ scaffolding has been introduced. Further work should begin a
+separate, explicitly approved Phase 3 chunk.

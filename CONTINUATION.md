@@ -11,8 +11,14 @@ system does and produces, read `HANDOFF.md`.
   frame extraction (`recap scenes`) and the combined pHash + SSIM
   duplicate marking with Tesseract OCR novelty scoring
   (`recap dedupe`). Every item in the `TASKS.md` Phase 2 checklist is
-  ticked. `recap run` itself remains Phase 1 only.
-- No other Phase 2+ scaffolding, stubs, abstractions, or configuration
+  ticked.
+- The first Phase 3 slice is implemented: transcript-window alignment
+  per candidate frame (`recap window` → `frame_windows.json`, ±6 s
+  fixed window around each scene midpoint). The remaining Phase 3
+  bullets (chapter proposal, OpenCLIP similarity, keep/reject rules)
+  and all of Phase 4 remain out of scope.
+- `recap run` itself remains Phase 1 only.
+- No other Phase 3+ scaffolding, stubs, abstractions, or configuration
   exist.
 - `HANDOFF.md` is the definitive closeout document. It reflects the code
   on disk today.
@@ -43,10 +49,22 @@ Phase 2 (checklist complete):
   distance band are fixed code-level constants; OCR does not
   influence `duplicate_of`)
 
+Phase 3 (first slice only):
+
+- Transcript-window alignment (`frame_windows.json`, opt-in via
+  `recap window --job <path>`; for each candidate frame, collects the
+  transcript segments that overlap a fixed ±`WINDOW_SECONDS = 6.0`
+  window around `midpoint_seconds` with strict inequalities, clamps
+  the upper bound to `transcript.duration` when present, records the
+  overlapping segment ids in transcript order, and stores the
+  whitespace-normalized concatenation of their text as `window_text`;
+  pure stdlib, no new dependencies)
+
 Stages 4 and 7 are deliberately absent. Stage 6 is complete for the
-Phase 2 checklist (pHash, SSIM, and OCR all shipped). The broader
-target-architecture Stage 6 in the brief also calls for transcript-
-window alignment and OpenCLIP similarity; those remain Phase 3 work.
+Phase 2 checklist (pHash, SSIM, and OCR all shipped) and now also
+includes transcript-window alignment as the first Phase 3 slice. The
+broader target-architecture Stage 6 in the brief additionally calls for
+OpenCLIP similarity; that and chaptering remain Phase 3 work.
 
 ## Binding sources of truth
 
@@ -95,13 +113,13 @@ task runner is wired up.
 ## Phase discipline (the rule)
 
 No session may jump ahead of the approved phase. Today the approved
-work is Phase 1 (complete) plus the full Phase 2 checklist (complete):
-Stage 5 candidate frame extraction and the combined pHash + SSIM
-duplicate marking with Tesseract OCR novelty scoring. Any Phase 3/4
-work — chaptering, transcript-window alignment, OpenCLIP semantic
-alignment, VLM verification, DOCX/HTML/Notion export, WhisperX,
-queues, workers, plugin systems — stays out until the next chunk is
-explicitly approved.
+work is Phase 1 (complete) plus the full Phase 2 checklist (complete)
+plus the first Phase 3 slice (transcript-window alignment via
+`recap window`). Any remaining Phase 3/4 work — chaptering, OpenCLIP
+semantic alignment, frame ranking, keep/reject rules, VLM
+verification, DOCX/HTML/Notion export, WhisperX, queues, workers,
+plugin systems — stays out until the next chunk is explicitly
+approved.
 
 If a proposed change requires scope not documented in `MASTER_BRIEF.md`,
 stop and raise it for a product decision instead of inventing scope.

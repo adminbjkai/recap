@@ -7,6 +7,7 @@ Subcommands:
   transcribe Stage 3 only.
   scenes     Stage 5 only (Phase 2 slice; not invoked by `run`).
   dedupe     pHash + SSIM duplicate marking + OCR novelty (Phase 2 slice; not invoked by `run`).
+  window     Transcript-window alignment per candidate frame (Phase 3 slice; not invoked by `run`).
   assemble   Stage 8 (basic Markdown) only.
   status     Print job.json summary.
 
@@ -26,7 +27,7 @@ import sys
 from pathlib import Path
 
 from . import job as job_mod
-from .stages import assemble, dedupe, ingest, normalize, scenes, transcribe
+from .stages import assemble, dedupe, ingest, normalize, scenes, transcribe, window
 
 
 DEFAULT_JOBS_ROOT = Path("jobs")
@@ -94,6 +95,12 @@ def cmd_scenes(args) -> int:
 def cmd_dedupe(args) -> int:
     paths = job_mod.open_job(Path(args.job))
     dedupe.run(paths, force=args.force)
+    return 0
+
+
+def cmd_window(args) -> int:
+    paths = job_mod.open_job(Path(args.job))
+    window.run(paths, force=args.force)
     return 0
 
 
@@ -165,6 +172,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--job", required=True)
     sp.add_argument("--force", action="store_true")
     sp.set_defaults(func=cmd_dedupe)
+
+    sp = sub.add_parser(
+        "window",
+        help="Phase 3 slice: transcript-window alignment -> frame_windows.json",
+    )
+    sp.add_argument("--job", required=True)
+    sp.add_argument("--force", action="store_true")
+    sp.set_defaults(func=cmd_window)
 
     sp = sub.add_parser("assemble", help="Stage 8: basic report.md")
     sp.add_argument("--job", required=True)

@@ -54,6 +54,19 @@ Phase 1 delivers the reliable core:
 - transcription
 - basic Markdown text output
 
+## Phase 3 (in progress)
+
+Phase 3 adds semantic alignment on top of Phase 2. The first slice is
+implemented:
+
+- Transcript-window alignment — for each candidate frame, the
+  transcript segments that overlap a fixed ±6 second window around the
+  scene's `midpoint_seconds` are collected and their text is
+  concatenated. Results are written to `frame_windows.json`. Run via
+  `recap window --job <path>` after `recap scenes`. The rest of Phase 3
+  (chapter proposal, OpenCLIP similarity, keep/reject rules) is not
+  implemented.
+
 ## Phase 2 (checklist complete)
 
 Phase 2 adds smart visuals on top of Phase 1. The implemented slices
@@ -131,6 +144,7 @@ Per-stage commands (useful for re-running a single stage, or resuming):
 .venv/bin/python -m recap transcribe --job jobs/<job_id> --model small
 .venv/bin/python -m recap scenes     --job jobs/<job_id>
 .venv/bin/python -m recap dedupe     --job jobs/<job_id>
+.venv/bin/python -m recap window     --job jobs/<job_id>
 .venv/bin/python -m recap assemble   --job jobs/<job_id>
 .venv/bin/python -m recap status     --job jobs/<job_id>
 ```
@@ -142,7 +156,12 @@ novelty-scoring slice and is also not invoked by `recap run`; it reads
 `scenes.json` plus the JPEGs in `candidate_frames/` and writes
 `frame_scores.json`. It requires the system `tesseract` binary
 (`brew install tesseract` on macOS, `apt-get install tesseract-ocr` on
-Debian/Ubuntu).
+Debian/Ubuntu). `recap window` is the first Phase 3 slice and is also
+not invoked by `recap run`; it reads `transcript.json` and
+`scenes.json` and writes `frame_windows.json`, a per-candidate-frame
+transcript window (±6 seconds around each scene midpoint) with the list
+of overlapping transcript segment ids and their concatenated text. It
+does not require any new system binaries or ML dependencies.
 
 Stages skip work when their artifacts already exist. Pass `--force` to
 recompute a stage.

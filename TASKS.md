@@ -27,7 +27,7 @@
 
 - [ ] Implement chapter proposal logic using transcript shifts, pauses, speaker changes, and scene boundaries
 - [ ] Persist chapter proposals to `chapter_candidates.json`
-- [ ] Add transcript windowing around frame timestamps using a fuzzy plus or minus 5 to 7 second range
+- [x] Add transcript windowing around frame timestamps using a fuzzy plus or minus 5 to 7 second range (opt-in via `recap window`; writes `frame_windows.json`)
 - [ ] Integrate OpenCLIP scoring between candidate frames and transcript chunks
 - [ ] Rank frames per chapter using deduplication, OCR novelty, and semantic similarity together
 - [ ] Apply screenshot keep and reject rules before shortlist finalization

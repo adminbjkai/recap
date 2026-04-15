@@ -30,9 +30,17 @@ _DOWNSTREAM_ARTIFACTS = (
     "transcript_srt",
     "scenes_json",
     "frame_scores_json",
+    "frame_windows_json",
     "report_md",
 )
-_DOWNSTREAM_STAGES = ("normalize", "transcribe", "scenes", "dedupe", "assemble")
+_DOWNSTREAM_STAGES = (
+    "normalize",
+    "transcribe",
+    "scenes",
+    "dedupe",
+    "window",
+    "assemble",
+)
 
 
 def _invalidate_downstream(paths: JobPaths) -> None:
@@ -67,7 +75,7 @@ def run(paths: JobPaths, source: Path, force: bool = False) -> Path:
             f"{existing.name} from {recorded_source!r}, but --source is "
             f"{source_str!r}. Re-run with --force to replace the source "
             "(this will also discard downstream analysis, audio, transcript, "
-            "scenes, candidate frames, frame scores, and report)."
+            "scenes, candidate frames, frame scores, frame windows, and report)."
         )
 
     if existing and not force:
