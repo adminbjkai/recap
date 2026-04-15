@@ -1,7 +1,8 @@
-# Recap — Phase 1 Handoff
+# Recap — Phase 1 Handoff (+ Stage 5 slice)
 
-This document closes out Phase 1 of Recap. It reflects the current code in
-this repository — not a plan, not a roadmap. Anything not listed here is
+This document closes out Phase 1 of Recap and records the first approved
+Phase 2 slice (Stage 5 only). It reflects the current code in this
+repository — not a plan, not a roadmap. Anything not listed here is
 explicitly deferred.
 
 Binding references: `MASTER_BRIEF.md`, `ARCHITECTURE.md`, `TASKS.md`,
@@ -21,9 +22,24 @@ Phase 1 implements only the "reliable core" stages from the brief:
 - **Stage 8 — Basic Markdown assembly.** Read real artifacts and write
   `report.md` with media summary and timestamped transcript segments.
 
-Stages 4 through 7 from the brief are **not** implemented. No chaptering,
-scene detection, frame extraction, pHash/SSIM, OCR, OpenCLIP, or VLM code
-exists in the repository.
+Stages 4, 6, and 7 from the brief are **not** implemented. No
+chaptering, pHash/SSIM, OCR, OpenCLIP, or VLM code exists in the
+repository.
+
+## What the Stage 5 slice includes
+
+- **Stage 5 — Candidate frame extraction.** Run PySceneDetect's
+  `ContentDetector` against `analysis.mp4`, write `scenes.json` (scene
+  list with start/end timestamps and frame numbers, per-scene
+  `frame_file`, plus a `fallback` flag), and extract one representative
+  frame per scene into `candidate_frames/`. If the detector finds no
+  cuts, a single full-video fallback scene is written so there is always
+  one candidate frame.
+
+Stage 5 is opt-in. `recap run` continues to execute the Phase 1 stages
+only. Stage 5 runs via `recap scenes --job <path>`. The remaining
+Phase 2 work (pHash, SSIM, OCR, `frame_scores.json`) is not yet
+implemented.
 
 ## Running Phase 1 locally
 
@@ -38,6 +54,7 @@ python3.12 -m venv .venv
 .venv/bin/python -m recap ingest     --source recording.mp4
 .venv/bin/python -m recap normalize  --job jobs/<job_id>
 .venv/bin/python -m recap transcribe --job jobs/<job_id> --model small
+.venv/bin/python -m recap scenes     --job jobs/<job_id>
 .venv/bin/python -m recap assemble   --job jobs/<job_id>
 .venv/bin/python -m recap status     --job jobs/<job_id>
 ```
@@ -73,10 +90,12 @@ Phase 1 run against a sample:
   (`brew install ffmpeg` on macOS, `apt-get install ffmpeg` on
   Debian/Ubuntu). The stages resolve these via `shutil.which` and raise a
   clear install hint if either is missing.
-- **Python package**: `faster-whisper>=1.0.3` (pinned in
-  `requirements.txt` and `pyproject.toml`). First transcription download
-  fetches the requested Whisper model (default `small`) from the internet;
-  subsequent runs use the local cache.
+- **Python packages**: `faster-whisper>=1.0.3` and
+  `scenedetect[opencv]>=0.6.4` (both pinned in `requirements.txt` and
+  `pyproject.toml`). First transcription downloads the requested Whisper
+  model (default `small`) from the internet; subsequent runs use the
+  local cache. PySceneDetect ships its own opencv-python wheel via the
+  `[opencv]` extra and runs entirely offline.
 - **Compute**: the stage instantiates `WhisperModel(model, device="cpu",
   compute_type="int8")`. No GPU configuration is wired up.
 
@@ -90,7 +109,9 @@ directory:
   `original_filename`, `created_at`), per-stage status
   (`pending`/`running`/`completed`/`failed` with `started_at`,
   `finished_at`, and `error` when applicable), and a rolled-up top-level
-  `status` and `error`.
+  `status` and `error`. The top-level rollup is driven only by the four
+  Phase 1 stages (`ingest`, `normalize`, `transcribe`, `assemble`) so a
+  Phase-1-only `recap run` reaches `completed`.
 - `metadata.json` — raw `ffprobe -show_format -show_streams` JSON of the
   original.
 - `analysis.mp4` — normalized H.264 + AAC video.
@@ -98,7 +119,20 @@ directory:
 - `transcript.json` — normalized transcript (shape below).
 - `transcript.srt` — SubRip captions generated from the same segments.
 - `report.md` — basic Markdown report built from `job.json`,
-  `metadata.json`, and `transcript.json`.
+  `metadata.json`, and `transcript.json`. `report.md` does not yet
+  embed scene data.
+
+Running `recap scenes --job <path>` adds the Stage 5 outputs:
+
+- `scenes.json` — `video`, `detector`, `threshold`, `fallback`,
+  `scene_count`, `frames_dir`, and a `scenes` list. Each scene entry
+  has `index` (1-based), `start_seconds`, `end_seconds`, `start_frame`,
+  `end_frame`, `midpoint_seconds`, and `frame_file`.
+- `candidate_frames/scene-NNN.jpg` — one representative JPEG per scene.
+
+The `stages.scenes` entry on `job.json` appears the first time
+`recap scenes` runs (it is intentionally not pre-populated for new
+jobs, so the rollup is not held back by an unmet Phase 2 obligation).
 
 Job directories are created under `./jobs/` by default (the directory is
 in `.gitignore`). Job IDs have the form `YYYYMMDD-HHMMSS-<8hex>`.
@@ -121,9 +155,15 @@ transcript segments — whatever is actually on disk.
   refuses and exits 2 with a message naming both sources. Re-running with
   `--force` replaces the original and invalidates the downstream artifacts
   (`metadata.json`, `analysis.mp4`, `audio.wav`, `transcript.json`,
-  `transcript.srt`, `report.md`) and resets the `normalize`, `transcribe`,
-  and `assemble` stage entries to `pending`, so the next `recap run`
-  regenerates them cleanly from the new source.
+  `transcript.srt`, `scenes.json`, `report.md`, and the
+  `candidate_frames/` directory) and resets the `normalize`,
+  `transcribe`, `scenes`, and `assemble` stage entries to `pending`, so
+  the next `recap run` (plus an explicit `recap scenes` if Stage 5 was
+  in use) regenerates them cleanly from the new source.
+- **Stage 5 restart.** `recap scenes` skips when `scenes.json` is
+  present and every `frame_file` it lists is on disk; otherwise it
+  recomputes. `recap scenes --force` removes `scenes.json` and the
+  `candidate_frames/` directory in full before re-running.
 - Failures are recorded on the failing stage with `status: failed` and an
   `error` string, and surfaced as the top-level `status`/`error` on
   `job.json`. Re-running the command (or a specific subcommand) retries
@@ -190,9 +230,8 @@ indirection is in place or planned for Phase 1 — and per the docstring in
 Per `AGENTS.md`, `DECISIONS.md`, and `TASKS.md`, the following belong to
 later phases and are **not** present in the current codebase:
 
-- Phase 2: PySceneDetect scene boundaries (`scenes.json`), candidate frame
-  extraction (`candidate_frames/`), pHash deduplication, SSIM checks,
-  Tesseract OCR, and `frame_scores.json`.
+- Remaining Phase 2: pHash deduplication, SSIM checks, Tesseract OCR,
+  and `frame_scores.json`.
 - Phase 3: chapter proposal from transcript/scene fusion
   (`chapter_candidates.json`), fuzzy transcript-window alignment,
   OpenCLIP similarity scoring, and the screenshot keep/reject rules.
@@ -206,11 +245,14 @@ These names are preserved in the binding docs and the artifact layout
 section of `ARCHITECTURE.md`, but no code, interface, stub, or
 configuration for any of them exists in the repo.
 
-## Phase 1 closeout
+## Phase 1 closeout (+ Stage 5 slice)
 
 Phase 1 is complete, audited, hardened, and validated end-to-end on a
-real speech sample. The required artifacts are produced, the pipeline is
-restartable from disk, `job.json` reflects per-stage and overall state,
-and the output remains Markdown-first. No Phase 2+ scaffolding has been
-introduced. Further work should begin a separate, explicitly approved
-Phase 2 task.
+real speech sample. The required artifacts are produced, the pipeline
+is restartable from disk, `job.json` reflects per-stage and overall
+state, and the output remains Markdown-first. The first approved
+Phase 2 slice — Stage 5 candidate frame extraction — is implemented as
+an opt-in `recap scenes` subcommand and validated against both a
+multi-scene and a zero-scene sample. No further Phase 2+ scaffolding
+has been introduced. Further work should begin a separate, explicitly
+approved Phase 2 chunk.

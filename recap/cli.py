@@ -1,16 +1,18 @@
-"""Recap Phase 1 CLI.
+"""Recap CLI.
 
 Subcommands:
-  run      Ingest a source video and run the full Phase 1 pipeline.
-  ingest   Stage 1 only.
-  normalize Stage 2 only.
+  run        Ingest a source video and run the full Phase 1 pipeline.
+  ingest     Stage 1 only.
+  normalize  Stage 2 only.
   transcribe Stage 3 only.
-  assemble Stage 8 (basic Markdown) only.
-  status   Print job.json summary.
+  scenes     Stage 5 only (Phase 2 slice; not invoked by `run`).
+  assemble   Stage 8 (basic Markdown) only.
+  status     Print job.json summary.
 
 All commands operate on a job directory (`--job <path>`). When `run` is
 invoked without an existing job, a new one is created under `--jobs-root`
-(default: ./jobs).
+(default: ./jobs). `recap run` deliberately stays Phase 1 only; Stage 5
+is opt-in via `recap scenes --job <path>`.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ import sys
 from pathlib import Path
 
 from . import job as job_mod
-from .stages import assemble, ingest, normalize, transcribe
+from .stages import assemble, ingest, normalize, scenes, transcribe
 
 
 DEFAULT_JOBS_ROOT = Path("jobs")
@@ -80,6 +82,12 @@ def cmd_transcribe(args) -> int:
     return 0
 
 
+def cmd_scenes(args) -> int:
+    paths = job_mod.open_job(Path(args.job))
+    scenes.run(paths, force=args.force)
+    return 0
+
+
 def cmd_assemble(args) -> int:
     paths = job_mod.open_job(Path(args.job))
     out = assemble.run(paths, force=args.force)
@@ -96,7 +104,10 @@ def cmd_status(args) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="recap", description="Recap Phase 1 pipeline")
+    p = argparse.ArgumentParser(
+        prog="recap",
+        description="Recap pipeline (Phase 1 + Stage 5 candidate frames)",
+    )
     sub = p.add_subparsers(dest="command", required=True)
 
     def _common(sp):
@@ -128,6 +139,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--model", default=DEFAULT_MODEL)
     sp.add_argument("--force", action="store_true")
     sp.set_defaults(func=cmd_transcribe)
+
+    sp = sub.add_parser("scenes", help="Stage 5: scenes.json + candidate_frames/")
+    sp.add_argument("--job", required=True)
+    sp.add_argument("--force", action="store_true")
+    sp.set_defaults(func=cmd_scenes)
 
     sp = sub.add_parser("assemble", help="Stage 8: basic report.md")
     sp.add_argument("--job", required=True)

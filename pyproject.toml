@@ -5,6 +5,7 @@ description = "Local-first video-to-documentation pipeline (Phase 1)."
 requires-python = ">=3.10"
 dependencies = [
     "faster-whisper>=1.0.3",
+    "scenedetect[opencv]>=0.6.4",
 ]
 
 [project.scripts]

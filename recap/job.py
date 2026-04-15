@@ -57,6 +57,14 @@ class JobPaths:
     def report_md(self) -> Path:
         return self.root / "report.md"
 
+    @property
+    def scenes_json(self) -> Path:
+        return self.root / "scenes.json"
+
+    @property
+    def candidate_frames_dir(self) -> Path:
+        return self.root / "candidate_frames"
+
     def original(self, ext: str) -> Path:
         ext = ext.lstrip(".")
         return self.root / f"original.{ext}"

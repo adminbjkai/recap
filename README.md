@@ -47,14 +47,28 @@ Optional downstream outputs include `report.docx` and `report.html`.
 
 ## Phase 1
 
-Phase 1 should only deliver the reliable core:
+Phase 1 delivers the reliable core:
 
 - ingest
 - FFmpeg normalization
 - transcription
 - basic Markdown text output
 
-No visual selection work is required in Phase 1.
+## Phase 2 (in progress)
+
+Phase 2 adds smart visuals on top of Phase 1. The first slice is
+implemented:
+
+- Stage 5 — PySceneDetect scene boundaries (`scenes.json`) and one
+  representative frame per scene into `candidate_frames/`. If the
+  detector finds no cuts, a single full-video fallback scene is written
+  so there is always one candidate frame.
+
+Stage 5 is opt-in: `recap run` continues to execute the Phase 1 stages
+only. Run `recap scenes --job <path>` after `recap run` (or after
+`recap normalize`) to produce the Stage 5 artifacts. The remaining
+Phase 2 work (pHash, SSIM, OCR, `frame_scores.json`) is not yet
+implemented.
 
 ## Running Phase 1 locally
 
@@ -99,9 +113,13 @@ Per-stage commands (useful for re-running a single stage, or resuming):
 .venv/bin/python -m recap ingest     --source recording.mp4
 .venv/bin/python -m recap normalize  --job jobs/<job_id>
 .venv/bin/python -m recap transcribe --job jobs/<job_id> --model small
+.venv/bin/python -m recap scenes     --job jobs/<job_id>
 .venv/bin/python -m recap assemble   --job jobs/<job_id>
 .venv/bin/python -m recap status     --job jobs/<job_id>
 ```
+
+`recap scenes` is the Stage 5 (Phase 2) entry point and is not invoked
+by `recap run`. It writes `scenes.json` and `candidate_frames/`.
 
 Stages skip work when their artifacts already exist. Pass `--force` to
 recompute a stage.

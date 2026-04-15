@@ -17,8 +17,8 @@
 
 ## Phase 2: Smart Visuals v1
 
-- [ ] Integrate PySceneDetect and write `scenes.json`
-- [ ] Extract one representative frame per scene into `candidate_frames/`
+- [x] Integrate PySceneDetect and write `scenes.json` (opt-in via `recap scenes`)
+- [x] Extract one representative frame per scene into `candidate_frames/` (with single-scene fallback when no cuts)
 - [ ] Add pHash-based duplicate removal
 - [ ] Add SSIM checks for borderline duplicate frames
 - [ ] Integrate Tesseract OCR for text extraction and novelty scoring

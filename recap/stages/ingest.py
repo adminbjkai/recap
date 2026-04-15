@@ -28,9 +28,10 @@ _DOWNSTREAM_ARTIFACTS = (
     "audio_wav",
     "transcript_json",
     "transcript_srt",
+    "scenes_json",
     "report_md",
 )
-_DOWNSTREAM_STAGES = ("normalize", "transcribe", "assemble")
+_DOWNSTREAM_STAGES = ("normalize", "transcribe", "scenes", "assemble")
 
 
 def _invalidate_downstream(paths: JobPaths) -> None:
@@ -38,6 +39,8 @@ def _invalidate_downstream(paths: JobPaths) -> None:
         p: Path = getattr(paths, attr)
         if p.exists():
             p.unlink()
+    if paths.candidate_frames_dir.is_dir():
+        shutil.rmtree(paths.candidate_frames_dir)
     state = read_job(paths)
     for name in _DOWNSTREAM_STAGES:
         state["stages"][name] = {"status": PENDING}
@@ -62,7 +65,8 @@ def run(paths: JobPaths, source: Path, force: bool = False) -> Path:
             "refusing to re-ingest: job already has "
             f"{existing.name} from {recorded_source!r}, but --source is "
             f"{source_str!r}. Re-run with --force to replace the source "
-            "(this will also discard downstream analysis, audio, transcript, and report)."
+            "(this will also discard downstream analysis, audio, transcript, "
+            "scenes, candidate frames, and report)."
         )
 
     if existing and not force:
