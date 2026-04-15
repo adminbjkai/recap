@@ -8,6 +8,7 @@ dependencies = [
     "scenedetect[opencv]>=0.6.4",
     "ImageHash>=4.3.1",
     "Pillow>=10.0.0",
+    "scikit-image>=0.22",
 ]
 
 [project.scripts]

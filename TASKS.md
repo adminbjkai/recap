@@ -20,7 +20,7 @@
 - [x] Integrate PySceneDetect and write `scenes.json` (opt-in via `recap scenes`)
 - [x] Extract one representative frame per scene into `candidate_frames/` (with single-scene fallback when no cuts)
 - [x] Add pHash-based duplicate marking (`frame_scores.json`, opt-in via `recap dedupe`)
-- [ ] Add SSIM checks for borderline duplicate frames
+- [x] Add SSIM checks for borderline duplicate frames (folded into `recap dedupe`; extends `frame_scores.json`)
 - [ ] Integrate Tesseract OCR for text extraction and novelty scoring
 
 ## Phase 3: Semantic Alignment

@@ -1,8 +1,8 @@
-# Recap — Phase 1 Handoff (+ Stage 5 and pHash slices)
+# Recap — Phase 1 Handoff (+ Stage 5 and pHash/SSIM slices)
 
 This document closes out Phase 1 of Recap and records the Phase 2 slices
 approved and implemented so far: Stage 5 candidate frame extraction and
-pHash-based duplicate marking. It reflects the current code in this
+pHash + SSIM duplicate marking. It reflects the current code in this
 repository — not a plan, not a roadmap. Anything not listed here is
 explicitly deferred.
 
@@ -24,9 +24,9 @@ Phase 1 implements only the "reliable core" stages from the brief:
   `report.md` with media summary and timestamped transcript segments.
 
 Stage 5 is implemented as the first approved Phase 2 slice (see the
-next section). Stage 6 is **partially** implemented via the pHash
-duplicate-marking slice; SSIM and OCR remain unimplemented. Stages 4
-and 7 from the brief are **not** implemented. No chaptering, SSIM,
+next section). Stage 6 is **partially** implemented via the
+pHash + SSIM duplicate-marking slice; OCR remains unimplemented.
+Stages 4 and 7 from the brief are **not** implemented. No chaptering,
 OCR, OpenCLIP, or VLM code exists in the repository.
 
 ## What the Phase 2 slices include
@@ -38,21 +38,30 @@ OCR, OpenCLIP, or VLM code exists in the repository.
   frame per scene into `candidate_frames/`. If the detector finds no
   cuts, a single full-video fallback scene is written so there is always
   one candidate frame.
-- **pHash duplicate marking.** Read `scenes.json` and the JPEGs in
-  `candidate_frames/`, compute an ImageHash `phash` per frame (hash
+- **pHash + SSIM duplicate marking.** Read `scenes.json` and the JPEGs
+  in `candidate_frames/`, compute an ImageHash `phash` per frame (hash
   size 8 → 64-bit hash), and compare each frame to its immediate
   predecessor with Hamming distance. Frames at or below a fixed
   code-level threshold are marked as duplicates of their predecessor.
-  Results are written to `frame_scores.json` with per-frame entries
-  (`scene_index`, `frame_file`, `phash`, `duplicate_of`,
-  `hamming_distance`) and top-level metadata (`video`, `metric=phash`,
-  `hash_size`, `duplicate_threshold`, `frame_count`, `duplicate_count`).
-  No frames are deleted, renamed, or moved.
+  For adjacent pairs whose pHash Hamming distance is strictly above
+  `DUPLICATE_THRESHOLD` and at or below `SSIM_DISTANCE_BAND_MAX`, SSIM
+  is computed on the grayscale frames with `skimage.metrics.
+  structural_similarity`; pairs whose SSIM reaches
+  `SSIM_DUPLICATE_THRESHOLD` are promoted to duplicates of their
+  predecessor. Results are written to `frame_scores.json` with
+  per-frame entries (`scene_index`, `frame_file`, `phash`,
+  `duplicate_of`, `hamming_distance`, `ssim`) and top-level metadata
+  (`video`, `metric=phash+ssim`, `hash_size`, `duplicate_threshold`,
+  `ssim_distance_band_max`, `ssim_duplicate_threshold`, `frame_count`,
+  `duplicate_count`, `ssim_computed_count`). `ssim` is `null` for the
+  first frame, for pairs outside the band, and for pairs already marked
+  duplicate by pHash. No frames are deleted, renamed, or moved.
 
 Both slices are opt-in. `recap run` continues to execute the Phase 1
-stages only. Stage 5 runs via `recap scenes --job <path>`; pHash
-duplicate marking runs via `recap dedupe --job <path>`. The remaining
-Phase 2 work (SSIM, OCR) is not yet implemented.
+stages only. Stage 5 runs via `recap scenes --job <path>`;
+pHash + SSIM duplicate marking runs via `recap dedupe --job <path>`.
+The remaining Phase 2 work (Tesseract OCR novelty scoring) is not yet
+implemented.
 
 ## Running Phase 1 locally
 
@@ -105,13 +114,14 @@ Phase 1 run against a sample:
   Debian/Ubuntu). The stages resolve these via `shutil.which` and raise a
   clear install hint if either is missing.
 - **Python packages**: `faster-whisper>=1.0.3`,
-  `scenedetect[opencv]>=0.6.4`, `ImageHash>=4.3.1`, and `Pillow>=10.0.0`
-  (all pinned in `requirements.txt` and `pyproject.toml`). First
-  transcription downloads the requested Whisper model (default `small`)
-  from the internet; subsequent runs use the local cache. PySceneDetect
-  ships its own opencv-python wheel via the `[opencv]` extra and runs
-  entirely offline. ImageHash pulls in Pillow, NumPy, SciPy, and
-  PyWavelets; all run locally.
+  `scenedetect[opencv]>=0.6.4`, `ImageHash>=4.3.1`, `Pillow>=10.0.0`,
+  and `scikit-image>=0.22` (all pinned in `requirements.txt` and
+  `pyproject.toml`). First transcription downloads the requested
+  Whisper model (default `small`) from the internet; subsequent runs
+  use the local cache. PySceneDetect ships its own opencv-python wheel
+  via the `[opencv]` extra and runs entirely offline. ImageHash pulls
+  in Pillow, NumPy, SciPy, and PyWavelets; scikit-image pulls in
+  imageio, tifffile, networkx, and lazy-loader; all run locally.
 - **Compute**: the stage instantiates `WhisperModel(model, device="cpu",
   compute_type="int8")`. No GPU configuration is wired up.
 
@@ -146,15 +156,19 @@ Running `recap scenes --job <path>` adds the Stage 5 outputs:
   `end_frame`, `midpoint_seconds`, and `frame_file`.
 - `candidate_frames/scene-NNN.jpg` — one representative JPEG per scene.
 
-Running `recap dedupe --job <path>` adds the pHash slice output:
+Running `recap dedupe --job <path>` adds the pHash + SSIM slice output:
 
 - `frame_scores.json` — top-level `video`, `scenes_source`,
-  `frames_dir`, `metric` (`phash`), `hash_size`, `duplicate_threshold`,
-  `frame_count`, `duplicate_count`, and a `frames` list with one entry
-  per scene: `scene_index`, `frame_file`, `phash`,
-  `hamming_distance` (null for the first frame, integer otherwise), and
+  `frames_dir`, `metric` (`phash+ssim`), `hash_size`,
+  `duplicate_threshold`, `ssim_distance_band_max`,
+  `ssim_duplicate_threshold`, `frame_count`, `duplicate_count`,
+  `ssim_computed_count`, and a `frames` list with one entry per scene:
+  `scene_index`, `frame_file`, `phash`,
+  `hamming_distance` (null for the first frame, integer otherwise),
+  `ssim` (float when SSIM was computed for that pair, else null), and
   `duplicate_of` (predecessor `scene_index` when `hamming_distance` is
-  at or below the threshold, else null).
+  at or below the pHash threshold, or when `ssim` reaches
+  `ssim_duplicate_threshold`; else null).
 
 The `stages.scenes` and `stages.dedupe` entries on `job.json` appear
 the first time each stage runs (they are intentionally not pre-populated
@@ -192,14 +206,16 @@ transcript segments — whatever is actually on disk.
   present and every `frame_file` it lists is on disk; otherwise it
   recomputes. `recap scenes --force` removes `scenes.json` and the
   `candidate_frames/` directory in full before re-running.
-- **pHash dedupe restart.** `recap dedupe` skips when
+- **pHash + SSIM dedupe restart.** `recap dedupe` skips when
   `frame_scores.json` already matches the current `scenes.json` and
-  `candidate_frames/` — same metric/hash-size/threshold, same scene
-  indices and frame files, every frame file still on disk. Any drift
-  triggers a recompute. `recap dedupe --force` removes
-  `frame_scores.json` before recomputing. Missing `scenes.json` or
-  `candidate_frames/`, or any scene whose `frame_file` is absent from
-  disk, exits 2 with a one-line `error: ...` message.
+  `candidate_frames/` — same metric (`phash+ssim`), hash size, pHash
+  threshold, SSIM band, and SSIM threshold, same scene indices and
+  frame files, every frame file still on disk. Any drift (including a
+  pre-SSIM `metric=phash` file written by an earlier version) triggers
+  a recompute. `recap dedupe --force` removes `frame_scores.json`
+  before recomputing. Missing `scenes.json` or `candidate_frames/`,
+  any scene whose `frame_file` is absent from disk, or a malformed
+  `scenes.json`, exits 2 with a one-line `error: ...` message.
 - Failures are recorded on the failing stage with `status: failed` and an
   `error` string, and surfaced as the top-level `status`/`error` on
   `job.json`. Re-running the command (or a specific subcommand) retries
@@ -266,9 +282,8 @@ indirection is in place or planned for Phase 1 — and per the docstring in
 Per `AGENTS.md`, `DECISIONS.md`, and `TASKS.md`, the following belong to
 later phases and are **not** present in the current codebase:
 
-- Remaining Phase 2: SSIM borderline checks and Tesseract OCR novelty
-  scoring (both would extend `frame_scores.json` with additional
-  per-frame fields).
+- Remaining Phase 2: Tesseract OCR novelty scoring (would extend
+  `frame_scores.json` with additional per-frame fields).
 - Phase 3: chapter proposal from transcript/scene fusion
   (`chapter_candidates.json`), fuzzy transcript-window alignment,
   OpenCLIP similarity scoring, and the screenshot keep/reject rules.
@@ -290,8 +305,9 @@ is restartable from disk, `job.json` reflects per-stage and overall
 state, and the output remains Markdown-first. Two Phase 2 slices are
 also implemented as opt-in subcommands: Stage 5 candidate frame
 extraction (`recap scenes` → `scenes.json` + `candidate_frames/`) and
-pHash duplicate marking (`recap dedupe` → `frame_scores.json`). Both
-have been validated against a multi-scene sample and the single-scene
-fallback, including skip-on-rerun and `--force` recompute. No further
-Phase 2+ scaffolding has been introduced. Further work should begin a
-separate, explicitly approved Phase 2 chunk.
+pHash + SSIM duplicate marking (`recap dedupe` → `frame_scores.json`).
+Both have been validated against a multi-scene sample and the
+single-scene fallback, including skip-on-rerun and `--force`
+recompute. No further Phase 2+ scaffolding has been introduced.
+Further work should begin a separate, explicitly approved Phase 2
+chunk.

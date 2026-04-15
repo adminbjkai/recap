@@ -8,9 +8,9 @@ system does and produces, read `HANDOFF.md`.
 
 - Phase 1 of Recap is implemented, audited, hardened, and closed out.
 - Two Phase 2 slices are implemented as opt-in subcommands, in order:
-  Stage 5 candidate frame extraction (`recap scenes`) and pHash
-  duplicate marking (`recap dedupe`). `recap run` itself remains Phase 1
-  only.
+  Stage 5 candidate frame extraction (`recap scenes`) and
+  pHash + SSIM duplicate marking (`recap dedupe`). `recap run` itself
+  remains Phase 1 only.
 - No other Phase 2+ scaffolding, stubs, abstractions, or configuration
   exist.
 - `HANDOFF.md` is the definitive closeout document. It reflects the code
@@ -32,12 +32,16 @@ Phase 2 (partial):
 - Stage 5 — Candidate frame extraction (`scenes.json`,
   `candidate_frames/`, opt-in via `recap scenes --job <path>`, with a
   single-scene full-video fallback when `ContentDetector` finds no cuts)
-- pHash duplicate marking (`frame_scores.json`, opt-in via
+- pHash + SSIM duplicate marking (`frame_scores.json`, opt-in via
   `recap dedupe --job <path>`; compares each frame to its immediate
-  predecessor using Hamming distance on ImageHash pHashes with a fixed
-  code-level threshold)
+  predecessor using Hamming distance on ImageHash pHashes, and resolves
+  borderline pairs with `skimage.metrics.structural_similarity` on
+  grayscale frames; all thresholds and the SSIM distance band are fixed
+  code-level constants)
 
-Stages 4, 6 (remaining SSIM / OCR work), and 7 are deliberately absent.
+Stages 4 and 7 are deliberately absent. Stage 6 is partially
+implemented (pHash + SSIM shipped); the only remaining Stage 6 /
+Phase 2 work is Tesseract OCR novelty scoring.
 
 ## Binding sources of truth
 
@@ -87,8 +91,8 @@ task runner is wired up.
 
 No session may jump ahead of the approved phase. Today the approved
 work is Phase 1 (complete) plus two Phase 2 slices (complete):
-Stage 5 candidate frame extraction and pHash duplicate marking. Any
-other Phase 2/3/4 work — chaptering, SSIM, OCR, OpenCLIP semantic
+Stage 5 candidate frame extraction and pHash + SSIM duplicate marking.
+Any other Phase 2/3/4 work — chaptering, OCR, OpenCLIP semantic
 alignment, VLM verification, DOCX/HTML/Notion export, WhisperX, queues,
 workers, plugin systems — stays out until the next chunk is explicitly
 approved.

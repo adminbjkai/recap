@@ -63,17 +63,21 @@ far are:
   representative frame per scene into `candidate_frames/`. If the
   detector finds no cuts, a single full-video fallback scene is written
   so there is always one candidate frame.
-- pHash duplicate marking — for each candidate frame, compute a
+- pHash + SSIM duplicate marking — for each candidate frame, compute a
   perceptual hash with ImageHash and compare against the immediate
   predecessor's hash. Frames at or below a fixed Hamming-distance
-  threshold are marked as duplicates of their predecessor. Results are
-  written to `frame_scores.json`.
+  threshold are marked as duplicates of their predecessor. For adjacent
+  pairs that fall in a borderline pHash-distance band, SSIM is computed
+  on the grayscale frames and a pair is promoted to a duplicate when
+  SSIM is at or above a fixed threshold. Results are written to
+  `frame_scores.json`.
 
 Both slices are opt-in: `recap run` continues to execute the Phase 1
 stages only. Run `recap scenes --job <path>` after `recap run` (or after
 `recap normalize`) to produce the Stage 5 artifacts, then
 `recap dedupe --job <path>` to produce `frame_scores.json`. The
-remaining Phase 2 work (SSIM, OCR) is not yet implemented.
+remaining Phase 2 work (Tesseract OCR novelty scoring) is not yet
+implemented.
 
 ## Running Phase 1 locally
 
@@ -126,8 +130,8 @@ Per-stage commands (useful for re-running a single stage, or resuming):
 
 `recap scenes` is the Stage 5 (Phase 2) entry point and is not invoked
 by `recap run`. It writes `scenes.json` and `candidate_frames/`.
-`recap dedupe` is the pHash duplicate-marking slice and is also not
-invoked by `recap run`; it reads `scenes.json` plus the JPEGs in
+`recap dedupe` is the pHash + SSIM duplicate-marking slice and is also
+not invoked by `recap run`; it reads `scenes.json` plus the JPEGs in
 `candidate_frames/` and writes `frame_scores.json`.
 
 Stages skip work when their artifacts already exist. Pass `--force` to
