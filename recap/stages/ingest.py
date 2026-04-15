@@ -67,7 +67,7 @@ def run(paths: JobPaths, source: Path, force: bool = False) -> Path:
             f"{existing.name} from {recorded_source!r}, but --source is "
             f"{source_str!r}. Re-run with --force to replace the source "
             "(this will also discard downstream analysis, audio, transcript, "
-            "scenes, candidate frames, and report)."
+            "scenes, candidate frames, frame scores, and report)."
         )
 
     if existing and not force:

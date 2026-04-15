@@ -2,18 +2,18 @@
 
 ## Phase 1: Reliable Core
 
-- [ ] Create a job model and working-directory convention with `job.json`
-- [ ] Implement ingest to accept a source recording and persist `original.ext`
-- [ ] Add metadata extraction via `ffprobe` and persist `metadata.json`
-- [ ] Add FFmpeg normalization to produce `analysis.mp4`
-- [ ] Add FFmpeg audio extraction to produce `audio.wav` as 16kHz mono WAV
-- [ ] Integrate faster-whisper as the default transcription engine
+- [x] Create a job model and working-directory convention with `job.json`
+- [x] Implement ingest to accept a source recording and persist `original.ext`
+- [x] Add metadata extraction via `ffprobe` and persist `metadata.json`
+- [x] Add FFmpeg normalization to produce `analysis.mp4`
+- [x] Add FFmpeg audio extraction to produce `audio.wav` as 16kHz mono WAV
+- [x] Integrate faster-whisper as the default transcription engine
 - [ ] Support WhisperX as an optional precision path when word-level timing is needed
-- [ ] Persist transcript outputs to `transcript.json` and `transcript.srt`
-- [ ] Implement basic Markdown report generation as `report.md`
-- [ ] Make every Phase 1 step restartable from existing artifacts
-- [ ] Add basic job status updates to reflect stage progress and failures
-- [ ] Validate the Phase 1 flow on a sample recording end to end
+- [x] Persist transcript outputs to `transcript.json` and `transcript.srt`
+- [x] Implement basic Markdown report generation as `report.md`
+- [x] Make every Phase 1 step restartable from existing artifacts
+- [x] Add basic job status updates to reflect stage progress and failures
+- [x] Validate the Phase 1 flow on a sample recording end to end
 
 ## Phase 2: Smart Visuals v1
 

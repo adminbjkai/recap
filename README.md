@@ -54,10 +54,10 @@ Phase 1 delivers the reliable core:
 - transcription
 - basic Markdown text output
 
-## Phase 2 (in progress)
+## Phase 2 (checklist complete)
 
-Phase 2 adds smart visuals on top of Phase 1. The slices implemented so
-far are:
+Phase 2 adds smart visuals on top of Phase 1. The implemented slices
+are:
 
 - Stage 5 — PySceneDetect scene boundaries (`scenes.json`) and one
   representative frame per scene into `candidate_frames/`. If the
