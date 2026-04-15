@@ -1,0 +1,18 @@
+[project]
+name = "recap"
+version = "0.1.0"
+description = "Local-first video-to-documentation pipeline (Phase 1)."
+requires-python = ">=3.10"
+dependencies = [
+    "faster-whisper>=1.0.3",
+]
+
+[project.scripts]
+recap = "recap.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["recap*"]

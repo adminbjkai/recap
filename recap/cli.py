@@ -1,0 +1,155 @@
+"""Recap Phase 1 CLI.
+
+Subcommands:
+  run      Ingest a source video and run the full Phase 1 pipeline.
+  ingest   Stage 1 only.
+  normalize Stage 2 only.
+  transcribe Stage 3 only.
+  assemble Stage 8 (basic Markdown) only.
+  status   Print job.json summary.
+
+All commands operate on a job directory (`--job <path>`). When `run` is
+invoked without an existing job, a new one is created under `--jobs-root`
+(default: ./jobs).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+from . import job as job_mod
+from .stages import assemble, ingest, normalize, transcribe
+
+
+DEFAULT_JOBS_ROOT = Path("jobs")
+DEFAULT_MODEL = "small"
+
+
+def _open_or_create(args) -> job_mod.JobPaths:
+    if args.job:
+        return job_mod.open_job(Path(args.job))
+    jobs_root = Path(args.jobs_root or DEFAULT_JOBS_ROOT)
+    return job_mod.create_job(jobs_root)
+
+
+def cmd_run(args) -> int:
+    if args.job:
+        paths = job_mod.open_job(Path(args.job))
+        if args.source:
+            ingest.run(paths, Path(args.source), force=args.force)
+        elif paths.find_original() is None:
+            print("error: job has no original.* and no --source provided", file=sys.stderr)
+            return 2
+    else:
+        if not args.source:
+            print("error: --source is required when creating a new job", file=sys.stderr)
+            return 2
+        paths = job_mod.create_job(Path(args.jobs_root or DEFAULT_JOBS_ROOT))
+        ingest.run(paths, Path(args.source), force=args.force)
+
+    print(f"[job] {paths.root}")
+    normalize.run(paths, force=args.force)
+    transcribe.run(paths, model=args.model, force=args.force)
+    assemble.run(paths, force=args.force)
+    print(f"[done] {paths.report_md}")
+    return 0
+
+
+def cmd_ingest(args) -> int:
+    if args.job:
+        paths = job_mod.open_job(Path(args.job))
+    else:
+        paths = job_mod.create_job(Path(args.jobs_root or DEFAULT_JOBS_ROOT))
+    ingest.run(paths, Path(args.source), force=args.force)
+    print(paths.root)
+    return 0
+
+
+def cmd_normalize(args) -> int:
+    paths = job_mod.open_job(Path(args.job))
+    normalize.run(paths, force=args.force)
+    return 0
+
+
+def cmd_transcribe(args) -> int:
+    paths = job_mod.open_job(Path(args.job))
+    transcribe.run(paths, model=args.model, force=args.force)
+    return 0
+
+
+def cmd_assemble(args) -> int:
+    paths = job_mod.open_job(Path(args.job))
+    out = assemble.run(paths, force=args.force)
+    print(out)
+    return 0
+
+
+def cmd_status(args) -> int:
+    paths = job_mod.open_job(Path(args.job))
+    state = job_mod.read_job(paths)
+    json.dump(state, sys.stdout, indent=2, sort_keys=True)
+    sys.stdout.write("\n")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="recap", description="Recap Phase 1 pipeline")
+    sub = p.add_subparsers(dest="command", required=True)
+
+    def _common(sp):
+        sp.add_argument("--job", help="path to an existing job directory")
+        sp.add_argument(
+            "--jobs-root",
+            help=f"root directory for new jobs (default: {DEFAULT_JOBS_ROOT})",
+        )
+        sp.add_argument("--force", action="store_true", help="recompute stage outputs")
+
+    sp = sub.add_parser("run", help="run the full Phase 1 pipeline")
+    _common(sp)
+    sp.add_argument("--source", help="path to the source video (required for new job)")
+    sp.add_argument("--model", default=DEFAULT_MODEL, help="faster-whisper model name")
+    sp.set_defaults(func=cmd_run)
+
+    sp = sub.add_parser("ingest", help="Stage 1: copy source into a job directory")
+    _common(sp)
+    sp.add_argument("--source", required=True)
+    sp.set_defaults(func=cmd_ingest)
+
+    sp = sub.add_parser("normalize", help="Stage 2: metadata + analysis.mp4 + audio.wav")
+    sp.add_argument("--job", required=True)
+    sp.add_argument("--force", action="store_true")
+    sp.set_defaults(func=cmd_normalize)
+
+    sp = sub.add_parser("transcribe", help="Stage 3: transcript.json + transcript.srt")
+    sp.add_argument("--job", required=True)
+    sp.add_argument("--model", default=DEFAULT_MODEL)
+    sp.add_argument("--force", action="store_true")
+    sp.set_defaults(func=cmd_transcribe)
+
+    sp = sub.add_parser("assemble", help="Stage 8: basic report.md")
+    sp.add_argument("--job", required=True)
+    sp.add_argument("--force", action="store_true")
+    sp.set_defaults(func=cmd_assemble)
+
+    sp = sub.add_parser("status", help="print job.json")
+    sp.add_argument("--job", required=True)
+    sp.set_defaults(func=cmd_status)
+
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        return args.func(args)
+    except (FileNotFoundError, RuntimeError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
