@@ -1,4 +1,4 @@
-"""Phase 2 slice: pHash duplicate marking with SSIM borderline resolution.
+"""Phase 2 slice: pHash + SSIM duplicate marking + OCR novelty scoring.
 
 Reads `scenes.json` and the JPEGs in `candidate_frames/`, computes an
 ImageHash `phash` for each candidate frame, and marks a frame as a
@@ -7,13 +7,17 @@ or below a fixed code-level threshold. For adjacent pairs whose pHash
 Hamming distance lies in the borderline band
 (`DUPLICATE_THRESHOLD < distance <= SSIM_DISTANCE_BAND_MAX`), SSIM is
 computed on grayscale frames and a pair is promoted to a duplicate when
-SSIM is at or above `SSIM_DUPLICATE_THRESHOLD`. Results are written to
+SSIM is at or above `SSIM_DUPLICATE_THRESHOLD`. Every frame is also
+passed through Tesseract OCR; the extracted text is whitespace-
+normalized, stored per frame, and compared to the immediate predecessor
+to produce a text-novelty score. OCR is an additional signal and does
+not influence `duplicate_of`. Results are written to
 `frame_scores.json`.
 
 This stage is marking-only: no frames are deleted, renamed, or moved.
-It performs no OCR, no embeddings, no chapter proposal, and no report
-changes. It is opt-in via `recap dedupe` and is not invoked by
-`recap run`.
+It performs no OpenCLIP embeddings, no chapter proposal, no transcript
+alignment, and no report changes. It is opt-in via `recap dedupe` and
+is not invoked by `recap run`.
 
 Skipped if `frame_scores.json` already matches the current `scenes.json`
 and `candidate_frames/` plus the current metric/thresholds (unless
@@ -22,7 +26,10 @@ and `candidate_frames/` plus the current metric/thresholds (unless
 
 from __future__ import annotations
 
+import difflib
 import json
+import re
+import shutil
 from pathlib import Path
 
 from ..job import COMPLETED, FAILED, RUNNING, JobPaths, update_stage
@@ -45,7 +52,26 @@ SSIM_DISTANCE_BAND_MAX = 15
 # of its predecessor.
 SSIM_DUPLICATE_THRESHOLD = 0.95
 
-METRIC = "phash+ssim"
+OCR_ENGINE = "tesseract"
+
+METRIC = "phash+ssim+ocr"
+
+_WS_RE = re.compile(r"\s+")
+
+
+def _require_tesseract() -> str:
+    path = shutil.which("tesseract")
+    if not path:
+        raise RuntimeError(
+            "tesseract not found on PATH. Install Tesseract (e.g. "
+            "`brew install tesseract` on macOS or "
+            "`apt-get install tesseract-ocr` on Debian/Ubuntu)."
+        )
+    return path
+
+
+def _normalize_text(text: str) -> str:
+    return _WS_RE.sub(" ", text).strip()
 
 
 def _load_scenes(paths: JobPaths) -> dict:
@@ -89,15 +115,18 @@ def _validate_inputs(paths: JobPaths, scenes_data: dict) -> list[dict]:
 def _compute(paths: JobPaths, scenes: list[dict], scenes_data: dict) -> dict:
     import imagehash
     import numpy as np
+    import pytesseract
     from PIL import Image
     from skimage.metrics import structural_similarity as ssim_fn
 
     entries: list[dict] = []
     duplicate_count = 0
     ssim_computed_count = 0
+    ocr_frames_with_text_count = 0
     prev_hash = None
     prev_index = None
     prev_gray = None
+    prev_text: str | None = None
 
     for s in scenes:
         index = s.get("index")
@@ -106,6 +135,10 @@ def _compute(paths: JobPaths, scenes: list[dict], scenes_data: dict) -> dict:
         with Image.open(frame_path) as img:
             h = imagehash.phash(img, hash_size=HASH_SIZE)
             gray = np.asarray(img.convert("L"), dtype=np.uint8)
+            ocr_text = _normalize_text(pytesseract.image_to_string(img))
+
+        if ocr_text:
+            ocr_frames_with_text_count += 1
 
         distance = None
         duplicate_of = None
@@ -123,6 +156,12 @@ def _compute(paths: JobPaths, scenes: list[dict], scenes_data: dict) -> dict:
             if duplicate_of is not None:
                 duplicate_count += 1
 
+        if prev_text is None:
+            text_novelty: float | None = None
+        else:
+            ratio = difflib.SequenceMatcher(None, prev_text, ocr_text).ratio()
+            text_novelty = 1.0 - ratio
+
         entries.append(
             {
                 "scene_index": index,
@@ -131,11 +170,14 @@ def _compute(paths: JobPaths, scenes: list[dict], scenes_data: dict) -> dict:
                 "duplicate_of": duplicate_of,
                 "hamming_distance": distance,
                 "ssim": ssim_score,
+                "ocr_text": ocr_text,
+                "text_novelty": text_novelty,
             }
         )
         prev_hash = h
         prev_index = index
         prev_gray = gray
+        prev_text = ocr_text
 
     return {
         "video": scenes_data.get("video"),
@@ -146,9 +188,11 @@ def _compute(paths: JobPaths, scenes: list[dict], scenes_data: dict) -> dict:
         "duplicate_threshold": DUPLICATE_THRESHOLD,
         "ssim_distance_band_max": SSIM_DISTANCE_BAND_MAX,
         "ssim_duplicate_threshold": SSIM_DUPLICATE_THRESHOLD,
+        "ocr_engine": OCR_ENGINE,
         "frame_count": len(entries),
         "duplicate_count": duplicate_count,
         "ssim_computed_count": ssim_computed_count,
+        "ocr_frames_with_text_count": ocr_frames_with_text_count,
         "frames": entries,
     }
 
@@ -171,6 +215,8 @@ def _outputs_match(paths: JobPaths, scenes: list[dict]) -> bool:
         return False
     if data.get("ssim_duplicate_threshold") != SSIM_DUPLICATE_THRESHOLD:
         return False
+    if data.get("ocr_engine") != OCR_ENGINE:
+        return False
     entries = data.get("frames") or []
     if len(entries) != len(scenes):
         return False
@@ -180,6 +226,10 @@ def _outputs_match(paths: JobPaths, scenes: list[dict]) -> bool:
         if entry.get("frame_file") != scene.get("frame_file"):
             return False
         if not entry.get("phash"):
+            return False
+        if not isinstance(entry.get("ocr_text"), str):
+            return False
+        if "text_novelty" not in entry:
             return False
         name = entry.get("frame_file")
         if not name or not (paths.candidate_frames_dir / name).is_file():
@@ -202,11 +252,16 @@ def run(paths: JobPaths, force: bool = False) -> dict:
                 "frame_count": data.get("frame_count", len(data.get("frames", []))),
                 "duplicate_count": data.get("duplicate_count", 0),
                 "ssim_computed_count": data.get("ssim_computed_count", 0),
+                "ocr_frames_with_text_count": data.get(
+                    "ocr_frames_with_text_count", 0
+                ),
                 "metric": METRIC,
                 "skipped": True,
             },
         )
         return data
+
+    _require_tesseract()
 
     update_stage(paths, "dedupe", RUNNING)
     try:
@@ -228,6 +283,7 @@ def run(paths: JobPaths, force: bool = False) -> dict:
                 "frame_count": data["frame_count"],
                 "duplicate_count": data["duplicate_count"],
                 "ssim_computed_count": data["ssim_computed_count"],
+                "ocr_frames_with_text_count": data["ocr_frames_with_text_count"],
                 "metric": METRIC,
                 "duplicate_threshold": DUPLICATE_THRESHOLD,
             },

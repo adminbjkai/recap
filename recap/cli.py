@@ -6,7 +6,7 @@ Subcommands:
   normalize  Stage 2 only.
   transcribe Stage 3 only.
   scenes     Stage 5 only (Phase 2 slice; not invoked by `run`).
-  dedupe     pHash + SSIM duplicate marking (Phase 2 slice; not invoked by `run`).
+  dedupe     pHash + SSIM duplicate marking + OCR novelty (Phase 2 slice; not invoked by `run`).
   assemble   Stage 8 (basic Markdown) only.
   status     Print job.json summary.
 
@@ -14,7 +14,8 @@ All commands operate on a job directory (`--job <path>`). When `run` is
 invoked without an existing job, a new one is created under `--jobs-root`
 (default: ./jobs). `recap run` deliberately stays Phase 1 only; the
 Phase 2 slices are opt-in via `recap scenes --job <path>` (Stage 5) and
-`recap dedupe --job <path>` (pHash + SSIM duplicate marking).
+`recap dedupe --job <path>` (pHash + SSIM duplicate marking +
+Tesseract OCR novelty scoring).
 """
 
 from __future__ import annotations
@@ -116,7 +117,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="recap",
         description=(
             "Recap pipeline (Phase 1 core + opt-in Phase 2 slices: "
-            "Stage 5 candidate frames, pHash + SSIM duplicate marking)"
+            "Stage 5 candidate frames, pHash + SSIM duplicate marking "
+            "+ Tesseract OCR novelty scoring)"
         ),
     )
     sub = p.add_subparsers(dest="command", required=True)
@@ -158,7 +160,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser(
         "dedupe",
-        help="Phase 2 slice: pHash + SSIM duplicate marking -> frame_scores.json",
+        help="Phase 2 slice: pHash + SSIM duplicate marking + OCR novelty -> frame_scores.json",
     )
     sp.add_argument("--job", required=True)
     sp.add_argument("--force", action="store_true")

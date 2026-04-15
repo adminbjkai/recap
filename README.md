@@ -63,21 +63,27 @@ far are:
   representative frame per scene into `candidate_frames/`. If the
   detector finds no cuts, a single full-video fallback scene is written
   so there is always one candidate frame.
-- pHash + SSIM duplicate marking — for each candidate frame, compute a
-  perceptual hash with ImageHash and compare against the immediate
-  predecessor's hash. Frames at or below a fixed Hamming-distance
-  threshold are marked as duplicates of their predecessor. For adjacent
-  pairs that fall in a borderline pHash-distance band, SSIM is computed
-  on the grayscale frames and a pair is promoted to a duplicate when
-  SSIM is at or above a fixed threshold. Results are written to
-  `frame_scores.json`.
+- pHash + SSIM duplicate marking with Tesseract OCR novelty — for each
+  candidate frame, compute a perceptual hash with ImageHash and compare
+  against the immediate predecessor's hash. Frames at or below a fixed
+  Hamming-distance threshold are marked as duplicates of their
+  predecessor. For adjacent pairs that fall in a borderline
+  pHash-distance band, SSIM is computed on the grayscale frames and a
+  pair is promoted to a duplicate when SSIM is at or above a fixed
+  threshold. Every frame is also passed through Tesseract OCR; the
+  whitespace-normalized text is stored per frame and a `text_novelty`
+  score (1 minus a `difflib` similarity ratio against the predecessor's
+  text) is recorded as an additional signal. OCR does not influence
+  `duplicate_of`. Results are written to `frame_scores.json`.
 
 Both slices are opt-in: `recap run` continues to execute the Phase 1
 stages only. Run `recap scenes --job <path>` after `recap run` (or after
 `recap normalize`) to produce the Stage 5 artifacts, then
-`recap dedupe --job <path>` to produce `frame_scores.json`. The
-remaining Phase 2 work (Tesseract OCR novelty scoring) is not yet
-implemented.
+`recap dedupe --job <path>` to produce `frame_scores.json`. All
+checklist items in `TASKS.md` Phase 2 are now implemented; remaining
+target-architecture work (transcript-window alignment, OpenCLIP
+similarity, chaptering, VLM verification, export formats) belongs to
+Phase 3 and Phase 4.
 
 ## Running Phase 1 locally
 
@@ -85,6 +91,7 @@ Requirements:
 
 - Python 3.10, 3.11, 3.12, or 3.13
 - `ffmpeg` and `ffprobe` on PATH
+- `tesseract` on PATH (only required for `recap dedupe`)
 - Internet access on first run (downloads a faster-whisper model)
 
 > **Python version note.** `faster-whisper` depends on `ctranslate2`, which as of
@@ -130,9 +137,12 @@ Per-stage commands (useful for re-running a single stage, or resuming):
 
 `recap scenes` is the Stage 5 (Phase 2) entry point and is not invoked
 by `recap run`. It writes `scenes.json` and `candidate_frames/`.
-`recap dedupe` is the pHash + SSIM duplicate-marking slice and is also
-not invoked by `recap run`; it reads `scenes.json` plus the JPEGs in
-`candidate_frames/` and writes `frame_scores.json`.
+`recap dedupe` is the pHash + SSIM duplicate-marking and Tesseract OCR
+novelty-scoring slice and is also not invoked by `recap run`; it reads
+`scenes.json` plus the JPEGs in `candidate_frames/` and writes
+`frame_scores.json`. It requires the system `tesseract` binary
+(`brew install tesseract` on macOS, `apt-get install tesseract-ocr` on
+Debian/Ubuntu).
 
 Stages skip work when their artifacts already exist. Pass `--force` to
 recompute a stage.

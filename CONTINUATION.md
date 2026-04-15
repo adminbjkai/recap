@@ -7,10 +7,11 @@ system does and produces, read `HANDOFF.md`.
 ## Current state
 
 - Phase 1 of Recap is implemented, audited, hardened, and closed out.
-- Two Phase 2 slices are implemented as opt-in subcommands, in order:
-  Stage 5 candidate frame extraction (`recap scenes`) and
-  pHash + SSIM duplicate marking (`recap dedupe`). `recap run` itself
-  remains Phase 1 only.
+- Two Phase 2 opt-in entry points are implemented: Stage 5 candidate
+  frame extraction (`recap scenes`) and the combined pHash + SSIM
+  duplicate marking with Tesseract OCR novelty scoring
+  (`recap dedupe`). Every item in the `TASKS.md` Phase 2 checklist is
+  ticked. `recap run` itself remains Phase 1 only.
 - No other Phase 2+ scaffolding, stubs, abstractions, or configuration
   exist.
 - `HANDOFF.md` is the definitive closeout document. It reflects the code
@@ -27,21 +28,25 @@ Phase 1:
   `recap/stages/transcribe.py`)
 - Stage 8 — Basic Markdown assembly (`report.md`)
 
-Phase 2 (partial):
+Phase 2 (checklist complete):
 
 - Stage 5 — Candidate frame extraction (`scenes.json`,
   `candidate_frames/`, opt-in via `recap scenes --job <path>`, with a
   single-scene full-video fallback when `ContentDetector` finds no cuts)
-- pHash + SSIM duplicate marking (`frame_scores.json`, opt-in via
-  `recap dedupe --job <path>`; compares each frame to its immediate
-  predecessor using Hamming distance on ImageHash pHashes, and resolves
-  borderline pairs with `skimage.metrics.structural_similarity` on
-  grayscale frames; all thresholds and the SSIM distance band are fixed
-  code-level constants)
+- pHash + SSIM duplicate marking with Tesseract OCR novelty scoring
+  (`frame_scores.json`, opt-in via `recap dedupe --job <path>`;
+  compares each frame to its immediate predecessor using Hamming
+  distance on ImageHash pHashes, resolves borderline pairs with
+  `skimage.metrics.structural_similarity` on grayscale frames, and
+  stores per-frame `ocr_text` plus a `difflib`-based `text_novelty`
+  score against the predecessor's text; all thresholds and the SSIM
+  distance band are fixed code-level constants; OCR does not
+  influence `duplicate_of`)
 
-Stages 4 and 7 are deliberately absent. Stage 6 is partially
-implemented (pHash + SSIM shipped); the only remaining Stage 6 /
-Phase 2 work is Tesseract OCR novelty scoring.
+Stages 4 and 7 are deliberately absent. Stage 6 is complete for the
+Phase 2 checklist (pHash, SSIM, and OCR all shipped). The broader
+target-architecture Stage 6 in the brief also calls for transcript-
+window alignment and OpenCLIP similarity; those remain Phase 3 work.
 
 ## Binding sources of truth
 
@@ -90,12 +95,13 @@ task runner is wired up.
 ## Phase discipline (the rule)
 
 No session may jump ahead of the approved phase. Today the approved
-work is Phase 1 (complete) plus two Phase 2 slices (complete):
-Stage 5 candidate frame extraction and pHash + SSIM duplicate marking.
-Any other Phase 2/3/4 work — chaptering, OCR, OpenCLIP semantic
-alignment, VLM verification, DOCX/HTML/Notion export, WhisperX, queues,
-workers, plugin systems — stays out until the next chunk is explicitly
-approved.
+work is Phase 1 (complete) plus the full Phase 2 checklist (complete):
+Stage 5 candidate frame extraction and the combined pHash + SSIM
+duplicate marking with Tesseract OCR novelty scoring. Any Phase 3/4
+work — chaptering, transcript-window alignment, OpenCLIP semantic
+alignment, VLM verification, DOCX/HTML/Notion export, WhisperX,
+queues, workers, plugin systems — stays out until the next chunk is
+explicitly approved.
 
 If a proposed change requires scope not documented in `MASTER_BRIEF.md`,
 stop and raise it for a product decision instead of inventing scope.
@@ -106,8 +112,8 @@ stop and raise it for a product decision instead of inventing scope.
    authoritative.
 2. Read `HANDOFF.md` to confirm what is actually on disk.
 3. Verify the environment (`python3.12 -m venv .venv`, `pip install -r
-   requirements.txt`, `ffmpeg`/`ffprobe` on PATH; Python 3.14 is not
-   supported).
+   requirements.txt`, `ffmpeg`/`ffprobe` on PATH, `tesseract` on PATH
+   when exercising `recap dedupe`; Python 3.14 is not supported).
 4. Run one sample through the Phase 1 pipeline to confirm the repo is
    still green before planning any change (see the next section).
 5. With Codex, decide the next scoped chunk and confirm it fits the
@@ -128,10 +134,11 @@ file from it via `--source`. To confirm a clean baseline end-to-end:
 A new job directory is created under `jobs/<job_id>/` with the Phase 1
 artifacts listed in `HANDOFF.md`. Re-running the same command with
 `--job jobs/<job_id>` exercises restartability — completed stages should
-short-circuit. To exercise the Phase 2 slices on the same job, run
-`recap scenes --job jobs/<job_id>` followed by
-`recap dedupe --job jobs/<job_id>` (and again to confirm each skip
-path, or with `--force` to confirm recompute).
+short-circuit. To exercise the Phase 2 entry points on the same job,
+run `recap scenes --job jobs/<job_id>` followed by
+`recap dedupe --job jobs/<job_id>` (the latter requires `tesseract` on
+PATH). Re-run each to confirm the skip path, or pass `--force` to
+confirm recompute.
 
 ## Next-session checklist
 

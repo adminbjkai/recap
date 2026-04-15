@@ -9,6 +9,7 @@ dependencies = [
     "ImageHash>=4.3.1",
     "Pillow>=10.0.0",
     "scikit-image>=0.22",
+    "pytesseract>=0.3.10",
 ]
 
 [project.scripts]
