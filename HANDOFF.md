@@ -1,7 +1,8 @@
-# Recap — Phase 1 Handoff (+ Stage 5 slice)
+# Recap — Phase 1 Handoff (+ Stage 5 and pHash slices)
 
-This document closes out Phase 1 of Recap and records the first approved
-Phase 2 slice (Stage 5 only). It reflects the current code in this
+This document closes out Phase 1 of Recap and records the Phase 2 slices
+approved and implemented so far: Stage 5 candidate frame extraction and
+pHash-based duplicate marking. It reflects the current code in this
 repository — not a plan, not a roadmap. Anything not listed here is
 explicitly deferred.
 
@@ -22,11 +23,13 @@ Phase 1 implements only the "reliable core" stages from the brief:
 - **Stage 8 — Basic Markdown assembly.** Read real artifacts and write
   `report.md` with media summary and timestamped transcript segments.
 
-Stages 4, 6, and 7 from the brief are **not** implemented. No
-chaptering, pHash/SSIM, OCR, OpenCLIP, or VLM code exists in the
-repository.
+Stage 5 is implemented as the first approved Phase 2 slice (see the
+next section). Stage 6 is **partially** implemented via the pHash
+duplicate-marking slice; SSIM and OCR remain unimplemented. Stages 4
+and 7 from the brief are **not** implemented. No chaptering, SSIM,
+OCR, OpenCLIP, or VLM code exists in the repository.
 
-## What the Stage 5 slice includes
+## What the Phase 2 slices include
 
 - **Stage 5 — Candidate frame extraction.** Run PySceneDetect's
   `ContentDetector` against `analysis.mp4`, write `scenes.json` (scene
@@ -35,11 +38,21 @@ repository.
   frame per scene into `candidate_frames/`. If the detector finds no
   cuts, a single full-video fallback scene is written so there is always
   one candidate frame.
+- **pHash duplicate marking.** Read `scenes.json` and the JPEGs in
+  `candidate_frames/`, compute an ImageHash `phash` per frame (hash
+  size 8 → 64-bit hash), and compare each frame to its immediate
+  predecessor with Hamming distance. Frames at or below a fixed
+  code-level threshold are marked as duplicates of their predecessor.
+  Results are written to `frame_scores.json` with per-frame entries
+  (`scene_index`, `frame_file`, `phash`, `duplicate_of`,
+  `hamming_distance`) and top-level metadata (`video`, `metric=phash`,
+  `hash_size`, `duplicate_threshold`, `frame_count`, `duplicate_count`).
+  No frames are deleted, renamed, or moved.
 
-Stage 5 is opt-in. `recap run` continues to execute the Phase 1 stages
-only. Stage 5 runs via `recap scenes --job <path>`. The remaining
-Phase 2 work (pHash, SSIM, OCR, `frame_scores.json`) is not yet
-implemented.
+Both slices are opt-in. `recap run` continues to execute the Phase 1
+stages only. Stage 5 runs via `recap scenes --job <path>`; pHash
+duplicate marking runs via `recap dedupe --job <path>`. The remaining
+Phase 2 work (SSIM, OCR) is not yet implemented.
 
 ## Running Phase 1 locally
 
@@ -55,6 +68,7 @@ python3.12 -m venv .venv
 .venv/bin/python -m recap normalize  --job jobs/<job_id>
 .venv/bin/python -m recap transcribe --job jobs/<job_id> --model small
 .venv/bin/python -m recap scenes     --job jobs/<job_id>
+.venv/bin/python -m recap dedupe     --job jobs/<job_id>
 .venv/bin/python -m recap assemble   --job jobs/<job_id>
 .venv/bin/python -m recap status     --job jobs/<job_id>
 ```
@@ -90,12 +104,14 @@ Phase 1 run against a sample:
   (`brew install ffmpeg` on macOS, `apt-get install ffmpeg` on
   Debian/Ubuntu). The stages resolve these via `shutil.which` and raise a
   clear install hint if either is missing.
-- **Python packages**: `faster-whisper>=1.0.3` and
-  `scenedetect[opencv]>=0.6.4` (both pinned in `requirements.txt` and
-  `pyproject.toml`). First transcription downloads the requested Whisper
-  model (default `small`) from the internet; subsequent runs use the
-  local cache. PySceneDetect ships its own opencv-python wheel via the
-  `[opencv]` extra and runs entirely offline.
+- **Python packages**: `faster-whisper>=1.0.3`,
+  `scenedetect[opencv]>=0.6.4`, `ImageHash>=4.3.1`, and `Pillow>=10.0.0`
+  (all pinned in `requirements.txt` and `pyproject.toml`). First
+  transcription downloads the requested Whisper model (default `small`)
+  from the internet; subsequent runs use the local cache. PySceneDetect
+  ships its own opencv-python wheel via the `[opencv]` extra and runs
+  entirely offline. ImageHash pulls in Pillow, NumPy, SciPy, and
+  PyWavelets; all run locally.
 - **Compute**: the stage instantiates `WhisperModel(model, device="cpu",
   compute_type="int8")`. No GPU configuration is wired up.
 
@@ -130,9 +146,20 @@ Running `recap scenes --job <path>` adds the Stage 5 outputs:
   `end_frame`, `midpoint_seconds`, and `frame_file`.
 - `candidate_frames/scene-NNN.jpg` — one representative JPEG per scene.
 
-The `stages.scenes` entry on `job.json` appears the first time
-`recap scenes` runs (it is intentionally not pre-populated for new
-jobs, so the rollup is not held back by an unmet Phase 2 obligation).
+Running `recap dedupe --job <path>` adds the pHash slice output:
+
+- `frame_scores.json` — top-level `video`, `scenes_source`,
+  `frames_dir`, `metric` (`phash`), `hash_size`, `duplicate_threshold`,
+  `frame_count`, `duplicate_count`, and a `frames` list with one entry
+  per scene: `scene_index`, `frame_file`, `phash`,
+  `hamming_distance` (null for the first frame, integer otherwise), and
+  `duplicate_of` (predecessor `scene_index` when `hamming_distance` is
+  at or below the threshold, else null).
+
+The `stages.scenes` and `stages.dedupe` entries on `job.json` appear
+the first time each stage runs (they are intentionally not pre-populated
+for new jobs, so the rollup is not held back by unmet Phase 2
+obligations).
 
 Job directories are created under `./jobs/` by default (the directory is
 in `.gitignore`). Job IDs have the form `YYYYMMDD-HHMMSS-<8hex>`.
@@ -155,15 +182,24 @@ transcript segments — whatever is actually on disk.
   refuses and exits 2 with a message naming both sources. Re-running with
   `--force` replaces the original and invalidates the downstream artifacts
   (`metadata.json`, `analysis.mp4`, `audio.wav`, `transcript.json`,
-  `transcript.srt`, `scenes.json`, `report.md`, and the
-  `candidate_frames/` directory) and resets the `normalize`,
-  `transcribe`, `scenes`, and `assemble` stage entries to `pending`, so
-  the next `recap run` (plus an explicit `recap scenes` if Stage 5 was
-  in use) regenerates them cleanly from the new source.
+  `transcript.srt`, `scenes.json`, `frame_scores.json`, `report.md`,
+  and the `candidate_frames/` directory) and resets the `normalize`,
+  `transcribe`, `scenes`, `dedupe`, and `assemble` stage entries to
+  `pending`, so the next `recap run` (plus an explicit `recap scenes`
+  and `recap dedupe` if the Phase 2 slices were in use) regenerates them
+  cleanly from the new source.
 - **Stage 5 restart.** `recap scenes` skips when `scenes.json` is
   present and every `frame_file` it lists is on disk; otherwise it
   recomputes. `recap scenes --force` removes `scenes.json` and the
   `candidate_frames/` directory in full before re-running.
+- **pHash dedupe restart.** `recap dedupe` skips when
+  `frame_scores.json` already matches the current `scenes.json` and
+  `candidate_frames/` — same metric/hash-size/threshold, same scene
+  indices and frame files, every frame file still on disk. Any drift
+  triggers a recompute. `recap dedupe --force` removes
+  `frame_scores.json` before recomputing. Missing `scenes.json` or
+  `candidate_frames/`, or any scene whose `frame_file` is absent from
+  disk, exits 2 with a one-line `error: ...` message.
 - Failures are recorded on the failing stage with `status: failed` and an
   `error` string, and surfaced as the top-level `status`/`error` on
   `job.json`. Re-running the command (or a specific subcommand) retries
@@ -230,8 +266,9 @@ indirection is in place or planned for Phase 1 — and per the docstring in
 Per `AGENTS.md`, `DECISIONS.md`, and `TASKS.md`, the following belong to
 later phases and are **not** present in the current codebase:
 
-- Remaining Phase 2: pHash deduplication, SSIM checks, Tesseract OCR,
-  and `frame_scores.json`.
+- Remaining Phase 2: SSIM borderline checks and Tesseract OCR novelty
+  scoring (both would extend `frame_scores.json` with additional
+  per-frame fields).
 - Phase 3: chapter proposal from transcript/scene fusion
   (`chapter_candidates.json`), fuzzy transcript-window alignment,
   OpenCLIP similarity scoring, and the screenshot keep/reject rules.
@@ -245,14 +282,16 @@ These names are preserved in the binding docs and the artifact layout
 section of `ARCHITECTURE.md`, but no code, interface, stub, or
 configuration for any of them exists in the repo.
 
-## Phase 1 closeout (+ Stage 5 slice)
+## Phase 1 closeout (+ Phase 2 slices)
 
 Phase 1 is complete, audited, hardened, and validated end-to-end on a
 real speech sample. The required artifacts are produced, the pipeline
 is restartable from disk, `job.json` reflects per-stage and overall
-state, and the output remains Markdown-first. The first approved
-Phase 2 slice — Stage 5 candidate frame extraction — is implemented as
-an opt-in `recap scenes` subcommand and validated against both a
-multi-scene and a zero-scene sample. No further Phase 2+ scaffolding
-has been introduced. Further work should begin a separate, explicitly
-approved Phase 2 chunk.
+state, and the output remains Markdown-first. Two Phase 2 slices are
+also implemented as opt-in subcommands: Stage 5 candidate frame
+extraction (`recap scenes` → `scenes.json` + `candidate_frames/`) and
+pHash duplicate marking (`recap dedupe` → `frame_scores.json`). Both
+have been validated against a multi-scene sample and the single-scene
+fallback, including skip-on-rerun and `--force` recompute. No further
+Phase 2+ scaffolding has been introduced. Further work should begin a
+separate, explicitly approved Phase 2 chunk.

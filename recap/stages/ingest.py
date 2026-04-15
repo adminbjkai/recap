@@ -29,9 +29,10 @@ _DOWNSTREAM_ARTIFACTS = (
     "transcript_json",
     "transcript_srt",
     "scenes_json",
+    "frame_scores_json",
     "report_md",
 )
-_DOWNSTREAM_STAGES = ("normalize", "transcribe", "scenes", "assemble")
+_DOWNSTREAM_STAGES = ("normalize", "transcribe", "scenes", "dedupe", "assemble")
 
 
 def _invalidate_downstream(paths: JobPaths) -> None:

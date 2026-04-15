@@ -56,19 +56,24 @@ Phase 1 delivers the reliable core:
 
 ## Phase 2 (in progress)
 
-Phase 2 adds smart visuals on top of Phase 1. The first slice is
-implemented:
+Phase 2 adds smart visuals on top of Phase 1. The slices implemented so
+far are:
 
 - Stage 5 — PySceneDetect scene boundaries (`scenes.json`) and one
   representative frame per scene into `candidate_frames/`. If the
   detector finds no cuts, a single full-video fallback scene is written
   so there is always one candidate frame.
+- pHash duplicate marking — for each candidate frame, compute a
+  perceptual hash with ImageHash and compare against the immediate
+  predecessor's hash. Frames at or below a fixed Hamming-distance
+  threshold are marked as duplicates of their predecessor. Results are
+  written to `frame_scores.json`.
 
-Stage 5 is opt-in: `recap run` continues to execute the Phase 1 stages
-only. Run `recap scenes --job <path>` after `recap run` (or after
-`recap normalize`) to produce the Stage 5 artifacts. The remaining
-Phase 2 work (pHash, SSIM, OCR, `frame_scores.json`) is not yet
-implemented.
+Both slices are opt-in: `recap run` continues to execute the Phase 1
+stages only. Run `recap scenes --job <path>` after `recap run` (or after
+`recap normalize`) to produce the Stage 5 artifacts, then
+`recap dedupe --job <path>` to produce `frame_scores.json`. The
+remaining Phase 2 work (SSIM, OCR) is not yet implemented.
 
 ## Running Phase 1 locally
 
@@ -114,12 +119,16 @@ Per-stage commands (useful for re-running a single stage, or resuming):
 .venv/bin/python -m recap normalize  --job jobs/<job_id>
 .venv/bin/python -m recap transcribe --job jobs/<job_id> --model small
 .venv/bin/python -m recap scenes     --job jobs/<job_id>
+.venv/bin/python -m recap dedupe     --job jobs/<job_id>
 .venv/bin/python -m recap assemble   --job jobs/<job_id>
 .venv/bin/python -m recap status     --job jobs/<job_id>
 ```
 
 `recap scenes` is the Stage 5 (Phase 2) entry point and is not invoked
 by `recap run`. It writes `scenes.json` and `candidate_frames/`.
+`recap dedupe` is the pHash duplicate-marking slice and is also not
+invoked by `recap run`; it reads `scenes.json` plus the JPEGs in
+`candidate_frames/` and writes `frame_scores.json`.
 
 Stages skip work when their artifacts already exist. Pass `--force` to
 recompute a stage.

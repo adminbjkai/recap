@@ -7,9 +7,10 @@ system does and produces, read `HANDOFF.md`.
 ## Current state
 
 - Phase 1 of Recap is implemented, audited, hardened, and closed out.
-- The first approved Phase 2 slice — Stage 5 candidate frame extraction
-  — is implemented as an opt-in `recap scenes` subcommand. `recap run`
-  itself remains Phase 1 only.
+- Two Phase 2 slices are implemented as opt-in subcommands, in order:
+  Stage 5 candidate frame extraction (`recap scenes`) and pHash
+  duplicate marking (`recap dedupe`). `recap run` itself remains Phase 1
+  only.
 - No other Phase 2+ scaffolding, stubs, abstractions, or configuration
   exist.
 - `HANDOFF.md` is the definitive closeout document. It reflects the code
@@ -31,8 +32,12 @@ Phase 2 (partial):
 - Stage 5 — Candidate frame extraction (`scenes.json`,
   `candidate_frames/`, opt-in via `recap scenes --job <path>`, with a
   single-scene full-video fallback when `ContentDetector` finds no cuts)
+- pHash duplicate marking (`frame_scores.json`, opt-in via
+  `recap dedupe --job <path>`; compares each frame to its immediate
+  predecessor using Hamming distance on ImageHash pHashes with a fixed
+  code-level threshold)
 
-Stages 4, 6, and 7 are deliberately absent.
+Stages 4, 6 (remaining SSIM / OCR work), and 7 are deliberately absent.
 
 ## Binding sources of truth
 
@@ -81,11 +86,12 @@ task runner is wired up.
 ## Phase discipline (the rule)
 
 No session may jump ahead of the approved phase. Today the approved
-work is Phase 1 (complete) plus the Stage 5 candidate-frame slice of
-Phase 2 (complete). Any other Phase 2/3/4 work — chaptering,
-pHash/SSIM/OCR, `frame_scores.json`, OpenCLIP, VLM verification,
-DOCX/HTML/Notion export, WhisperX, queues, workers, plugin systems —
-stays out until the next chunk is explicitly approved.
+work is Phase 1 (complete) plus two Phase 2 slices (complete):
+Stage 5 candidate frame extraction and pHash duplicate marking. Any
+other Phase 2/3/4 work — chaptering, SSIM, OCR, OpenCLIP semantic
+alignment, VLM verification, DOCX/HTML/Notion export, WhisperX, queues,
+workers, plugin systems — stays out until the next chunk is explicitly
+approved.
 
 If a proposed change requires scope not documented in `MASTER_BRIEF.md`,
 stop and raise it for a product decision instead of inventing scope.
@@ -118,9 +124,10 @@ file from it via `--source`. To confirm a clean baseline end-to-end:
 A new job directory is created under `jobs/<job_id>/` with the Phase 1
 artifacts listed in `HANDOFF.md`. Re-running the same command with
 `--job jobs/<job_id>` exercises restartability — completed stages should
-short-circuit. To exercise Stage 5 on the same job, run
-`recap scenes --job jobs/<job_id>` (and again to confirm the skip path,
-or with `--force` to confirm recompute).
+short-circuit. To exercise the Phase 2 slices on the same job, run
+`recap scenes --job jobs/<job_id>` followed by
+`recap dedupe --job jobs/<job_id>` (and again to confirm each skip
+path, or with `--force` to confirm recompute).
 
 ## Next-session checklist
 
