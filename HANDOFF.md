@@ -1,16 +1,17 @@
-# Recap — Phase 1 Handoff (+ Phase 2 checklist complete, + first Phase 3 slice)
+# Recap — Phase 1 Handoff (+ Phase 2 checklist complete, + first two Phase 3 slices)
 
 This document closes out Phase 1 of Recap and records the Phase 2
 slices approved and implemented so far: Stage 5 candidate frame
 extraction, and the combined pHash + SSIM duplicate marking with
 Tesseract OCR novelty scoring. All checklist items in
-`TASKS.md` Phase 2 are ticked. The first Phase 3 slice is also
+`TASKS.md` Phase 2 are ticked. The first two Phase 3 slices are also
 implemented: transcript-window alignment per candidate frame
-(`recap window` → `frame_windows.json`). The remainder of Phase 3
-(chaptering, OpenCLIP similarity, keep/reject rules) and all of
-Phase 4 (VLM verification, export formats) remain out of scope. This
-file reflects the current code in this repository — not a plan, not a
-roadmap. Anything not listed here is explicitly deferred.
+(`recap window` → `frame_windows.json`) and OpenCLIP frame/text cosine
+similarity (`recap similarity` → `frame_similarities.json`). The
+remainder of Phase 3 (chaptering, ranking, keep/reject rules) and all
+of Phase 4 (VLM verification, export formats) remain out of scope.
+This file reflects the current code in this repository — not a plan,
+not a roadmap. Anything not listed here is explicitly deferred.
 
 Binding references: `MASTER_BRIEF.md`, `ARCHITECTURE.md`, `TASKS.md`,
 `DECISIONS.md`, `AGENTS.md`, `README.md`, `PRD.md`.
@@ -107,9 +108,46 @@ implemented.
 
 This Phase 3 slice is opt-in. `recap run` continues to execute the
 Phase 1 stages only. Transcript-window alignment runs via
-`recap window --job <path>`. The remaining Phase 3 checklist items
-(chapter proposal, OpenCLIP similarity, keep/reject rules) and all of
-Phase 4 remain deferred.
+`recap window --job <path>`.
+
+## What the second Phase 3 slice includes
+
+- **OpenCLIP frame/text similarity.** Read `scenes.json`,
+  `frame_windows.json`, and the JPEGs in `candidate_frames/` and write
+  `frame_similarities.json`. For each candidate frame that has
+  non-empty `window_text`, compute the cosine similarity between the
+  OpenCLIP image embedding of the frame and the OpenCLIP text
+  embedding of the window text, each L2-normalized, under
+  `torch.no_grad()` with `model.eval()`. Frames with empty
+  `window_text` record `clip_similarity: null`. The model (`MODEL =
+  "ViT-B-32"`, `PRETRAINED = "openai"`), device (`DEVICE = "cpu"`),
+  and image preprocessing (`IMAGE_PREPROCESS = "open_clip.default"`,
+  the model's shipped transforms) are fixed code-level constants in
+  `recap/stages/similarity.py`. `ViT-B-32/openai` was trained with
+  QuickGELU activations, so the stage pins the activation with
+  `force_quick_gelu=True` inside
+  `open_clip.create_model_and_transforms`; this is a correctness fix
+  for this specific (model, pretrained) pair, not a tunable knob.
+  None of the constants are exposed as CLI flags, env vars, or
+  config. The stage is marking-only: it does not threshold, rank,
+  select, keep, reject, or mutate any frame, and it does not touch
+  `transcript.json`, `scenes.json`, `frame_windows.json`,
+  `frame_scores.json`, `candidate_frames/`, or `report.md`. Per-frame
+  entries are `scene_index`, `frame_file`, `midpoint_seconds`,
+  `window_start`, `window_end`, `window_text`, `has_window_text`,
+  `clip_similarity`; top-level keys are `video`, `frames_dir`,
+  `windows_source`, `scenes_source`, `model`, `pretrained`, `device`,
+  `image_preprocess`, `frame_count`, `frames_with_window_text_count`,
+  `frames_scored_count`, `frames`. `clip_similarity` is a plain
+  Python float in `[-1.0, 1.0]` when `has_window_text` is true, else
+  `null`. `frames_scored_count` equals the count of non-null
+  `clip_similarity` values.
+
+This Phase 3 slice is opt-in. `recap run` continues to execute the
+Phase 1 stages only. OpenCLIP similarity runs via
+`recap similarity --job <path>`. The remaining Phase 3 checklist items
+(chapter proposal, ranking, keep/reject rules) and all of Phase 4
+remain deferred.
 
 ## Running Phase 1 locally
 
@@ -127,6 +165,7 @@ python3.12 -m venv .venv
 .venv/bin/python -m recap scenes     --job jobs/<job_id>
 .venv/bin/python -m recap dedupe     --job jobs/<job_id>
 .venv/bin/python -m recap window     --job jobs/<job_id>
+.venv/bin/python -m recap similarity --job jobs/<job_id>
 .venv/bin/python -m recap assemble   --job jobs/<job_id>
 .venv/bin/python -m recap status     --job jobs/<job_id>
 ```
@@ -166,15 +205,19 @@ Phase 1 run against a sample:
   raise a clear install hint if any is missing.
 - **Python packages**: `faster-whisper>=1.0.3`,
   `scenedetect[opencv]>=0.6.4`, `ImageHash>=4.3.1`, `Pillow>=10.0.0`,
-  `scikit-image>=0.22`, and `pytesseract>=0.3.10` (all pinned in
-  `requirements.txt` and `pyproject.toml`). First transcription
-  downloads the requested Whisper model (default `small`) from the
-  internet; subsequent runs use the local cache. PySceneDetect ships
-  its own opencv-python wheel via the `[opencv]` extra and runs
-  entirely offline. ImageHash pulls in Pillow, NumPy, SciPy, and
-  PyWavelets; scikit-image pulls in imageio, tifffile, networkx, and
-  lazy-loader; pytesseract is a thin wrapper around the system
-  `tesseract` binary. All run locally.
+  `scikit-image>=0.22`, `pytesseract>=0.3.10`, `open_clip_torch>=2.24`,
+  and `torch>=2.1` (all pinned in `requirements.txt` and
+  `pyproject.toml`). First transcription downloads the requested
+  Whisper model (default `small`) from the internet; subsequent runs
+  use the local cache. PySceneDetect ships its own opencv-python wheel
+  via the `[opencv]` extra and runs entirely offline. ImageHash pulls
+  in Pillow, NumPy, SciPy, and PyWavelets; scikit-image pulls in
+  imageio, tifffile, networkx, and lazy-loader; pytesseract is a thin
+  wrapper around the system `tesseract` binary. `open_clip_torch` +
+  `torch` are required only for `recap similarity`; on its first run
+  the stage downloads the OpenCLIP `ViT-B-32` OpenAI weights
+  (~350 MB) into the local cache and subsequent runs are offline. All
+  run locally.
 - **Compute**: the stage instantiates `WhisperModel(model, device="cpu",
   compute_type="int8")`. No GPU configuration is wired up.
 
@@ -223,6 +266,21 @@ output:
   (whitespace-normalized concatenation of the overlapping segments'
   text joined with single spaces).
 
+Running `recap similarity --job <path>` adds the second Phase 3 slice
+output:
+
+- `frame_similarities.json` — top-level `video`, `frames_dir`
+  (`candidate_frames`), `windows_source` (`frame_windows.json`),
+  `scenes_source` (`scenes.json`), `model` (`ViT-B-32`), `pretrained`
+  (`openai`), `device` (`cpu`), `image_preprocess`
+  (`open_clip.default`), `frame_count`,
+  `frames_with_window_text_count`, `frames_scored_count`, and a
+  `frames` list with one entry per scene: `scene_index`, `frame_file`,
+  `midpoint_seconds`, `window_start`, `window_end`, `window_text`,
+  `has_window_text` (bool), and `clip_similarity` (plain Python
+  float in `[-1.0, 1.0]` when `has_window_text` is true; `null`
+  otherwise).
+
 Running `recap dedupe --job <path>` adds the pHash + SSIM + OCR slice
 output:
 
@@ -243,10 +301,10 @@ output:
   `ssim_duplicate_threshold`; else null). OCR does not influence
   `duplicate_of`.
 
-The `stages.scenes`, `stages.dedupe`, and `stages.window` entries on
-`job.json` appear the first time each stage runs (they are intentionally
-not pre-populated for new jobs, so the rollup is not held back by unmet
-Phase 2 or Phase 3 obligations).
+The `stages.scenes`, `stages.dedupe`, `stages.window`, and
+`stages.similarity` entries on `job.json` appear the first time each
+stage runs (they are intentionally not pre-populated for new jobs, so
+the rollup is not held back by unmet Phase 2 or Phase 3 obligations).
 
 Job directories are created under `./jobs/` by default (the directory is
 in `.gitignore`). Job IDs have the form `YYYYMMDD-HHMMSS-<8hex>`.
@@ -270,12 +328,13 @@ transcript segments — whatever is actually on disk.
   `--force` replaces the original and invalidates the downstream artifacts
   (`metadata.json`, `analysis.mp4`, `audio.wav`, `transcript.json`,
   `transcript.srt`, `scenes.json`, `frame_scores.json`,
-  `frame_windows.json`, `report.md`, and the `candidate_frames/`
-  directory) and resets the `normalize`, `transcribe`, `scenes`,
-  `dedupe`, `window`, and `assemble` stage entries to `pending`, so the
-  next `recap run` (plus an explicit `recap scenes`, `recap dedupe`,
-  and `recap window` if those slices were in use) regenerates them
-  cleanly from the new source.
+  `frame_windows.json`, `frame_similarities.json`, `report.md`, and
+  the `candidate_frames/` directory) and resets the `normalize`,
+  `transcribe`, `scenes`, `dedupe`, `window`, `similarity`, and
+  `assemble` stage entries to `pending`, so the next `recap run`
+  (plus an explicit `recap scenes`, `recap dedupe`, `recap window`,
+  and `recap similarity` if those slices were in use) regenerates
+  them cleanly from the new source.
 - **Stage 5 restart.** `recap scenes` skips when `scenes.json` is
   present and every `frame_file` it lists is on disk; otherwise it
   recomputes. `recap scenes --force` removes `scenes.json` and the
@@ -291,6 +350,29 @@ transcript segments — whatever is actually on disk.
   file, a missing `segments` list on the transcript, a missing or empty
   `scenes` list, or a scene entry missing `index`, `frame_file`, or
   `midpoint_seconds` exits 2 with a one-line `error: ...` message.
+- **`recap similarity` restart.** `recap similarity` skips when
+  `frame_similarities.json` already matches the current `scenes.json`
+  and `frame_windows.json` — same `model` (`ViT-B-32`), `pretrained`
+  (`openai`), `device` (`cpu`), `image_preprocess`
+  (`open_clip.default`), `windows_source` (`frame_windows.json`),
+  `scenes_source` (`scenes.json`), the same ordered
+  `(scene_index, frame_file, midpoint_seconds)` triples as the
+  current `scenes.json`, and — for every frame — the same
+  `window_start`, `window_end`, `window_text`, and
+  `has_window_text == bool(window_text)` as the current
+  `frame_windows.json`. Any drift in those per-frame window fields
+  (not just the scene triples) triggers a recompute.
+  `recap similarity --force` removes `frame_similarities.json`
+  before recomputing. Missing `scenes.json`, missing
+  `frame_windows.json`, missing `candidate_frames/`, malformed JSON
+  in either input, any scene whose `frame_file` is absent from disk,
+  empty `scenes`, a duplicate `scene_index` in `frame_windows.json`,
+  a `frame_windows.json` entry missing `window_start`, `window_end`,
+  or `window_text`, a non-string `window_text`, or a
+  `frame_windows.json` entry whose `frame_file` or
+  `midpoint_seconds` disagrees with `scenes.json` for the same
+  `scene_index` exits 2 with a one-line `error: ...` message and
+  does not leave a partial `frame_similarities.json` on disk.
 - **`recap dedupe` restart.** `recap dedupe` skips when
   `frame_scores.json` already matches the current `scenes.json` and
   `candidate_frames/` — same metric (`phash+ssim+ocr`), hash size,
@@ -372,10 +454,11 @@ Per `AGENTS.md`, `DECISIONS.md`, and `TASKS.md`, the following belong to
 later phases and are **not** present in the current codebase:
 
 - Phase 3: chapter proposal from transcript/scene fusion
-  (`chapter_candidates.json`), OpenCLIP similarity scoring, and the
-  screenshot keep/reject rules. Transcript-window alignment — the first
-  Phase 3 slice — is implemented (see above); the remaining Phase 3
-  bullets are not.
+  (`chapter_candidates.json`), per-chapter ranking fusion of
+  deduplication, OCR novelty, and semantic similarity, and the
+  screenshot keep/reject rules. Transcript-window alignment and
+  OpenCLIP frame/text similarity — the first two Phase 3 slices — are
+  implemented (see above); the remaining Phase 3 bullets are not.
 - Phase 4: optional VLM verification on finalists only
   (`selected_frames.json`), caption generation, chapter-aware Markdown
   assembly with embedded screenshots, and optional DOCX / HTML / Notion /
@@ -386,7 +469,7 @@ These names are preserved in the binding docs and the artifact layout
 section of `ARCHITECTURE.md`, but no code, interface, stub, or
 configuration for any of them exists in the repo.
 
-## Phase 1 closeout (+ Phase 2 checklist complete, + first Phase 3 slice)
+## Phase 1 closeout (+ Phase 2 checklist complete, + first two Phase 3 slices)
 
 Phase 1 is complete, audited, hardened, and validated end-to-end on a
 real speech sample. The required artifacts are produced, the pipeline
@@ -396,13 +479,17 @@ points are implemented: Stage 5 candidate frame extraction
 (`recap scenes` → `scenes.json` + `candidate_frames/`) and the combined
 pHash + SSIM duplicate marking with Tesseract OCR novelty scoring
 (`recap dedupe` → `frame_scores.json`). Every item in the `TASKS.md`
-Phase 2 checklist is now ticked. The first Phase 3 slice is also
+Phase 2 checklist is now ticked. The first two Phase 3 slices are also
 implemented: transcript-window alignment per candidate frame
 (`recap window` → `frame_windows.json`), a deterministic ±6 second
 window around each scene midpoint with the overlapping transcript
-segment ids and their concatenated text. All three opt-in entry points
-have been validated against a multi-scene sample and the single-scene
-fallback, including skip-on-rerun, `--force` recompute, and clean
+segment ids and their concatenated text; and OpenCLIP frame/text
+cosine similarity (`recap similarity` → `frame_similarities.json`)
+using a pinned `ViT-B-32 / openai` model on CPU with the model's
+shipped preprocessing. All four opt-in entry points have been
+validated against a multi-scene sample, including skip-on-rerun,
+`--force` recompute (similarity stable to `|Δ| = 0` across a
+`--force` re-run on the same machine), and clean
 `error: ... / exit 2` paths for missing or malformed inputs. No other
 Phase 3+ scaffolding has been introduced. Further work should begin a
 separate, explicitly approved Phase 3 chunk.

@@ -31,6 +31,7 @@ _DOWNSTREAM_ARTIFACTS = (
     "scenes_json",
     "frame_scores_json",
     "frame_windows_json",
+    "frame_similarities_json",
     "report_md",
 )
 _DOWNSTREAM_STAGES = (
@@ -39,6 +40,7 @@ _DOWNSTREAM_STAGES = (
     "scenes",
     "dedupe",
     "window",
+    "similarity",
     "assemble",
 )
 
@@ -75,7 +77,8 @@ def run(paths: JobPaths, source: Path, force: bool = False) -> Path:
             f"{existing.name} from {recorded_source!r}, but --source is "
             f"{source_str!r}. Re-run with --force to replace the source "
             "(this will also discard downstream analysis, audio, transcript, "
-            "scenes, candidate frames, frame scores, frame windows, and report)."
+            "scenes, candidate frames, frame scores, frame windows, frame "
+            "similarities, and report)."
         )
 
     if existing and not force:

@@ -73,6 +73,10 @@ class JobPaths:
     def frame_windows_json(self) -> Path:
         return self.root / "frame_windows.json"
 
+    @property
+    def frame_similarities_json(self) -> Path:
+        return self.root / "frame_similarities.json"
+
     def original(self, ext: str) -> Path:
         ext = ext.lstrip(".")
         return self.root / f"original.{ext}"

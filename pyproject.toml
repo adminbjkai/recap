@@ -10,6 +10,8 @@ dependencies = [
     "Pillow>=10.0.0",
     "scikit-image>=0.22",
     "pytesseract>=0.3.10",
+    "open_clip_torch>=2.24",
+    "torch>=2.1",
 ]
 
 [project.scripts]

@@ -56,16 +56,25 @@ Phase 1 delivers the reliable core:
 
 ## Phase 3 (in progress)
 
-Phase 3 adds semantic alignment on top of Phase 2. The first slice is
+Phase 3 adds semantic alignment on top of Phase 2. Two slices are
 implemented:
 
 - Transcript-window alignment — for each candidate frame, the
   transcript segments that overlap a fixed ±6 second window around the
   scene's `midpoint_seconds` are collected and their text is
   concatenated. Results are written to `frame_windows.json`. Run via
-  `recap window --job <path>` after `recap scenes`. The rest of Phase 3
-  (chapter proposal, OpenCLIP similarity, keep/reject rules) is not
-  implemented.
+  `recap window --job <path>` after `recap scenes`.
+- OpenCLIP frame/text similarity — for each candidate frame whose
+  `window_text` is non-empty, computes the cosine similarity between
+  the OpenCLIP image embedding of the JPEG and the OpenCLIP text
+  embedding of the window text. The model (`ViT-B-32` / `openai`),
+  device (`cpu`), and shipped image preprocessing are fixed code-level
+  constants. Results are written to `frame_similarities.json`. Run via
+  `recap similarity --job <path>` after `recap window`. First run
+  downloads the OpenCLIP `ViT-B-32` OpenAI weights (~350 MB) into the
+  local cache; subsequent runs are offline. `recap run` does not
+  invoke this stage. The rest of Phase 3 (chapter proposal, ranking,
+  keep/reject rules) is not implemented.
 
 ## Phase 2 (checklist complete)
 
@@ -145,6 +154,7 @@ Per-stage commands (useful for re-running a single stage, or resuming):
 .venv/bin/python -m recap scenes     --job jobs/<job_id>
 .venv/bin/python -m recap dedupe     --job jobs/<job_id>
 .venv/bin/python -m recap window     --job jobs/<job_id>
+.venv/bin/python -m recap similarity --job jobs/<job_id>
 .venv/bin/python -m recap assemble   --job jobs/<job_id>
 .venv/bin/python -m recap status     --job jobs/<job_id>
 ```
@@ -162,6 +172,14 @@ not invoked by `recap run`; it reads `transcript.json` and
 transcript window (±6 seconds around each scene midpoint) with the list
 of overlapping transcript segment ids and their concatenated text. It
 does not require any new system binaries or ML dependencies.
+`recap similarity` is the second Phase 3 slice and is also not invoked
+by `recap run`; it reads `scenes.json`, `frame_windows.json`, and the
+JPEGs in `candidate_frames/` and writes `frame_similarities.json` with
+per-frame OpenCLIP image/text cosine similarity (`clip_similarity` is
+`null` for frames whose `window_text` is empty). It requires the
+Python packages `open_clip_torch` and `torch`; first run downloads the
+OpenCLIP `ViT-B-32` OpenAI weights (~350 MB) into the local cache and
+subsequent runs are offline. No new system binaries are required.
 
 Stages skip work when their artifacts already exist. Pass `--force` to
 recompute a stage.
