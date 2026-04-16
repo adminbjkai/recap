@@ -12,14 +12,22 @@ system does and produces, read `HANDOFF.md`.
   duplicate marking with Tesseract OCR novelty scoring
   (`recap dedupe`). Every item in the `TASKS.md` Phase 2 checklist is
   ticked.
-- The first two Phase 3 slices are implemented: transcript-window
+- The first three Phase 3 slices are implemented: transcript-window
   alignment per candidate frame (`recap window` →
-  `frame_windows.json`, ±6 s fixed window around each scene midpoint)
-  and OpenCLIP frame/text cosine similarity (`recap similarity` →
+  `frame_windows.json`, ±6 s fixed window around each scene midpoint);
+  OpenCLIP frame/text cosine similarity (`recap similarity` →
   `frame_similarities.json`, pinned `ViT-B-32 / openai` on CPU with
-  the model's shipped preprocessing). The remaining Phase 3 bullets
-  (chapter proposal, per-chapter ranking, keep/reject rules) and all
-  of Phase 4 remain out of scope.
+  the model's shipped preprocessing); and a first chaptering slice
+  (`recap chapters` → `chapter_candidates.json`) that proposes
+  chapters from transcript pause gaps only (`PAUSE_SECONDS = 2.0`,
+  `MIN_CHAPTER_SECONDS = 30.0`, `SOURCE_SIGNAL = "pauses"`, all
+  pinned at the code level; chapters shorter than the minimum are
+  iteratively merged to avoid over-fragmentation). The chapters
+  slice is explicitly **not** full Stage 4 chaptering — scene-
+  boundary fusion, topic-shift detection, speaker-change detection,
+  and chapter titling remain deferred. The remaining Phase 3 bullets
+  (full-fusion chaptering, per-chapter ranking, keep/reject rules)
+  and all of Phase 4 remain out of scope.
 - `recap run` itself remains Phase 1 only.
 - No other Phase 3+ scaffolding, stubs, abstractions, or configuration
   exist.
@@ -52,7 +60,7 @@ Phase 2 (checklist complete):
   distance band are fixed code-level constants; OCR does not
   influence `duplicate_of`)
 
-Phase 3 (first two slices):
+Phase 3 (first three slices):
 
 - Transcript-window alignment (`frame_windows.json`, opt-in via
   `recap window --job <path>`; for each candidate frame, collects the
@@ -75,12 +83,30 @@ Phase 3 (first two slices):
   first run downloads the OpenCLIP `ViT-B-32` OpenAI weights
   (~350 MB) into the local cache. The stage is marking-only: it does
   not threshold, rank, select, keep, reject, or mutate any frame).
+- Pause-only chapter proposal (`chapter_candidates.json`, opt-in
+  via `recap chapters --job <path>`; reads `transcript.json` only
+  and places a boundary between adjacent segments whenever their
+  gap is at least `PAUSE_SECONDS = 2.0` seconds. Chapters shorter
+  than `MIN_CHAPTER_SECONDS = 30.0` are iteratively merged
+  (chapter 1 into its successor; any other short chapter into its
+  predecessor) until every chapter meets the minimum or only one
+  chapter remains. `SOURCE_SIGNAL = "pauses"`. The first chapter
+  starts at `0.0` with `trigger="start"`; boundary-created
+  chapters use `trigger="pause"`. The last chapter ends at
+  `transcript.duration` (falling back to the max segment end when
+  absent). Pure stdlib, no new dependencies. This is explicitly
+  **not** full Stage 4 chaptering — scene-boundary fusion,
+  topic-shift detection, speaker-change detection, and chapter
+  titling are deferred to later slices).
 
-Stages 4 and 7 are deliberately absent. Stage 6 is complete for the
+Stage 7 is deliberately absent. Stage 6 is complete for the
 Phase 2 checklist (pHash, SSIM, and OCR all shipped) and now also
 includes transcript-window alignment plus OpenCLIP similarity as the
-first two Phase 3 slices. Chaptering (Stage 4), per-chapter ranking
-fusion, and keep/reject rules remain Phase 3 work.
+first two Phase 3 slices. Stage 4 (chaptering) has a first slice
+shipped — pause-only chapter proposal via `recap chapters` — but
+scene-boundary fusion, topic-shift detection, speaker-change
+detection, and chapter titling remain Phase 3 work, along with
+per-chapter ranking fusion and keep/reject rules.
 
 ## Binding sources of truth
 
@@ -130,12 +156,15 @@ task runner is wired up.
 
 No session may jump ahead of the approved phase. Today the approved
 work is Phase 1 (complete) plus the full Phase 2 checklist (complete)
-plus the first two Phase 3 slices (transcript-window alignment via
-`recap window` and OpenCLIP frame/text similarity via
-`recap similarity`). Any remaining Phase 3/4 work — chaptering,
-per-chapter frame ranking, keep/reject rules, VLM verification,
-DOCX/HTML/Notion export, WhisperX, queues, workers, plugin
-systems — stays out until the next chunk is explicitly approved.
+plus the first three Phase 3 slices (transcript-window alignment via
+`recap window`, OpenCLIP frame/text similarity via
+`recap similarity`, and the pause-only chapter proposal via
+`recap chapters`). Any remaining Phase 3/4 work — full-fusion
+chaptering (scene boundaries, topic shifts, speaker changes, chapter
+titling), per-chapter frame ranking, keep/reject rules, VLM
+verification, DOCX/HTML/Notion export, WhisperX, queues, workers,
+plugin systems — stays out until the next chunk is explicitly
+approved.
 
 If a proposed change requires scope not documented in `MASTER_BRIEF.md`,
 stop and raise it for a product decision instead of inventing scope.
@@ -176,11 +205,13 @@ short-circuit. To exercise the Phase 2 entry points on the same job,
 run `recap scenes --job jobs/<job_id>` followed by
 `recap dedupe --job jobs/<job_id>` (the latter requires `tesseract` on
 PATH). To exercise the Phase 3 entry points, run
-`recap window --job jobs/<job_id>` (pure stdlib) and then
+`recap window --job jobs/<job_id>` (pure stdlib), then
 `recap similarity --job jobs/<job_id>` (requires `open_clip_torch`
 and `torch`; first run downloads the OpenCLIP `ViT-B-32` OpenAI
-weights). Re-run each to confirm the skip path, or pass `--force` to
-confirm recompute.
+weights), and then `recap chapters --job jobs/<job_id>` (pure
+stdlib; reads `transcript.json` only and writes
+`chapter_candidates.json`). Re-run each to confirm the skip path, or
+pass `--force` to confirm recompute.
 
 ## Next-session checklist
 

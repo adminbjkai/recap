@@ -25,8 +25,9 @@
 
 ## Phase 3: Semantic Alignment
 
-- [ ] Implement chapter proposal logic using transcript shifts, pauses, speaker changes, and scene boundaries
-- [ ] Persist chapter proposals to `chapter_candidates.json`
+- [ ] Implement full chapter proposal logic using transcript shifts, pauses, speaker changes, and scene boundaries
+  - [x] First slice shipped: transcript-pause-only chapter proposal (opt-in via `recap chapters`; writes `chapter_candidates.json`). Scene-boundary fusion, topic-shift detection, and speaker-change detection remain deferred.
+- [x] Persist pause-only chapter proposals to `chapter_candidates.json` (full-fusion chaptering remains deferred)
 - [x] Add transcript windowing around frame timestamps using a fuzzy plus or minus 5 to 7 second range (opt-in via `recap window`; writes `frame_windows.json`)
 - [x] Integrate OpenCLIP scoring between candidate frames and transcript chunks (opt-in via `recap similarity`)
 - [ ] Rank frames per chapter using deduplication, OCR novelty, and semantic similarity together

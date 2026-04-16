@@ -56,7 +56,7 @@ Phase 1 delivers the reliable core:
 
 ## Phase 3 (in progress)
 
-Phase 3 adds semantic alignment on top of Phase 2. Two slices are
+Phase 3 adds semantic alignment on top of Phase 2. Three slices are
 implemented:
 
 - Transcript-window alignment — for each candidate frame, the
@@ -73,8 +73,22 @@ implemented:
   `recap similarity --job <path>` after `recap window`. First run
   downloads the OpenCLIP `ViT-B-32` OpenAI weights (~350 MB) into the
   local cache; subsequent runs are offline. `recap run` does not
-  invoke this stage. The rest of Phase 3 (chapter proposal, ranking,
-  keep/reject rules) is not implemented.
+  invoke this stage.
+- Pause-only chapter proposal (first chaptering slice) — reads
+  `transcript.json` and writes `chapter_candidates.json`. A boundary
+  is placed between adjacent transcript segments whenever their gap
+  is at least `PAUSE_SECONDS = 2.0`; chapters shorter than
+  `MIN_CHAPTER_SECONDS = 30.0` are iteratively merged to avoid
+  over-fragmentation. The first chapter starts at `0.0` with
+  `trigger="start"`; boundary-created chapters use `trigger="pause"`.
+  Both constants and `SOURCE_SIGNAL = "pauses"` are fixed at the code
+  level. This is not full Stage 4 chaptering — it uses pauses only.
+  Scene-boundary fusion, topic-shift detection, speaker-change
+  detection, and LLM titling remain deferred to later Phase 3 slices.
+  Pure stdlib, no new dependencies. Run via
+  `recap chapters --job <path>` after `recap transcribe`. `recap run`
+  does not invoke this stage. The rest of Phase 3 (full chaptering
+  fusion, per-chapter ranking, keep/reject rules) is not implemented.
 
 ## Phase 2 (checklist complete)
 
@@ -155,6 +169,7 @@ Per-stage commands (useful for re-running a single stage, or resuming):
 .venv/bin/python -m recap dedupe     --job jobs/<job_id>
 .venv/bin/python -m recap window     --job jobs/<job_id>
 .venv/bin/python -m recap similarity --job jobs/<job_id>
+.venv/bin/python -m recap chapters   --job jobs/<job_id>
 .venv/bin/python -m recap assemble   --job jobs/<job_id>
 .venv/bin/python -m recap status     --job jobs/<job_id>
 ```
@@ -180,6 +195,17 @@ per-frame OpenCLIP image/text cosine similarity (`clip_similarity` is
 Python packages `open_clip_torch` and `torch`; first run downloads the
 OpenCLIP `ViT-B-32` OpenAI weights (~350 MB) into the local cache and
 subsequent runs are offline. No new system binaries are required.
+`recap chapters` is the first chaptering slice — a pause-only
+proposal — and is also not invoked by `recap run`; it reads only
+`transcript.json` and writes `chapter_candidates.json` with one entry
+per chapter (`index`, `start_seconds`, `end_seconds`,
+`first_segment_id`, `last_segment_id`, `segment_ids`, `text`,
+`trigger`). This is not full Stage 4 chaptering: it uses transcript
+pause gaps only (`PAUSE_SECONDS = 2.0`) with a minimum-chapter-length
+merge (`MIN_CHAPTER_SECONDS = 30.0`). It does not consult scene
+boundaries, embeddings, or speaker diarization, and does not generate
+chapter titles. It is pure stdlib and requires no new dependencies or
+system binaries.
 
 Stages skip work when their artifacts already exist. Pass `--force` to
 recompute a stage.

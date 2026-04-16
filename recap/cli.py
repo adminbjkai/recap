@@ -9,6 +9,7 @@ Subcommands:
   dedupe     pHash + SSIM duplicate marking + OCR novelty (Phase 2 slice; not invoked by `run`).
   window     Transcript-window alignment per candidate frame (Phase 3 slice; not invoked by `run`).
   similarity OpenCLIP frame/text cosine similarity (Phase 3 slice; not invoked by `run`).
+  chapters   Transcript-pause chapter proposal (Phase 3 slice; not invoked by `run`).
   assemble   Stage 8 (basic Markdown) only.
   status     Print job.json summary.
 
@@ -30,6 +31,7 @@ from pathlib import Path
 from . import job as job_mod
 from .stages import (
     assemble,
+    chapters,
     dedupe,
     ingest,
     normalize,
@@ -120,6 +122,12 @@ def cmd_similarity(args) -> int:
     return 0
 
 
+def cmd_chapters(args) -> int:
+    paths = job_mod.open_job(Path(args.job))
+    chapters.run(paths, force=args.force)
+    return 0
+
+
 def cmd_assemble(args) -> int:
     paths = job_mod.open_job(Path(args.job))
     out = assemble.run(paths, force=args.force)
@@ -204,6 +212,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--job", required=True)
     sp.add_argument("--force", action="store_true")
     sp.set_defaults(func=cmd_similarity)
+
+    sp = sub.add_parser(
+        "chapters",
+        help="Phase 3 slice: transcript-pause chapter proposal -> chapter_candidates.json",
+    )
+    sp.add_argument("--job", required=True)
+    sp.add_argument("--force", action="store_true")
+    sp.set_defaults(func=cmd_chapters)
 
     sp = sub.add_parser("assemble", help="Stage 8: basic report.md")
     sp.add_argument("--job", required=True)
