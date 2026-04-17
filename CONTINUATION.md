@@ -32,13 +32,18 @@ system does and produces, read `HANDOFF.md`.
   the model's shipped preprocessing); a chaptering slice
   (`recap chapters` → `chapter_candidates.json`) that fuses
   transcript pause gaps (`PAUSE_SECONDS = 2.0`) with speaker-change
-  boundaries when the transcript carries Deepgram utterances
-  (falls back to pause-only on faster-whisper transcripts; emits
-  `source_signal ∈ {"pauses","pauses+speakers"}` and, in
-  speaker-aware mode, a pre-merge `speaker_change_count`);
+  boundaries when the transcript carries Deepgram utterances, and
+  with scene-cut boundaries when `scenes.json` is present,
+  `fallback != true`, and at least one scene cut maps to a
+  transcript segment boundary (falls back to pause-only when
+  neither speakers nor scenes are available; emits
+  `source_signal ∈ {"pauses","pauses+speakers","pauses+scenes",
+  "pauses+speakers+scenes"}`, in speaker-aware mode a pre-merge
+  `speaker_change_count`, and in scenes-aware mode top-level
+  `scenes_source` plus a pre-merge `scene_change_count`);
   chapters shorter than `MIN_CHAPTER_SECONDS = 30.0` are
-  iteratively merged to avoid over-fragmentation, with
-  speaker-only groups as legitimate merge candidates; per-chapter
+  iteratively merged to avoid over-fragmentation, with speaker-only
+  or scene-only groups as legitimate merge candidates; per-chapter
   deterministic ranking fusion (`recap rank` →
   `frame_ranks.json`) that scores and ranks candidate frames
   within each chapter using OpenCLIP similarity, OCR text novelty,
@@ -51,8 +56,8 @@ system does and produces, read `HANDOFF.md`.
   `OCR_NOVELTY_THRESHOLD = 0.25`) and a `1 + 2` per-chapter budget
   matched to the Stage 7 "top 1 to 3" VLM input. The chapters
   slice is explicitly **not** full Stage 4 chaptering —
-  scene-boundary fusion, topic-shift detection, speaker recognition
-  / manual labels, and chapter titling remain deferred. The ranking
+  topic-shift detection, speaker recognition / manual labels, and
+  chapter titling remain deferred. The ranking
   slice is marking-only — it does not apply keep/reject thresholds,
   enforce a screenshot budget, write `selected_frames.json`, or
   modify `report.md`. The shortlist slice is marking-only and
@@ -119,33 +124,45 @@ Phase 3 (first five slices):
   first run downloads the OpenCLIP `ViT-B-32` OpenAI weights
   (~350 MB) into the local cache. The stage is marking-only: it does
   not threshold, rank, select, keep, reject, or mutate any frame).
-- Chapter proposal with pause + speaker-change fusion
-  (`chapter_candidates.json`, opt-in via
-  `recap chapters --job <path>`; reads `transcript.json` only and
-  places a boundary between adjacent segments whenever their gap
-  is at least `PAUSE_SECONDS = 2.0` seconds. When the transcript
-  carries a non-empty `utterances` list with at least one non-null
-  `speaker` id (Deepgram output), a boundary is additionally
-  placed on every adjacent segment pair whose speaker ids differ;
-  trigger is recorded as `"pause"`, `"speaker"`, or
-  `"pause+speaker"`. Chapters shorter than
+- Chapter proposal with pause + speaker-change + scene-boundary
+  fusion (`chapter_candidates.json`, opt-in via
+  `recap chapters --job <path>`; reads `transcript.json` and,
+  when present, `scenes.json`. A boundary is placed between
+  adjacent segments whenever any of the three signals fires on
+  that pair: pause (gap `≥ PAUSE_SECONDS = 2.0`), speaker (the
+  transcript carries a non-empty `utterances` list with at least
+  one non-null `speaker` id — Deepgram output — and the adjacent
+  segments' speaker ids differ), or scene (`scenes.json` is
+  present, `fallback != true`, and a scene cut with
+  `start_seconds > 0` maps to the next segment — the smallest
+  transcript segment index `i ≥ 1` whose
+  `start >= scene.start_seconds`; multiple scene cuts mapping to
+  the same segment id collapse to one boundary and count once).
+  The trigger label is built in the fixed order pause, speaker,
+  scene, so non-first triggers are drawn from `{"pause",
+  "speaker", "scene", "pause+speaker", "pause+scene",
+  "speaker+scene", "pause+speaker+scene"}`. Chapters shorter than
   `MIN_CHAPTER_SECONDS = 30.0` are iteratively merged (chapter 1
   into its successor; any other short chapter into its
   predecessor) until every chapter meets the minimum or only one
-  chapter remains; speaker-only groups are legitimate merge
-  candidates. `source_signal` is `"pauses"` (faster-whisper or
-  transcripts without utterances — byte-identical to the previous
-  version of this stage) or `"pauses+speakers"` (speaker-aware
-  mode); in speaker-aware mode the artifact also carries a
-  top-level `speaker_change_count` (pre-merge, so the raw signal
-  is observable even after short speaker-only groups are merged
-  away). The first chapter starts at `0.0` with `trigger="start"`.
-  The last chapter ends at `transcript.duration` (falling back to
-  the max segment end when absent). Pure stdlib, no new
-  dependencies. This is explicitly **not** full Stage 4 chaptering
-  — scene-boundary fusion, topic-shift detection, speaker
-  recognition / manual labels, and chapter titling are deferred to
-  later slices).
+  chapter remains; speaker-only or scene-only groups are
+  legitimate merge candidates. `source_signal` is one of
+  `"pauses"`, `"pauses+speakers"`, `"pauses+scenes"`, or
+  `"pauses+speakers+scenes"`, driven purely by signal
+  availability. In speaker-aware mode the artifact also carries
+  a top-level `speaker_change_count` (pre-merge); in scenes-aware
+  mode it additionally carries top-level `scenes_source` and a
+  pre-merge `scene_change_count` (counts adjacent segment pairs on
+  which the scene signal fired, not raw scene rows). The first
+  chapter starts at `0.0` with `trigger="start"`. The last
+  chapter ends at `transcript.duration` (falling back to the max
+  segment end when absent). Missing `scenes.json` is a fallback,
+  not an error; `scenes.json` with `fallback == true` likewise
+  disables scenes-aware mode. A malformed `scenes.json` exits 2.
+  Pure stdlib, no new dependencies. This is explicitly **not**
+  full Stage 4 chaptering — topic-shift detection, speaker
+  recognition / manual labels, and chapter titling are deferred
+  to later slices).
 - Per-chapter deterministic ranking fusion
   (`frame_ranks.json`, opt-in via `recap rank --job <path>`;
   reads `scenes.json`, `chapter_candidates.json`,
@@ -189,14 +206,15 @@ Stage 7 is deliberately absent. Stage 6 is complete for the
 Phase 2 checklist (pHash, SSIM, and OCR all shipped) and now also
 includes transcript-window alignment plus OpenCLIP similarity as the
 first two Phase 3 slices. Stage 4 (chaptering) now fuses pauses
-plus speaker-change boundaries on Deepgram transcripts via
-`recap chapters` and falls back to pause-only on faster-whisper
-transcripts, but scene-boundary fusion, topic-shift detection,
-speaker recognition / manual labels, and chapter titling remain
-Phase 3 work. Per-chapter ranking fusion is implemented via
-`recap rank`. The deterministic pre-VLM keep/reject shortlist is
-implemented via `recap shortlist`; blur / low-information detection
-and the VLM-dependent visual-quality keep rules remain deferred.
+plus speaker-change boundaries on Deepgram transcripts and scene-cut
+boundaries when a usable `scenes.json` is present, via
+`recap chapters`, falling back to pause-only when neither signal is
+available; topic-shift detection, speaker recognition / manual
+labels, and chapter titling remain Phase 3 work. Per-chapter ranking
+fusion is implemented via `recap rank`. The deterministic pre-VLM
+keep/reject shortlist is implemented via `recap shortlist`; blur /
+low-information detection and the VLM-dependent visual-quality keep
+rules remain deferred.
 
 ## Binding sources of truth
 
@@ -248,14 +266,14 @@ No session may jump ahead of the approved phase. Today the approved
 work is Phase 1 (complete) plus the full Phase 2 checklist (complete)
 plus the first five Phase 3 slices (transcript-window alignment via
 `recap window`, OpenCLIP frame/text similarity via
-`recap similarity`, the pause + speaker-change chapter proposal via
-`recap chapters` — pause-only fallback on faster-whisper /
-no-utterances transcripts — per-chapter ranking fusion via
-`recap rank`, and the deterministic pre-VLM keep/reject shortlist
-via `recap shortlist`), plus the optional Deepgram transcription
-engine via `--engine deepgram`. Any remaining Phase 3/4 work —
-full-fusion chaptering (scene boundaries, topic shifts, speaker
-recognition / manual labels, chapter titling), blur /
+`recap similarity`, the pause + speaker-change + scene-boundary
+chapter proposal via `recap chapters` — pause-only fallback when
+neither speakers nor a usable `scenes.json` are available —
+per-chapter ranking fusion via `recap rank`, and the deterministic
+pre-VLM keep/reject shortlist via `recap shortlist`), plus the
+optional Deepgram transcription engine via `--engine deepgram`. Any
+remaining Phase 3/4 work — full-fusion chaptering (topic shifts,
+speaker recognition / manual labels, chapter titling), blur /
 low-information detection, VLM verification, captions,
 `selected_frames.json`, report screenshot embedding,
 DOCX/HTML/Notion/PDF export, WhisperX, pyannote, Groq, UI, queues,

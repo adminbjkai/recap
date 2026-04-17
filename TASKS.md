@@ -26,8 +26,8 @@
 ## Phase 3: Semantic Alignment
 
 - [ ] Implement full chapter proposal logic using transcript shifts, pauses, speaker changes, and scene boundaries
-  - [x] First slice shipped: transcript-pause proposal with speaker-change fusion when Deepgram utterances are present (opt-in via `recap chapters`; writes `chapter_candidates.json` with `source_signal` in {"pauses","pauses+speakers"}). Scene-boundary fusion, topic-shift detection, speaker recognition/labeling, and chapter titling remain deferred.
-- [x] Persist chapter proposals to `chapter_candidates.json` (pause-only on faster-whisper; pause + speaker-change fusion when Deepgram utterances are present; full-fusion chaptering remains deferred)
+  - [x] Pause + speaker-change + scene-boundary fusion shipped (opt-in via `recap chapters`; reads `transcript.json` and, when present, `scenes.json`; writes `chapter_candidates.json` with `source_signal` in {"pauses","pauses+speakers","pauses+scenes","pauses+speakers+scenes"}, emits pre-merge `speaker_change_count` in speaker-aware mode and `scenes_source` plus pre-merge `scene_change_count` in scenes-aware mode). Topic-shift detection, speaker recognition/labeling, and chapter titling remain deferred.
+- [x] Persist chapter proposals to `chapter_candidates.json` (pause-only when neither speakers nor a usable `scenes.json` are available; fuses speaker-change boundaries when Deepgram utterances are present and scene-cut boundaries when `scenes.json` is present and not a fallback; topic-shift detection, speaker recognition/labeling, and chapter titling remain deferred)
 - [x] Add transcript windowing around frame timestamps using a fuzzy plus or minus 5 to 7 second range (opt-in via `recap window`; writes `frame_windows.json`)
 - [x] Integrate OpenCLIP scoring between candidate frames and transcript chunks (opt-in via `recap similarity`)
 - [x] Rank frames per chapter using deduplication, OCR novelty, and semantic similarity together (opt-in via `recap rank`; writes `frame_ranks.json`)

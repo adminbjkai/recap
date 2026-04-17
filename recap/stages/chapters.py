@@ -1,50 +1,77 @@
 """Phase 3 slice: chapter proposal from transcript pauses, plus
-speaker-change fusion when the transcript carries Deepgram utterances.
+speaker-change fusion when the transcript carries Deepgram utterances,
+plus scene-boundary fusion when `scenes.json` is available.
 
-Reads `transcript.json` and writes `chapter_candidates.json`.
+Reads `transcript.json` and (when present) `scenes.json`, and writes
+`chapter_candidates.json`.
 
 A chapter boundary is placed between two adjacent transcript segments
-whenever the gap between them is at least `PAUSE_SECONDS`. When the
-transcript additionally contains a non-empty `utterances` list with at
-least one non-null `speaker` id (Deepgram output), a boundary is also
-placed on every adjacent segment pair whose speaker ids differ
-(segments are 1:1 with utterances on the Deepgram path, sharing the
-same `id` values). Either signal alone is enough to fire a boundary;
-when both fire on the same pair the trigger is recorded as
-`"pause+speaker"`. Chapters shorter than `MIN_CHAPTER_SECONDS` are
-iteratively merged to avoid over-fragmentation; the merge rule is
-unchanged and speaker-triggered groups are legitimate merge candidates.
+whenever any of the following fires on that pair:
 
-Fallback behaviour — faster-whisper or any transcript without
-`utterances` — is pause-only and byte-identical to the previous
-version of this stage: `source_signal = "pauses"`, trigger vocabulary
-`{"start","pause"}`, no `speaker_change_count` key.
+- pause: the gap between the previous segment's end and the next
+  segment's start is at least `PAUSE_SECONDS`
+- speaker: the transcript carries a non-empty `utterances` list with
+  at least one non-null `speaker` id (Deepgram output) and the
+  previous/next segments have different, non-null speaker ids
+- scene: `scenes.json` is present, `fallback != true`, and the next
+  segment's id appears in the set of segment ids onto which scene
+  cuts were mapped
+
+Any of the three alone is enough to fire a boundary. The trigger
+label is built in the fixed order pause, speaker, scene — so the
+non-first vocabulary is `{"pause","speaker","scene",
+"pause+speaker","pause+scene","speaker+scene",
+"pause+speaker+scene"}`. Chapters shorter than `MIN_CHAPTER_SECONDS`
+are iteratively merged to avoid over-fragmentation; the merge rule is
+unchanged, and speaker-only or scene-only groups are legitimate merge
+candidates.
+
+Fallback behaviour — faster-whisper transcript without `utterances`
+and no usable `scenes.json` — is pause-only and byte-identical to the
+pre-scene-fusion version of this stage: `source_signal = "pauses"`,
+trigger vocabulary `{"start","pause"}`, no `speaker_change_count`
+and no `scenes_source` / `scene_change_count` keys.
 
 Speaker-aware mode — triggered by a non-empty `utterances` list with
-at least one non-null `speaker` id — extends the artifact shape:
-`source_signal = "pauses+speakers"`, trigger vocabulary adds
-`"speaker"` and `"pause+speaker"`, and a top-level
-`speaker_change_count` records the number of pre-merge boundaries
-whose source included a speaker change. The count is deliberately
-pre-merge — it records the raw signal, not the count of emitted
-chapters that retain a speaker trigger.
+at least one non-null `speaker` id — extends the artifact shape with
+`"speakers"` in `source_signal`, adds `"speaker"` / `"pause+speaker"`
+to the trigger vocabulary, and emits a top-level
+`speaker_change_count` (pre-merge).
 
-This slice does NOT consult scene boundaries, OpenCLIP similarity,
-topic shifts, or any LLM for titling. It does not perform per-chapter
-ranking, keep/reject, or report embedding. Speaker recognition /
-manual labels, chapter titling, Groq, WhisperX, pyannote, VLM, UI,
-captions, report screenshot embedding, `selected_frames.json`, and
-exports remain deferred. It is opt-in via `recap chapters` and is not
-invoked by `recap run`.
+Scenes-aware mode — triggered when `scenes.json` is present,
+`fallback != true`, and at least one scene `start_seconds > 0` maps
+to a valid transcript segment boundary — extends the artifact shape
+with `"scenes"` in `source_signal`, adds `"scene"`, `"pause+scene"`,
+`"speaker+scene"`, and `"pause+speaker+scene"` to the trigger
+vocabulary, and emits a top-level `scenes_source` and
+`scene_change_count`. The count is deliberately pre-merge — it
+records the raw signal, not the count of emitted chapters that retain
+a scene trigger — and it counts adjacent segment pairs on which the
+scene signal fired, not raw scene rows (multiple scene cuts mapping
+to the same segment id count once, matching the fired-boundary
+semantics).
+
+Missing `scenes.json` is a fallback, not an error. A malformed or
+invalid `scenes.json` exits 2.
+
+This slice does NOT consult OpenCLIP similarity, topic shifts, or
+any LLM for titling. It does not perform per-chapter ranking,
+keep/reject, or report embedding. Topic-shift detection, speaker
+recognition / manual labels, chapter titling, Groq, WhisperX,
+pyannote, VLM, UI, captions, report screenshot embedding,
+`selected_frames.json`, and exports remain deferred. It is opt-in
+via `recap chapters` and is not invoked by `recap run`.
 
 `PAUSE_SECONDS` (`2.0`) and `MIN_CHAPTER_SECONDS` (`30.0`) are fixed
 code-level constants. Source-signal tokens (`"pauses"`,
-`"pauses+speakers"`) are also fixed at the code level — a later
-change that tunes the speaker rule must rename the token so the skip
-contract invalidates any older artifact.
+`"pauses+speakers"`, `"pauses+scenes"`,
+`"pauses+speakers+scenes"`) are also fixed at the code level — a
+later change that tunes the speaker or scene rule must rename the
+token so the skip contract invalidates any older artifact.
 
 Skipped if `chapter_candidates.json` already matches a fresh
-recomputation from the current `transcript.json` (unless `force=True`).
+recomputation from the current `transcript.json` and (when present)
+`scenes.json` (unless `force=True`).
 """
 
 from __future__ import annotations
@@ -60,6 +87,8 @@ PAUSE_SECONDS = 2.0
 MIN_CHAPTER_SECONDS = 30.0
 SOURCE_SIGNAL_PAUSES = "pauses"
 SOURCE_SIGNAL_PAUSES_SPEAKERS = "pauses+speakers"
+SOURCE_SIGNAL_PAUSES_SCENES = "pauses+scenes"
+SOURCE_SIGNAL_PAUSES_SPEAKERS_SCENES = "pauses+speakers+scenes"
 
 
 _WS_RE = re.compile(r"\s+")
@@ -212,25 +241,101 @@ def _load_transcript(paths: JobPaths) -> tuple[list[dict], float, dict | None]:
     return normalized, duration, segment_to_speaker
 
 
+def _load_scene_cut_segment_ids(
+    paths: JobPaths, segments: list[dict]
+) -> set | None:
+    """Validate `scenes.json` (when present) and return the set of
+    segment ids at which a scene cut maps to a boundary.
+
+    Returns ``None`` when:
+      - `scenes.json` does not exist
+      - `scenes.json` has `fallback == true`
+      - no scene with `start_seconds > 0` maps to a valid transcript
+        segment boundary
+
+    Raises ``RuntimeError`` on malformed `scenes.json`.
+    """
+    if not paths.scenes_json.exists():
+        return None
+    data = _load_json(paths.scenes_json, "scenes.json")
+
+    if "fallback" not in data:
+        raise RuntimeError("scenes.json is missing 'fallback'")
+    fallback = data["fallback"]
+    if not isinstance(fallback, bool):
+        raise RuntimeError("scenes.json 'fallback' must be a bool")
+
+    if "scenes" not in data:
+        raise RuntimeError("scenes.json is missing 'scenes'")
+    scenes = data["scenes"]
+    if not isinstance(scenes, list):
+        raise RuntimeError("scenes.json 'scenes' must be a list")
+
+    # Validate every scene entry, even in fallback mode, so malformed
+    # scenes.json always fails loudly.
+    for i, sc in enumerate(scenes):
+        if not isinstance(sc, dict):
+            raise RuntimeError(
+                f"scenes.json scene at index {i} is not an object"
+            )
+        if "start_seconds" not in sc:
+            raise RuntimeError(
+                f"scenes.json scene at index {i} is missing 'start_seconds'"
+            )
+        if not _is_number(sc["start_seconds"]):
+            raise RuntimeError(
+                f"scenes.json scene at index {i} has non-numeric "
+                "'start_seconds'"
+            )
+
+    if fallback:
+        return None
+
+    cut_ids: set = set()
+    for sc in scenes:
+        start = float(sc["start_seconds"])
+        if start <= 0.0:
+            continue
+        chosen: int | None = None
+        for i in range(1, len(segments)):
+            if segments[i]["start"] >= start:
+                chosen = i
+                break
+        if chosen is None:
+            continue
+        cut_ids.add(segments[chosen]["id"])
+
+    if not cut_ids:
+        return None
+    return cut_ids
+
+
 def _build_chapters(
     segments: list[dict],
     duration: float,
     segment_to_speaker: dict | None,
-) -> tuple[list[dict], int]:
-    """Build chapters and return (chapters, speaker_change_count).
+    scene_cut_segment_ids: set | None,
+) -> tuple[list[dict], int, int]:
+    """Build chapters and return
+    ``(chapters, speaker_change_count, scene_change_count)``.
 
-    When `segment_to_speaker` is None, pause-only behaviour is used
-    and the speaker change count is zero.
+    When `segment_to_speaker` is None, the pause-only (speaker-blind)
+    path is used and the speaker change count is zero. When
+    `scene_cut_segment_ids` is None, the scene-blind path is used and
+    the scene change count is zero.
     """
     utterances_available = segment_to_speaker is not None
+    scenes_available = scene_cut_segment_ids is not None
 
-    # Pass 1: greedy split at every pause >= PAUSE_SECONDS and/or every
-    # speaker change. Each group carries its own trigger; the head
+    # Pass 1: greedy split at every pause >= PAUSE_SECONDS, every
+    # speaker change, and/or every scene cut that maps to an adjacent
+    # segment pair. Each group carries its own trigger; the head
     # chapter's trigger is overridden to "start" at emit time regardless
     # of merges.
     groups: list[list[dict]] = [[segments[0]]]
     triggers: list[str] = ["start"]
     speaker_change_count = 0
+    scene_change_count = 0
 
     for i in range(1, len(segments)):
         prev = segments[i - 1]
@@ -249,16 +354,24 @@ def _build_chapters(
         else:
             speaker_fires = False
 
+        scene_fires = (
+            scenes_available and nxt["id"] in scene_cut_segment_ids
+        )
+
         if speaker_fires:
             speaker_change_count += 1
+        if scene_fires:
+            scene_change_count += 1
 
-        if pause_fires or speaker_fires:
-            if pause_fires and speaker_fires:
-                trigger = "pause+speaker"
-            elif speaker_fires:
-                trigger = "speaker"
-            else:
-                trigger = "pause"
+        if pause_fires or speaker_fires or scene_fires:
+            parts: list[str] = []
+            if pause_fires:
+                parts.append("pause")
+            if speaker_fires:
+                parts.append("speaker")
+            if scene_fires:
+                parts.append("scene")
+            trigger = "+".join(parts)
             groups.append([nxt])
             triggers.append(trigger)
         else:
@@ -309,7 +422,7 @@ def _build_chapters(
                 "trigger": final_trigger,
             }
         )
-    return chapters, speaker_change_count
+    return chapters, speaker_change_count, scene_change_count
 
 
 def _compute(
@@ -317,17 +430,22 @@ def _compute(
     segments: list[dict],
     duration: float,
     segment_to_speaker: dict | None,
+    scene_cut_segment_ids: set | None,
 ) -> dict:
     video = paths.analysis_mp4.name if paths.analysis_mp4.exists() else None
-    chapters, speaker_change_count = _build_chapters(
-        segments, duration, segment_to_speaker
+    chapters, speaker_change_count, scene_change_count = _build_chapters(
+        segments, duration, segment_to_speaker, scene_cut_segment_ids
     )
     utterances_available = segment_to_speaker is not None
-    source_signal = (
-        SOURCE_SIGNAL_PAUSES_SPEAKERS
-        if utterances_available
-        else SOURCE_SIGNAL_PAUSES
-    )
+    scenes_available = scene_cut_segment_ids is not None
+    if utterances_available and scenes_available:
+        source_signal = SOURCE_SIGNAL_PAUSES_SPEAKERS_SCENES
+    elif utterances_available:
+        source_signal = SOURCE_SIGNAL_PAUSES_SPEAKERS
+    elif scenes_available:
+        source_signal = SOURCE_SIGNAL_PAUSES_SCENES
+    else:
+        source_signal = SOURCE_SIGNAL_PAUSES
     out: dict = {
         "video": video,
         "transcript_source": paths.transcript_json.name,
@@ -338,9 +456,14 @@ def _compute(
         "chapters": chapters,
     }
     # Emit speaker_change_count ONLY in speaker-aware mode so the
-    # faster-whisper / pause-only output stays byte-identical.
+    # pause-only output stays byte-identical.
     if utterances_available:
         out["speaker_change_count"] = speaker_change_count
+    # Emit scenes_source and scene_change_count ONLY in scenes-aware
+    # mode so the non-scenes outputs stay byte-identical.
+    if scenes_available:
+        out["scenes_source"] = paths.scenes_json.name
+        out["scene_change_count"] = scene_change_count
     return out
 
 
@@ -385,6 +508,21 @@ def _outputs_match(paths: JobPaths, fresh: dict) -> bool:
     if fresh_has and data["speaker_change_count"] != fresh["speaker_change_count"]:
         return False
 
+    # scenes_source / scene_change_count: present only in scenes-aware
+    # mode. Same presence-parity rule as speaker_change_count.
+    stored_has = "scenes_source" in data
+    fresh_has = "scenes_source" in fresh
+    if stored_has != fresh_has:
+        return False
+    if fresh_has and data["scenes_source"] != fresh["scenes_source"]:
+        return False
+    stored_has = "scene_change_count" in data
+    fresh_has = "scene_change_count" in fresh
+    if stored_has != fresh_has:
+        return False
+    if fresh_has and data["scene_change_count"] != fresh["scene_change_count"]:
+        return False
+
     stored = data.get("chapters")
     if not isinstance(stored, list) or len(stored) != len(fresh["chapters"]):
         return False
@@ -399,7 +537,10 @@ def _outputs_match(paths: JobPaths, fresh: dict) -> bool:
 
 def run(paths: JobPaths, force: bool = False) -> dict:
     segments, duration, segment_to_speaker = _load_transcript(paths)
-    fresh = _compute(paths, segments, duration, segment_to_speaker)
+    scene_cut_segment_ids = _load_scene_cut_segment_ids(paths, segments)
+    fresh = _compute(
+        paths, segments, duration, segment_to_speaker, scene_cut_segment_ids
+    )
 
     if not force and _outputs_match(paths, fresh):
         with open(paths.chapter_candidates_json) as f:
@@ -415,6 +556,10 @@ def run(paths: JobPaths, force: bool = False) -> dict:
         }
         if "speaker_change_count" in data:
             extra["speaker_change_count"] = data["speaker_change_count"]
+        if "scenes_source" in data:
+            extra["scenes_source"] = data["scenes_source"]
+        if "scene_change_count" in data:
+            extra["scene_change_count"] = data["scene_change_count"]
         update_stage(paths, "chapters", COMPLETED, extra=extra)
         return data
 
@@ -436,6 +581,10 @@ def run(paths: JobPaths, force: bool = False) -> dict:
         }
         if "speaker_change_count" in fresh:
             extra["speaker_change_count"] = fresh["speaker_change_count"]
+        if "scenes_source" in fresh:
+            extra["scenes_source"] = fresh["scenes_source"]
+        if "scene_change_count" in fresh:
+            extra["scene_change_count"] = fresh["scene_change_count"]
         update_stage(paths, "chapters", COMPLETED, extra=extra)
         return fresh
     except Exception as e:

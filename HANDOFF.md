@@ -9,16 +9,17 @@ implemented: transcript-window alignment per candidate frame
 (`recap window` → `frame_windows.json`), OpenCLIP frame/text cosine
 similarity (`recap similarity` → `frame_similarities.json`), a
 chaptering slice that fuses transcript pauses with speaker-change
-boundaries when Deepgram utterances are present and falls back to
-pause-only on faster-whisper / no-utterances transcripts
-(`recap chapters` → `chapter_candidates.json`), per-chapter
-deterministic ranking fusion
+boundaries when Deepgram utterances are present and scene-cut
+boundaries when a non-fallback `scenes.json` with at least one scene
+cut mapping to a segment boundary is present, falling back to
+pause-only otherwise (`recap chapters` → `chapter_candidates.json`),
+per-chapter deterministic ranking fusion
 (`recap rank` → `frame_ranks.json`), and a deterministic pre-VLM
 keep/reject shortlist
 (`recap shortlist` → `frame_shortlist.json`). The chaptering slice
-is explicitly **not** full Stage 4 chaptering — scene-boundary
-fusion, topic-shift detection, speaker recognition / manual labels,
-and LLM chapter titling remain deferred. The
+is explicitly **not** full Stage 4 chaptering — topic-shift
+detection, speaker recognition / manual labels, and LLM chapter
+titling remain deferred. The
 ranking slice is marking-only: it does not apply keep/reject
 thresholds, enforce a screenshot budget, write
 `selected_frames.json`, or modify `report.md`. The shortlist slice
@@ -60,8 +61,9 @@ implemented (see the Phase 3 sections below). Full Stage 4
 chaptering and Stage 7 VLM verification remain deferred. A
 chaptering slice is implemented that fuses transcript pauses with
 speaker-change boundaries when Deepgram utterances are present and
-falls back to pause-only on faster-whisper / no-utterances
-transcripts; no VLM code exists in the repository.
+with scene-cut boundaries when a usable `scenes.json` is present,
+and falls back to pause-only otherwise; no VLM code exists in the
+repository.
 
 ## What the Phase 2 slices include
 
@@ -172,64 +174,90 @@ Phase 1 stages only. OpenCLIP similarity runs via
 ## What the third Phase 3 slice includes
 
 - **Chapter proposal from transcript pauses plus optional
-  speaker-change fusion.** Read `transcript.json` and write
+  speaker-change and scene-boundary fusion.** Read `transcript.json`
+  and, when present, `scenes.json`, and write
   `chapter_candidates.json`. A chapter boundary is placed between
-  two adjacent transcript segments whenever
-  `next.start - previous.end >= PAUSE_SECONDS`. When the transcript
-  additionally contains a non-empty `utterances` list with at least
-  one non-null `speaker` id (Deepgram output; segments are 1:1 with
-  utterances on the Deepgram path, sharing the same `id` values), a
-  boundary is also placed on every adjacent segment pair whose
-  speaker ids differ. Either signal fires the boundary; both
-  together is recorded as `trigger="pause+speaker"`. The first
-  chapter starts at `0.0` with `trigger="start"`; boundary-created
-  chapters use `trigger ∈ {"pause", "speaker", "pause+speaker"}`.
-  The last chapter ends at `transcript.duration` (falling back to
-  the maximum segment end when `duration` is absent; if `duration`
-  is present but less than the maximum segment end, the maximum end
-  is used). Chapters whose span is shorter than
-  `MIN_CHAPTER_SECONDS` are iteratively merged: chapter 1 merges
-  into its successor, all other short chapters merge into their
-  predecessor, until every chapter meets the minimum or only one
-  chapter remains. The merge is content-agnostic — speaker-only
-  groups are legitimate merge candidates and can disappear from the
-  emitted trigger distribution. Segment ids come from `segment.id`
-  when present, otherwise the segment's 0-based array index.
-  Per-chapter `text` is the whitespace-normalized concatenation of
-  the contained segments' `text`. `PAUSE_SECONDS = 2.0` and
+  two adjacent transcript segments whenever any of the three fusion
+  signals fires:
+
+  - pause: `next.start - previous.end >= PAUSE_SECONDS`.
+  - speaker: the transcript carries a non-empty `utterances` list
+    with at least one non-null `speaker` id (Deepgram output;
+    segments are 1:1 with utterances on the Deepgram path, sharing
+    the same `id` values) and the adjacent segments' speaker ids
+    differ.
+  - scene: `scenes.json` is present, `fallback != true`, and the
+    next segment's id is in the set of segment ids that scene cuts
+    mapped to. For each scene with `start_seconds > 0`, the mapped
+    segment is the smallest transcript segment index `i` in
+    `[1, len(segments)-1]` whose `start >= scene.start_seconds`; if
+    no such `i` exists, the scene cut is dropped. Multiple scene
+    cuts mapping to the same segment id collapse to one boundary
+    and count once.
+
+  Any single signal is enough. The trigger label is built in the
+  fixed order pause, speaker, scene; non-first triggers are drawn
+  from `{"pause", "speaker", "scene", "pause+speaker",
+  "pause+scene", "speaker+scene", "pause+speaker+scene"}`. The first
+  chapter starts at `0.0` with `trigger="start"`. The last chapter
+  ends at `transcript.duration` (falling back to the maximum segment
+  end when `duration` is absent; if `duration` is present but less
+  than the maximum segment end, the maximum end is used). Chapters
+  whose span is shorter than `MIN_CHAPTER_SECONDS` are iteratively
+  merged: chapter 1 merges into its successor, all other short
+  chapters merge into their predecessor, until every chapter meets
+  the minimum or only one chapter remains. The merge is
+  content-agnostic — speaker-only or scene-only groups are
+  legitimate merge candidates and can disappear from the emitted
+  trigger distribution. Segment ids come from `segment.id` when
+  present, otherwise the segment's 0-based array index. Per-chapter
+  `text` is the whitespace-normalized concatenation of the contained
+  segments' `text`. `PAUSE_SECONDS = 2.0` and
   `MIN_CHAPTER_SECONDS = 30.0` are fixed code-level constants in
   `recap/stages/chapters.py`. Source-signal tokens (`"pauses"`,
-  `"pauses+speakers"`) are also fixed at the code level; a later
-  change that tunes the speaker rule must rename the token so the
-  skip contract invalidates any older artifact. None are exposed as
-  CLI flags, env vars, or config. No new Python or system
-  dependencies are introduced; no ML model is loaded. The stage is
-  marking-only: it does not touch `scenes.json`, `candidate_frames/`,
+  `"pauses+speakers"`, `"pauses+scenes"`,
+  `"pauses+speakers+scenes"`) are also fixed at the code level; a
+  later change that tunes the speaker or scene rule must rename the
+  token so the skip contract invalidates any older artifact. None
+  are exposed as CLI flags, env vars, or config. No new Python or
+  system dependencies are introduced; no ML model is loaded. The
+  stage is marking-only: it reads `scenes.json` when present but
+  never modifies it, and it does not touch `candidate_frames/`,
   `frame_scores.json`, `frame_windows.json`,
   `frame_similarities.json`, or `report.md`. Per-chapter entries
   are `index` (1-based), `start_seconds`, `end_seconds`,
   `first_segment_id`, `last_segment_id`, `segment_ids`, `text`,
   `trigger`; top-level keys are `video`, `transcript_source`,
-  `source_signal` ∈ {`"pauses"`, `"pauses+speakers"`},
-  `pause_seconds`, `min_chapter_seconds`, `chapter_count`,
-  `chapters`, and — in speaker-aware mode only —
-  `speaker_change_count` (integer count of pre-merge
-  speaker-change boundaries; deliberately pre-merge so the raw
-  signal is observable even after short speaker-only groups are
-  merged away).
+  `source_signal` ∈ {`"pauses"`, `"pauses+speakers"`,
+  `"pauses+scenes"`, `"pauses+speakers+scenes"`}, `pause_seconds`,
+  `min_chapter_seconds`, `chapter_count`, `chapters`, and — in
+  speaker-aware mode only — `speaker_change_count` (integer count
+  of pre-merge speaker-change boundaries; deliberately pre-merge so
+  the raw signal is observable even after short speaker-only groups
+  are merged away), and — in scenes-aware mode only —
+  `scenes_source` (basename of the scenes artifact, `scenes.json`)
+  and `scene_change_count` (integer count of pre-merge scene-change
+  boundaries; counts adjacent segment pairs on which the scene
+  signal fired, not raw scene rows).
 
-Pause-only fallback (faster-whisper or any transcript without
-usable `utterances`) produces output byte-identical to the previous
-version of this stage: `source_signal = "pauses"`, trigger
-vocabulary `{"start", "pause"}`, no `speaker_change_count` key.
+Pause-only fallback (faster-whisper transcript without usable
+`utterances` and without a usable `scenes.json`) produces output
+byte-identical to the pre-scene-fusion version of this stage:
+`source_signal = "pauses"`, trigger vocabulary `{"start", "pause"}`,
+no `speaker_change_count`, no `scenes_source`, no
+`scene_change_count`. Missing `scenes.json` is a fallback, not an
+error; `scenes.json` with `fallback == true`, or a non-fallback
+`scenes.json` whose scene cuts do not map to any segment boundary,
+likewise disables scenes-aware mode and the artifact carries no
+scenes-aware keys. A malformed `scenes.json` exits 2 with a
+single-line `error: scenes.json ...` and leaves no partial
+`chapter_candidates.json{,.tmp}` on disk.
 
-This is explicitly **not** full Stage 4 chaptering. The brief lists
-transcript topic shifts, pauses, speaker changes, and scene
-boundaries as chaptering signals; this slice fuses pauses plus
-speaker changes only. Scene-boundary fusion, topic-shift detection,
-speaker recognition / manual labels, chapter titling, Groq,
-WhisperX, pyannote, VLM, UI, captions, report screenshot embedding,
-`selected_frames.json`, and exports remain deferred.
+This slice fuses transcript pauses plus speaker changes plus scene
+boundaries. Topic-shift detection, speaker recognition / manual
+labels, chapter titling, Groq, WhisperX, pyannote, VLM, UI,
+captions, report screenshot embedding, `selected_frames.json`, and
+exports remain deferred.
 
 This Phase 3 slice is opt-in. `recap run` continues to execute the
 Phase 1 stages only. The chapter proposal runs via
@@ -486,7 +514,8 @@ output:
 
 - `chapter_candidates.json` — top-level `video`,
   `transcript_source` (`transcript.json`), `source_signal` ∈
-  {`"pauses"`, `"pauses+speakers"`}, `pause_seconds` (`2.0`),
+  {`"pauses"`, `"pauses+speakers"`, `"pauses+scenes"`,
+  `"pauses+speakers+scenes"`}, `pause_seconds` (`2.0`),
   `min_chapter_seconds` (`30.0`), `chapter_count`, and a
   `chapters` list with one entry per chapter: `index` (1-based),
   `start_seconds` (`0.0` for the first chapter, else the first
@@ -503,17 +532,29 @@ output:
   covering every transcript segment exactly once), `text`
   (whitespace-normalized concatenation of the contained segments'
   text joined with single spaces), and `trigger` ∈ {`"start"` for
-  the first chapter; `"pause"`, `"speaker"`, or `"pause+speaker"`
-  for any chapter created by a boundary}. In speaker-aware mode
-  (`source_signal == "pauses+speakers"`), the top-level also
+  the first chapter; `"pause"`, `"speaker"`, `"scene"`,
+  `"pause+speaker"`, `"pause+scene"`, `"speaker+scene"`, or
+  `"pause+speaker+scene"` for any chapter created by a boundary —
+  multi-signal triggers are always joined in the fixed order
+  pause, speaker, scene}. In speaker-aware mode
+  (`source_signal` contains `"speakers"`), the top-level also
   includes `speaker_change_count`, an integer count of pre-merge
-  boundaries whose source included a speaker change. That count
-  is deliberately pre-merge, so it records the raw signal even
-  after short speaker-only groups have been merged away by the
-  `MIN_CHAPTER_SECONDS` merge. On faster-whisper transcripts the
-  artifact is byte-identical to the previous (pause-only) version
-  of this stage: `source_signal = "pauses"`, trigger vocabulary
-  `{"start", "pause"}`, no `speaker_change_count` key.
+  boundaries whose source included a speaker change. In
+  scenes-aware mode (`source_signal` contains `"scenes"`), the
+  top-level also includes `scenes_source` (the basename of the
+  scenes artifact, `scenes.json`) and `scene_change_count`, an
+  integer count of pre-merge boundaries whose source included a
+  scene change (counting adjacent segment pairs on which the scene
+  signal fired, not raw scene rows — multiple scene cuts mapping
+  to the same segment id count once). Both counts are deliberately
+  pre-merge, so they record the raw signal even after short
+  speaker-only or scene-only groups have been merged away by the
+  `MIN_CHAPTER_SECONDS` merge. On faster-whisper transcripts
+  without a usable `scenes.json` the artifact is byte-identical to
+  the pre-scene-fusion (pause-only) version of this stage:
+  `source_signal = "pauses"`, trigger vocabulary
+  `{"start", "pause"}`, no `speaker_change_count`, no
+  `scenes_source`, no `scene_change_count`.
 
 Running `recap rank --job <path>` adds the per-chapter ranking
 fusion output:
@@ -674,32 +715,47 @@ transcript segments — whatever is actually on disk.
   does not leave a partial `frame_similarities.json` on disk.
 - **`recap chapters` restart.** `recap chapters` skips when
   `chapter_candidates.json` already matches a fresh recomputation
-  from the current `transcript.json` — same `transcript_source`
-  (`transcript.json`), `source_signal` ∈ {`"pauses"`,
-  `"pauses+speakers"`}, `pause_seconds` (`2.0`),
-  `min_chapter_seconds` (`30.0`), `chapter_count`, and every
-  per-chapter `index`, `start_seconds`, `end_seconds`,
+  from the current `transcript.json` and (when present)
+  `scenes.json` — same `transcript_source` (`transcript.json`),
+  `source_signal` ∈ {`"pauses"`, `"pauses+speakers"`,
+  `"pauses+scenes"`, `"pauses+speakers+scenes"`}, `pause_seconds`
+  (`2.0`), `min_chapter_seconds` (`30.0`), `chapter_count`, and
+  every per-chapter `index`, `start_seconds`, `end_seconds`,
   `first_segment_id`, `last_segment_id`, `segment_ids`, `text`, and
   `trigger`. The `speaker_change_count` key is present only in
   speaker-aware mode and is compared when present; absence in a
-  stored pause-only artifact and presence in a freshly-computed
-  speaker-aware one are treated as distinct and trigger recompute.
-  Any drift in the transcript segments or utterances (text edits,
-  timing edits, added/removed segments, added/removed/flipped
-  utterance speakers, adding or removing the `utterances` key
-  entirely, or any other change that moves a chapter boundary,
-  changes a trigger, or alters chapter text) triggers a recompute.
-  `recap chapters --force` removes `chapter_candidates.json` before
-  recomputing. Missing `transcript.json`, malformed JSON, a missing
-  or empty `segments` list, a non-object segment, a segment missing
-  `start`, `end`, or `text`, a segment with non-numeric `start` or
-  `end`, a segment with non-string `text`, a segment with
-  `end < start`, a non-numeric `duration`, `utterances` present but
-  not a list, a non-object utterance, an utterance missing `id` or
-  `speaker`, a non-integer `id`, a `speaker` that is not
-  `int | null`, or a duplicate utterance `id` exits 2 with a
-  one-line `error: ...` message and does not leave a partial
-  `chapter_candidates.json` on disk.
+  stored non-speaker-aware artifact and presence in a
+  freshly-computed speaker-aware one are treated as distinct and
+  trigger recompute. The `scenes_source` and `scene_change_count`
+  keys are present only in scenes-aware mode and follow the same
+  presence-parity rule — adding, removing, or toggling a usable
+  `scenes.json` triggers recompute, as does any drift in the set of
+  segment ids onto which scene cuts map (via a change in scene
+  `start_seconds` or a transcript re-segmentation that shifts which
+  segment a given scene cut lands on). Any drift in the transcript
+  segments or utterances (text edits, timing edits, added/removed
+  segments, added/removed/flipped utterance speakers, adding or
+  removing the `utterances` key entirely, or any other change that
+  moves a chapter boundary, changes a trigger, or alters chapter
+  text) triggers a recompute. `recap chapters --force` removes
+  `chapter_candidates.json` before recomputing. Missing
+  `transcript.json`, malformed JSON, a missing or empty `segments`
+  list, a non-object segment, a segment missing `start`, `end`, or
+  `text`, a segment with non-numeric `start` or `end`, a segment
+  with non-string `text`, a segment with `end < start`, a
+  non-numeric `duration`, `utterances` present but not a list, a
+  non-object utterance, an utterance missing `id` or `speaker`, a
+  non-integer `id`, a `speaker` that is not `int | null`, or a
+  duplicate utterance `id` exits 2 with a one-line `error: ...`
+  message and does not leave a partial `chapter_candidates.json` on
+  disk. Missing `scenes.json` is treated as a fallback (no error)
+  and yields non-scenes-aware output. A `scenes.json` that is not a
+  JSON object, is missing `fallback` or has non-bool `fallback`, is
+  missing `scenes` or has a non-list `scenes`, or contains a scene
+  entry that is not an object, is missing `start_seconds`, or has
+  non-numeric `start_seconds` exits 2 with a one-line
+  `error: scenes.json ...` message and does not leave a partial
+  `chapter_candidates.json{,.tmp}` on disk.
 - **`recap rank` restart.** `recap rank` skips when
   `frame_ranks.json` already matches a fresh recomputation from
   the current `scenes.json`, `chapter_candidates.json`,
@@ -932,18 +988,19 @@ later phases and are **not** present in the current codebase:
 - Phase 3: **full** chapter proposal from transcript/scene fusion
   (topic shifts, speaker changes, scene boundaries, and LLM
   titling). The chaptering slice — pause proposal plus
-  speaker-change fusion when Deepgram utterances are present — is
-  implemented (see above), but scene-boundary fusion, topic-shift
-  detection, speaker recognition / manual labels, and chapter
-  titling remain deferred. Per-chapter ranking fusion is
-  implemented (see above). The deterministic pre-VLM keep/reject
-  shortlist is implemented (see above); blur / low-information
-  detection and the VLM-dependent "shows code / diagrams /
-  settings / dashboards" keep rule remain deferred.
-  Transcript-window alignment and OpenCLIP frame/text similarity —
-  the first two Phase 3 slices — are implemented (see above).
-  Groq, WhisperX, pyannote, VLM, UI, captions, report screenshot
-  embedding, `selected_frames.json`, and exports remain deferred.
+  speaker-change fusion when Deepgram utterances are present plus
+  scene-boundary fusion when a usable `scenes.json` is present — is
+  implemented (see above). Topic-shift detection, speaker
+  recognition / manual labels, and chapter titling remain deferred.
+  Per-chapter ranking fusion is implemented (see above). The
+  deterministic pre-VLM keep/reject shortlist is implemented (see
+  above); blur / low-information detection and the VLM-dependent
+  "shows code / diagrams / settings / dashboards" keep rule remain
+  deferred. Transcript-window alignment and OpenCLIP frame/text
+  similarity — the first two Phase 3 slices — are implemented (see
+  above). Groq, WhisperX, pyannote, VLM, UI, captions, report
+  screenshot embedding, `selected_frames.json`, and exports remain
+  deferred.
 - Phase 4: optional VLM verification on finalists only
   (`selected_frames.json`), caption generation, chapter-aware Markdown
   assembly with embedded screenshots, and optional DOCX / HTML / Notion /
@@ -974,10 +1031,14 @@ using a pinned `ViT-B-32 / openai` model on CPU with the model's
 shipped preprocessing; a chaptering slice
 (`recap chapters` → `chapter_candidates.json`) that proposes
 chapters from transcript pause gaps (`PAUSE_SECONDS = 2.0`,
-`MIN_CHAPTER_SECONDS = 30.0`) and, when the transcript carries
-Deepgram utterances, also fuses speaker-change boundaries (emits
-`source_signal = "pauses+speakers"` and a pre-merge
-`speaker_change_count`); per-chapter deterministic ranking
+`MIN_CHAPTER_SECONDS = 30.0`), fuses speaker-change boundaries when
+the transcript carries Deepgram utterances (adds `"speakers"` to
+`source_signal` and emits a pre-merge `speaker_change_count`), and
+fuses scene-cut boundaries when a non-fallback `scenes.json` with
+at least one scene cut mapping to a segment boundary is present
+(adds `"scenes"` to `source_signal` and emits top-level
+`scenes_source` plus a pre-merge `scene_change_count`);
+per-chapter deterministic ranking
 fusion (`recap rank` → `frame_ranks.json`) that scores and ranks
 candidate frames within each chapter using OpenCLIP similarity, OCR
 text novelty, and a duplicate penalty with fixed code-level weights;
@@ -988,9 +1049,9 @@ dropped_over_budget under fixed thresholds
 (`CLIP_KEEP_THRESHOLD = 0.30`, `OCR_NOVELTY_THRESHOLD = 0.25`) and
 a `1 + 2` per-chapter budget that matches Stage 7's "top 1 to 3
 candidate frames per chapter" VLM verification step. The chapters
-slice is explicitly not full Stage 4 chaptering — scene-boundary
-fusion, topic-shift detection, speaker recognition / manual labels,
-and chapter titling remain deferred. The ranking slice is marking-only
+slice is explicitly not full Stage 4 chaptering — topic-shift
+detection, speaker recognition / manual labels, and chapter titling
+remain deferred. The ranking slice is marking-only
 — it does not apply keep/reject thresholds, enforce a screenshot
 budget, write `selected_frames.json`, or modify `report.md`. The
 shortlist slice is marking-only and pre-VLM — it does not write
