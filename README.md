@@ -74,18 +74,29 @@ implemented:
   downloads the OpenCLIP `ViT-B-32` OpenAI weights (~350 MB) into the
   local cache; subsequent runs are offline. `recap run` does not
   invoke this stage.
-- Pause-only chapter proposal (first chaptering slice) — reads
-  `transcript.json` and writes `chapter_candidates.json`. A boundary
-  is placed between adjacent transcript segments whenever their gap
-  is at least `PAUSE_SECONDS = 2.0`; chapters shorter than
-  `MIN_CHAPTER_SECONDS = 30.0` are iteratively merged to avoid
-  over-fragmentation. The first chapter starts at `0.0` with
-  `trigger="start"`; boundary-created chapters use `trigger="pause"`.
-  Both constants and `SOURCE_SIGNAL = "pauses"` are fixed at the code
-  level. This is not full Stage 4 chaptering — it uses pauses only.
-  Scene-boundary fusion, topic-shift detection, speaker-change
-  detection, and LLM titling remain deferred to later Phase 3 slices.
-  Pure stdlib, no new dependencies. Run via
+- Chapter proposal — reads `transcript.json` and writes
+  `chapter_candidates.json`. A boundary is placed between adjacent
+  transcript segments whenever their gap is at least
+  `PAUSE_SECONDS = 2.0`. When the transcript additionally contains a
+  non-empty `utterances` list with at least one non-null `speaker`
+  id (Deepgram path), a boundary is also placed on every adjacent
+  segment pair whose speaker ids differ. Either signal is enough;
+  both on the same pair is recorded as `trigger="pause+speaker"`.
+  Chapters shorter than `MIN_CHAPTER_SECONDS = 30.0` are iteratively
+  merged to avoid over-fragmentation — the merge is content-agnostic
+  and speaker-only groups are legitimate merge candidates. The first
+  chapter is always `trigger="start"`; boundary-created chapters use
+  `"pause"`, `"speaker"`, or `"pause+speaker"`. `source_signal` is
+  `"pauses"` when utterances are absent (faster-whisper) or present
+  but empty / all-null-speaker, and `"pauses+speakers"` in
+  speaker-aware mode. A top-level `speaker_change_count` counts
+  pre-merge speaker-change boundaries; it appears only in
+  speaker-aware mode and is deliberately pre-merge so the raw signal
+  is observable even after short speaker-only groups are merged
+  away. All thresholds and source-signal tokens are fixed at the
+  code level. Scene-boundary fusion, topic-shift detection, speaker
+  recognition / manual labels, and LLM chapter titling remain
+  deferred. Pure stdlib, no new dependencies. Run via
   `recap chapters --job <path>` after `recap transcribe`. `recap run`
   does not invoke this stage.
 - Per-chapter ranking fusion — for each candidate frame, computes a
@@ -224,17 +235,19 @@ per-frame OpenCLIP image/text cosine similarity (`clip_similarity` is
 Python packages `open_clip_torch` and `torch`; first run downloads the
 OpenCLIP `ViT-B-32` OpenAI weights (~350 MB) into the local cache and
 subsequent runs are offline. No new system binaries are required.
-`recap chapters` is the first chaptering slice — a pause-only
-proposal — and is also not invoked by `recap run`; it reads only
-`transcript.json` and writes `chapter_candidates.json` with one entry
-per chapter (`index`, `start_seconds`, `end_seconds`,
-`first_segment_id`, `last_segment_id`, `segment_ids`, `text`,
-`trigger`). This is not full Stage 4 chaptering: it uses transcript
-pause gaps only (`PAUSE_SECONDS = 2.0`) with a minimum-chapter-length
-merge (`MIN_CHAPTER_SECONDS = 30.0`). It does not consult scene
-boundaries, embeddings, or speaker diarization, and does not generate
-chapter titles. It is pure stdlib and requires no new dependencies or
-system binaries.
+`recap chapters` is the chaptering slice and is also not invoked by
+`recap run`; it reads only `transcript.json` and writes
+`chapter_candidates.json` with one entry per chapter (`index`,
+`start_seconds`, `end_seconds`, `first_segment_id`,
+`last_segment_id`, `segment_ids`, `text`, `trigger`) and a
+top-level `source_signal` ∈ {`"pauses"`, `"pauses+speakers"`}. On
+faster-whisper transcripts the slice is pause-only and the output
+is byte-identical to the previous version of the stage; on
+Deepgram transcripts it additionally fuses speaker-change
+boundaries and emits a top-level `speaker_change_count`. It does
+not consult scene boundaries, embeddings, speaker recognition, or
+LLM chapter titling. It is pure stdlib and requires no new
+dependencies or system binaries.
 `recap rank` is the per-chapter ranking fusion slice and is also not
 invoked by `recap run`; it reads `scenes.json`,
 `chapter_candidates.json`, `frame_scores.json`, `frame_windows.json`,
@@ -299,12 +312,18 @@ ids), a per-speaker summary, word-level timestamps when Deepgram
 returns them, and the request parameters used. `faster-whisper`
 transcripts are unchanged on disk — they do not emit those fields.
 
-Downstream stages (`recap window`, `recap chapters`, `recap rank`,
-`recap shortlist`, `recap assemble`) read only `segments` and
-`duration` and work unchanged over either engine's output. Speaker
-recognition/labeling, speaker-change chaptering signals, WhisperX,
-pyannote, Groq, captions, report screenshot embedding,
-`selected_frames.json`, UI, and exports remain deferred.
+Downstream stages work unchanged over either engine's output.
+`recap window`, `recap rank`, `recap shortlist`, and `recap
+assemble` consume the existing `segments` / `duration` / chapter
+contracts. `recap chapters` additionally reads the optional
+`utterances` list when present and fuses speaker-change boundaries
+on top of its existing pause-based boundaries (see the Phase 3
+section above); faster-whisper transcripts — which carry no
+`utterances` — continue to produce pause-only chapters with output
+byte-identical to the pre-Deepgram version of that stage. Speaker
+recognition / manual labeling, WhisperX, pyannote, Groq, captions,
+report screenshot embedding, `selected_frames.json`, UI, and
+exports remain deferred.
 
 ### Sample videos
 

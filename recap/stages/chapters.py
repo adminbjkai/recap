@@ -1,21 +1,47 @@
-"""Phase 3 slice: first chaptering pass — transcript pause-only proposal.
+"""Phase 3 slice: chapter proposal from transcript pauses, plus
+speaker-change fusion when the transcript carries Deepgram utterances.
 
-Reads `transcript.json` and writes `chapter_candidates.json`. A chapter
-boundary is placed between two adjacent transcript segments when the gap
-between them is at least `PAUSE_SECONDS`. Chapters shorter than
-`MIN_CHAPTER_SECONDS` are iteratively merged to avoid over-fragmentation.
+Reads `transcript.json` and writes `chapter_candidates.json`.
 
-This is the first Phase 3 chaptering slice only. It does NOT consult
-scene boundaries, OpenCLIP similarity, speaker diarization, topic
-shifts, or any LLM for titling. It does not perform per-chapter
-ranking, keep/reject, or report embedding. It is opt-in via
-`recap chapters` and is not invoked by `recap run`. Later chaptering
-slices may fuse additional signals, at which point `SOURCE_SIGNAL`
-changes and the skip contract recomputes any older artifact.
+A chapter boundary is placed between two adjacent transcript segments
+whenever the gap between them is at least `PAUSE_SECONDS`. When the
+transcript additionally contains a non-empty `utterances` list with at
+least one non-null `speaker` id (Deepgram output), a boundary is also
+placed on every adjacent segment pair whose speaker ids differ
+(segments are 1:1 with utterances on the Deepgram path, sharing the
+same `id` values). Either signal alone is enough to fire a boundary;
+when both fire on the same pair the trigger is recorded as
+`"pause+speaker"`. Chapters shorter than `MIN_CHAPTER_SECONDS` are
+iteratively merged to avoid over-fragmentation; the merge rule is
+unchanged and speaker-triggered groups are legitimate merge candidates.
 
-`PAUSE_SECONDS` (`2.0`), `MIN_CHAPTER_SECONDS` (`30.0`), and
-`SOURCE_SIGNAL` (`"pauses"`) are fixed code-level constants. They are
-not exposed as CLI flags, env vars, or config.
+Fallback behaviour — faster-whisper or any transcript without
+`utterances` — is pause-only and byte-identical to the previous
+version of this stage: `source_signal = "pauses"`, trigger vocabulary
+`{"start","pause"}`, no `speaker_change_count` key.
+
+Speaker-aware mode — triggered by a non-empty `utterances` list with
+at least one non-null `speaker` id — extends the artifact shape:
+`source_signal = "pauses+speakers"`, trigger vocabulary adds
+`"speaker"` and `"pause+speaker"`, and a top-level
+`speaker_change_count` records the number of pre-merge boundaries
+whose source included a speaker change. The count is deliberately
+pre-merge — it records the raw signal, not the count of emitted
+chapters that retain a speaker trigger.
+
+This slice does NOT consult scene boundaries, OpenCLIP similarity,
+topic shifts, or any LLM for titling. It does not perform per-chapter
+ranking, keep/reject, or report embedding. Speaker recognition /
+manual labels, chapter titling, Groq, WhisperX, pyannote, VLM, UI,
+captions, report screenshot embedding, `selected_frames.json`, and
+exports remain deferred. It is opt-in via `recap chapters` and is not
+invoked by `recap run`.
+
+`PAUSE_SECONDS` (`2.0`) and `MIN_CHAPTER_SECONDS` (`30.0`) are fixed
+code-level constants. Source-signal tokens (`"pauses"`,
+`"pauses+speakers"`) are also fixed at the code level — a later
+change that tunes the speaker rule must rename the token so the skip
+contract invalidates any older artifact.
 
 Skipped if `chapter_candidates.json` already matches a fresh
 recomputation from the current `transcript.json` (unless `force=True`).
@@ -32,7 +58,8 @@ from ..job import COMPLETED, FAILED, RUNNING, JobPaths, update_stage
 
 PAUSE_SECONDS = 2.0
 MIN_CHAPTER_SECONDS = 30.0
-SOURCE_SIGNAL = "pauses"
+SOURCE_SIGNAL_PAUSES = "pauses"
+SOURCE_SIGNAL_PAUSES_SPEAKERS = "pauses+speakers"
 
 
 _WS_RE = re.compile(r"\s+")
@@ -44,6 +71,10 @@ def _normalize_text(text: str) -> str:
 
 def _is_number(x: object) -> bool:
     return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
+def _is_int(x: object) -> bool:
+    return isinstance(x, int) and not isinstance(x, bool)
 
 
 def _load_json(path: Path, label: str) -> dict:
@@ -59,7 +90,61 @@ def _load_json(path: Path, label: str) -> dict:
     return data
 
 
-def _load_transcript(paths: JobPaths) -> tuple[list[dict], float]:
+def _load_utterances_map(data: dict) -> dict | None:
+    """Validate `utterances` and return a dict[id -> speaker].
+
+    Returns ``None`` when utterances are absent/empty, or when every
+    present utterance has a null speaker. That return value disables
+    speaker-aware mode and preserves byte-identical pause-only output.
+    """
+    if "utterances" not in data:
+        return None
+    raw = data["utterances"]
+    if not isinstance(raw, list):
+        raise RuntimeError("transcript.json 'utterances' must be a list")
+    if not raw:
+        return None
+
+    by_id: dict = {}
+    has_non_null_speaker = False
+    for i, u in enumerate(raw):
+        if not isinstance(u, dict):
+            raise RuntimeError(
+                f"transcript.json utterance at index {i} is not an object"
+            )
+        if "id" not in u:
+            raise RuntimeError(
+                f"transcript.json utterance at index {i} is missing 'id'"
+            )
+        if "speaker" not in u:
+            raise RuntimeError(
+                f"transcript.json utterance at index {i} is missing 'speaker'"
+            )
+        uid = u["id"]
+        if not _is_int(uid):
+            raise RuntimeError(
+                f"transcript.json utterance at index {i} has non-integer 'id'"
+            )
+        sp = u["speaker"]
+        if sp is not None and not _is_int(sp):
+            raise RuntimeError(
+                f"transcript.json utterance at index {i} has non-integer "
+                "'speaker' (int or null required)"
+            )
+        if uid in by_id:
+            raise RuntimeError(
+                f"transcript.json utterances has duplicate 'id' {uid}"
+            )
+        by_id[uid] = sp
+        if sp is not None:
+            has_non_null_speaker = True
+
+    if not has_non_null_speaker:
+        return None
+    return by_id
+
+
+def _load_transcript(paths: JobPaths) -> tuple[list[dict], float, dict | None]:
     data = _load_json(paths.transcript_json, "transcript.json")
     segments = data.get("segments")
     if not isinstance(segments, list):
@@ -122,33 +207,68 @@ def _load_transcript(paths: JobPaths) -> tuple[list[dict], float]:
         duration = float(declared_duration)
         if duration < max_end:
             duration = max_end
-    return normalized, duration
+
+    segment_to_speaker = _load_utterances_map(data)
+    return normalized, duration, segment_to_speaker
 
 
-def _build_chapters(segments: list[dict], duration: float) -> list[dict]:
-    # Pass 1: greedy split at every pause >= PAUSE_SECONDS. Each group
-    # carries its own trigger; final trigger for the head chapter is
-    # overridden to "start" at emit time regardless of merges.
+def _build_chapters(
+    segments: list[dict],
+    duration: float,
+    segment_to_speaker: dict | None,
+) -> tuple[list[dict], int]:
+    """Build chapters and return (chapters, speaker_change_count).
+
+    When `segment_to_speaker` is None, pause-only behaviour is used
+    and the speaker change count is zero.
+    """
+    utterances_available = segment_to_speaker is not None
+
+    # Pass 1: greedy split at every pause >= PAUSE_SECONDS and/or every
+    # speaker change. Each group carries its own trigger; the head
+    # chapter's trigger is overridden to "start" at emit time regardless
+    # of merges.
     groups: list[list[dict]] = [[segments[0]]]
     triggers: list[str] = ["start"]
+    speaker_change_count = 0
+
     for i in range(1, len(segments)):
-        gap = segments[i]["start"] - segments[i - 1]["end"]
-        if gap >= PAUSE_SECONDS:
-            groups.append([segments[i]])
-            triggers.append("pause")
+        prev = segments[i - 1]
+        nxt = segments[i]
+        gap = nxt["start"] - prev["end"]
+        pause_fires = gap >= PAUSE_SECONDS
+
+        if utterances_available:
+            prev_speaker = segment_to_speaker.get(prev["id"])
+            next_speaker = segment_to_speaker.get(nxt["id"])
+            speaker_fires = (
+                prev_speaker is not None
+                and next_speaker is not None
+                and prev_speaker != next_speaker
+            )
         else:
-            groups[-1].append(segments[i])
+            speaker_fires = False
+
+        if speaker_fires:
+            speaker_change_count += 1
+
+        if pause_fires or speaker_fires:
+            if pause_fires and speaker_fires:
+                trigger = "pause+speaker"
+            elif speaker_fires:
+                trigger = "speaker"
+            else:
+                trigger = "pause"
+            groups.append([nxt])
+            triggers.append(trigger)
+        else:
+            groups[-1].append(nxt)
 
     # Pass 2: iteratively merge any chapter shorter than
-    # MIN_CHAPTER_SECONDS. Chapter 0 is merged into its successor; all
-    # others are merged into their predecessor. Continue until every
-    # chapter meets the minimum or only one chapter remains. Span is
-    # evaluated using the same contiguous timeline that is emitted
-    # below: a chapter's start is 0.0 for chapter 0 (else its first
-    # segment's start), and its end is the next chapter's first
-    # segment's start (else `duration` for the last chapter). This is
-    # the "emitted boundary" convention — the gap between a chapter
-    # and its successor is counted as part of the earlier chapter.
+    # MIN_CHAPTER_SECONDS. Chapter 0 merges into its successor; all
+    # others merge into their predecessor. Continue until every chapter
+    # meets the minimum or only one chapter remains. Span is evaluated
+    # against the same contiguous timeline that is emitted below.
     def _span(i: int) -> float:
         start = 0.0 if i == 0 else groups[i][0]["start"]
         end = duration if i == len(groups) - 1 else groups[i + 1][0]["start"]
@@ -189,21 +309,39 @@ def _build_chapters(segments: list[dict], duration: float) -> list[dict]:
                 "trigger": final_trigger,
             }
         )
-    return chapters
+    return chapters, speaker_change_count
 
 
-def _compute(paths: JobPaths, segments: list[dict], duration: float) -> dict:
+def _compute(
+    paths: JobPaths,
+    segments: list[dict],
+    duration: float,
+    segment_to_speaker: dict | None,
+) -> dict:
     video = paths.analysis_mp4.name if paths.analysis_mp4.exists() else None
-    chapters = _build_chapters(segments, duration)
-    return {
+    chapters, speaker_change_count = _build_chapters(
+        segments, duration, segment_to_speaker
+    )
+    utterances_available = segment_to_speaker is not None
+    source_signal = (
+        SOURCE_SIGNAL_PAUSES_SPEAKERS
+        if utterances_available
+        else SOURCE_SIGNAL_PAUSES
+    )
+    out: dict = {
         "video": video,
         "transcript_source": paths.transcript_json.name,
-        "source_signal": SOURCE_SIGNAL,
+        "source_signal": source_signal,
         "pause_seconds": PAUSE_SECONDS,
         "min_chapter_seconds": MIN_CHAPTER_SECONDS,
         "chapter_count": len(chapters),
         "chapters": chapters,
     }
+    # Emit speaker_change_count ONLY in speaker-aware mode so the
+    # faster-whisper / pause-only output stays byte-identical.
+    if utterances_available:
+        out["speaker_change_count"] = speaker_change_count
+    return out
 
 
 _CHAPTER_FIELDS = (
@@ -236,6 +374,17 @@ def _outputs_match(paths: JobPaths, fresh: dict) -> bool:
         return False
     if data.get("chapter_count") != fresh["chapter_count"]:
         return False
+
+    # speaker_change_count: present only in speaker-aware mode. Absence
+    # and zero are NOT the same: a stored pause-only artifact lacks the
+    # key, a freshly-computed speaker-aware artifact carries it.
+    stored_has = "speaker_change_count" in data
+    fresh_has = "speaker_change_count" in fresh
+    if stored_has != fresh_has:
+        return False
+    if fresh_has and data["speaker_change_count"] != fresh["speaker_change_count"]:
+        return False
+
     stored = data.get("chapters")
     if not isinstance(stored, list) or len(stored) != len(fresh["chapters"]):
         return False
@@ -249,26 +398,24 @@ def _outputs_match(paths: JobPaths, fresh: dict) -> bool:
 
 
 def run(paths: JobPaths, force: bool = False) -> dict:
-    segments, duration = _load_transcript(paths)
-    fresh = _compute(paths, segments, duration)
+    segments, duration, segment_to_speaker = _load_transcript(paths)
+    fresh = _compute(paths, segments, duration, segment_to_speaker)
 
     if not force and _outputs_match(paths, fresh):
         with open(paths.chapter_candidates_json) as f:
             data = json.load(f)
-        update_stage(
-            paths,
-            "chapters",
-            COMPLETED,
-            extra={
-                "chapter_count": data.get(
-                    "chapter_count", len(data.get("chapters", []))
-                ),
-                "pause_seconds": PAUSE_SECONDS,
-                "min_chapter_seconds": MIN_CHAPTER_SECONDS,
-                "source_signal": SOURCE_SIGNAL,
-                "skipped": True,
-            },
-        )
+        extra = {
+            "chapter_count": data.get(
+                "chapter_count", len(data.get("chapters", []))
+            ),
+            "pause_seconds": PAUSE_SECONDS,
+            "min_chapter_seconds": MIN_CHAPTER_SECONDS,
+            "source_signal": data.get("source_signal"),
+            "skipped": True,
+        }
+        if "speaker_change_count" in data:
+            extra["speaker_change_count"] = data["speaker_change_count"]
+        update_stage(paths, "chapters", COMPLETED, extra=extra)
         return data
 
     update_stage(paths, "chapters", RUNNING)
@@ -281,17 +428,15 @@ def run(paths: JobPaths, force: bool = False) -> dict:
             json.dump(fresh, f, indent=2, sort_keys=True)
         tmp.replace(paths.chapter_candidates_json)
 
-        update_stage(
-            paths,
-            "chapters",
-            COMPLETED,
-            extra={
-                "chapter_count": fresh["chapter_count"],
-                "pause_seconds": PAUSE_SECONDS,
-                "min_chapter_seconds": MIN_CHAPTER_SECONDS,
-                "source_signal": SOURCE_SIGNAL,
-            },
-        )
+        extra = {
+            "chapter_count": fresh["chapter_count"],
+            "pause_seconds": PAUSE_SECONDS,
+            "min_chapter_seconds": MIN_CHAPTER_SECONDS,
+            "source_signal": fresh["source_signal"],
+        }
+        if "speaker_change_count" in fresh:
+            extra["speaker_change_count"] = fresh["speaker_change_count"]
+        update_stage(paths, "chapters", COMPLETED, extra=extra)
         return fresh
     except Exception as e:
         tmp = paths.chapter_candidates_json.with_suffix(".json.tmp")

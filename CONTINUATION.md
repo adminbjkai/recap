@@ -29,12 +29,16 @@ system does and produces, read `HANDOFF.md`.
   fixed window around each scene midpoint); OpenCLIP frame/text
   cosine similarity (`recap similarity` →
   `frame_similarities.json`, pinned `ViT-B-32 / openai` on CPU with
-  the model's shipped preprocessing); a first chaptering slice
-  (`recap chapters` → `chapter_candidates.json`) that proposes
-  chapters from transcript pause gaps only (`PAUSE_SECONDS = 2.0`,
-  `MIN_CHAPTER_SECONDS = 30.0`, `SOURCE_SIGNAL = "pauses"`, all
-  pinned at the code level; chapters shorter than the minimum are
-  iteratively merged to avoid over-fragmentation); per-chapter
+  the model's shipped preprocessing); a chaptering slice
+  (`recap chapters` → `chapter_candidates.json`) that fuses
+  transcript pause gaps (`PAUSE_SECONDS = 2.0`) with speaker-change
+  boundaries when the transcript carries Deepgram utterances
+  (falls back to pause-only on faster-whisper transcripts; emits
+  `source_signal ∈ {"pauses","pauses+speakers"}` and, in
+  speaker-aware mode, a pre-merge `speaker_change_count`);
+  chapters shorter than `MIN_CHAPTER_SECONDS = 30.0` are
+  iteratively merged to avoid over-fragmentation, with
+  speaker-only groups as legitimate merge candidates; per-chapter
   deterministic ranking fusion (`recap rank` →
   `frame_ranks.json`) that scores and ranks candidate frames
   within each chapter using OpenCLIP similarity, OCR text novelty,
@@ -47,8 +51,8 @@ system does and produces, read `HANDOFF.md`.
   `OCR_NOVELTY_THRESHOLD = 0.25`) and a `1 + 2` per-chapter budget
   matched to the Stage 7 "top 1 to 3" VLM input. The chapters
   slice is explicitly **not** full Stage 4 chaptering —
-  scene-boundary fusion, topic-shift detection, speaker-change
-  detection, and chapter titling remain deferred. The ranking
+  scene-boundary fusion, topic-shift detection, speaker recognition
+  / manual labels, and chapter titling remain deferred. The ranking
   slice is marking-only — it does not apply keep/reject thresholds,
   enforce a screenshot budget, write `selected_frames.json`, or
   modify `report.md`. The shortlist slice is marking-only and
@@ -115,21 +119,33 @@ Phase 3 (first five slices):
   first run downloads the OpenCLIP `ViT-B-32` OpenAI weights
   (~350 MB) into the local cache. The stage is marking-only: it does
   not threshold, rank, select, keep, reject, or mutate any frame).
-- Pause-only chapter proposal (`chapter_candidates.json`, opt-in
-  via `recap chapters --job <path>`; reads `transcript.json` only
-  and places a boundary between adjacent segments whenever their
-  gap is at least `PAUSE_SECONDS = 2.0` seconds. Chapters shorter
-  than `MIN_CHAPTER_SECONDS = 30.0` are iteratively merged
-  (chapter 1 into its successor; any other short chapter into its
+- Chapter proposal with pause + speaker-change fusion
+  (`chapter_candidates.json`, opt-in via
+  `recap chapters --job <path>`; reads `transcript.json` only and
+  places a boundary between adjacent segments whenever their gap
+  is at least `PAUSE_SECONDS = 2.0` seconds. When the transcript
+  carries a non-empty `utterances` list with at least one non-null
+  `speaker` id (Deepgram output), a boundary is additionally
+  placed on every adjacent segment pair whose speaker ids differ;
+  trigger is recorded as `"pause"`, `"speaker"`, or
+  `"pause+speaker"`. Chapters shorter than
+  `MIN_CHAPTER_SECONDS = 30.0` are iteratively merged (chapter 1
+  into its successor; any other short chapter into its
   predecessor) until every chapter meets the minimum or only one
-  chapter remains. `SOURCE_SIGNAL = "pauses"`. The first chapter
-  starts at `0.0` with `trigger="start"`; boundary-created
-  chapters use `trigger="pause"`. The last chapter ends at
-  `transcript.duration` (falling back to the max segment end when
-  absent). Pure stdlib, no new dependencies. This is explicitly
-  **not** full Stage 4 chaptering — scene-boundary fusion,
-  topic-shift detection, speaker-change detection, and chapter
-  titling are deferred to later slices).
+  chapter remains; speaker-only groups are legitimate merge
+  candidates. `source_signal` is `"pauses"` (faster-whisper or
+  transcripts without utterances — byte-identical to the previous
+  version of this stage) or `"pauses+speakers"` (speaker-aware
+  mode); in speaker-aware mode the artifact also carries a
+  top-level `speaker_change_count` (pre-merge, so the raw signal
+  is observable even after short speaker-only groups are merged
+  away). The first chapter starts at `0.0` with `trigger="start"`.
+  The last chapter ends at `transcript.duration` (falling back to
+  the max segment end when absent). Pure stdlib, no new
+  dependencies. This is explicitly **not** full Stage 4 chaptering
+  — scene-boundary fusion, topic-shift detection, speaker
+  recognition / manual labels, and chapter titling are deferred to
+  later slices).
 - Per-chapter deterministic ranking fusion
   (`frame_ranks.json`, opt-in via `recap rank --job <path>`;
   reads `scenes.json`, `chapter_candidates.json`,
@@ -172,14 +188,15 @@ Phase 3 (first five slices):
 Stage 7 is deliberately absent. Stage 6 is complete for the
 Phase 2 checklist (pHash, SSIM, and OCR all shipped) and now also
 includes transcript-window alignment plus OpenCLIP similarity as the
-first two Phase 3 slices. Stage 4 (chaptering) has a first slice
-shipped — pause-only chapter proposal via `recap chapters` — but
-scene-boundary fusion, topic-shift detection, speaker-change
-detection, and chapter titling remain Phase 3 work. Per-chapter
-ranking fusion is now implemented via `recap rank`. The
-deterministic pre-VLM keep/reject shortlist is now implemented
-via `recap shortlist`; blur / low-information detection and the
-VLM-dependent visual-quality keep rules remain deferred.
+first two Phase 3 slices. Stage 4 (chaptering) now fuses pauses
+plus speaker-change boundaries on Deepgram transcripts via
+`recap chapters` and falls back to pause-only on faster-whisper
+transcripts, but scene-boundary fusion, topic-shift detection,
+speaker recognition / manual labels, and chapter titling remain
+Phase 3 work. Per-chapter ranking fusion is implemented via
+`recap rank`. The deterministic pre-VLM keep/reject shortlist is
+implemented via `recap shortlist`; blur / low-information detection
+and the VLM-dependent visual-quality keep rules remain deferred.
 
 ## Binding sources of truth
 
@@ -231,16 +248,19 @@ No session may jump ahead of the approved phase. Today the approved
 work is Phase 1 (complete) plus the full Phase 2 checklist (complete)
 plus the first five Phase 3 slices (transcript-window alignment via
 `recap window`, OpenCLIP frame/text similarity via
-`recap similarity`, the pause-only chapter proposal via
-`recap chapters`, per-chapter ranking fusion via `recap rank`, and
-the deterministic pre-VLM keep/reject shortlist via
-`recap shortlist`). Any remaining Phase 3/4 work — full-fusion
-chaptering (scene boundaries, topic shifts, speaker changes, chapter
-titling), blur / low-information detection, VLM verification,
-captions, `selected_frames.json`, report screenshot embedding,
-DOCX/HTML/Notion/PDF export, WhisperX, pyannote, Deepgram, Groq,
-UI, queues, workers, plugin systems — stays out until the next
-chunk is explicitly approved.
+`recap similarity`, the pause + speaker-change chapter proposal via
+`recap chapters` — pause-only fallback on faster-whisper /
+no-utterances transcripts — per-chapter ranking fusion via
+`recap rank`, and the deterministic pre-VLM keep/reject shortlist
+via `recap shortlist`), plus the optional Deepgram transcription
+engine via `--engine deepgram`. Any remaining Phase 3/4 work —
+full-fusion chaptering (scene boundaries, topic shifts, speaker
+recognition / manual labels, chapter titling), blur /
+low-information detection, VLM verification, captions,
+`selected_frames.json`, report screenshot embedding,
+DOCX/HTML/Notion/PDF export, WhisperX, pyannote, Groq, UI, queues,
+workers, plugin systems — stays out until the next chunk is
+explicitly approved.
 
 If a proposed change requires scope not documented in `MASTER_BRIEF.md`,
 stop and raise it for a product decision instead of inventing scope.

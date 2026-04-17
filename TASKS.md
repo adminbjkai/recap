@@ -26,13 +26,13 @@
 ## Phase 3: Semantic Alignment
 
 - [ ] Implement full chapter proposal logic using transcript shifts, pauses, speaker changes, and scene boundaries
-  - [x] First slice shipped: transcript-pause-only chapter proposal (opt-in via `recap chapters`; writes `chapter_candidates.json`). Scene-boundary fusion, topic-shift detection, and speaker-change detection remain deferred.
-- [x] Persist pause-only chapter proposals to `chapter_candidates.json` (full-fusion chaptering remains deferred)
+  - [x] First slice shipped: transcript-pause proposal with speaker-change fusion when Deepgram utterances are present (opt-in via `recap chapters`; writes `chapter_candidates.json` with `source_signal` in {"pauses","pauses+speakers"}). Scene-boundary fusion, topic-shift detection, speaker recognition/labeling, and chapter titling remain deferred.
+- [x] Persist chapter proposals to `chapter_candidates.json` (pause-only on faster-whisper; pause + speaker-change fusion when Deepgram utterances are present; full-fusion chaptering remains deferred)
 - [x] Add transcript windowing around frame timestamps using a fuzzy plus or minus 5 to 7 second range (opt-in via `recap window`; writes `frame_windows.json`)
 - [x] Integrate OpenCLIP scoring between candidate frames and transcript chunks (opt-in via `recap similarity`)
 - [x] Rank frames per chapter using deduplication, OCR novelty, and semantic similarity together (opt-in via `recap rank`; writes `frame_ranks.json`)
 - [x] Apply deterministic screenshot keep/reject rules before shortlist finalization (opt-in via `recap shortlist`; writes `frame_shortlist.json`; `selected_frames.json` remains reserved for Phase 4 post-VLM finalists; blur/VLM-dependent visual-quality rules remain deferred).
-- [x] Add optional Deepgram cloud transcription engine with diarized utterances (opt-in via `--engine deepgram` on `recap run` and `recap transcribe`; `DEEPGRAM_API_KEY` env required only on recompute; adds `utterances`, `speakers`, `words`, `provider_metadata` as additive optional fields on `transcript.json`; `faster-whisper` remains the default; Groq, WhisperX, pyannote, speaker recognition/manual labels, and speaker-change chaptering signals remain deferred).
+- [x] Add optional Deepgram cloud transcription engine with diarized utterances (opt-in via `--engine deepgram` on `recap run` and `recap transcribe`; `DEEPGRAM_API_KEY` env required only on recompute; adds `utterances`, `speakers`, `words`, `provider_metadata` as additive optional fields on `transcript.json`; `faster-whisper` remains the default; Groq, WhisperX, pyannote, and speaker recognition/manual labels remain deferred).
 
 ## Phase 4: Precision Polish
 
