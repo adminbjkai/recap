@@ -31,7 +31,7 @@
 - [x] Add transcript windowing around frame timestamps using a fuzzy plus or minus 5 to 7 second range (opt-in via `recap window`; writes `frame_windows.json`)
 - [x] Integrate OpenCLIP scoring between candidate frames and transcript chunks (opt-in via `recap similarity`)
 - [x] Rank frames per chapter using deduplication, OCR novelty, and semantic similarity together (opt-in via `recap rank`; writes `frame_ranks.json`)
-- [ ] Apply screenshot keep and reject rules before shortlist finalization
+- [x] Apply deterministic screenshot keep/reject rules before shortlist finalization (opt-in via `recap shortlist`; writes `frame_shortlist.json`; `selected_frames.json` remains reserved for Phase 4 post-VLM finalists; blur/VLM-dependent visual-quality rules remain deferred).
 
 ## Phase 4: Precision Polish
 

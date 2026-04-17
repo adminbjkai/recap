@@ -34,6 +34,7 @@ _DOWNSTREAM_ARTIFACTS = (
     "frame_similarities_json",
     "chapter_candidates_json",
     "frame_ranks_json",
+    "frame_shortlist_json",
     "report_md",
 )
 _DOWNSTREAM_STAGES = (
@@ -45,6 +46,7 @@ _DOWNSTREAM_STAGES = (
     "similarity",
     "chapters",
     "rank",
+    "shortlist",
     "assemble",
 )
 
@@ -82,7 +84,8 @@ def run(paths: JobPaths, source: Path, force: bool = False) -> Path:
             f"{source_str!r}. Re-run with --force to replace the source "
             "(this will also discard downstream analysis, audio, transcript, "
             "scenes, candidate frames, frame scores, frame windows, frame "
-            "similarities, chapter candidates, frame ranks, and report)."
+            "similarities, chapter candidates, frame ranks, frame "
+            "shortlist, and report)."
         )
 
     if existing and not force:

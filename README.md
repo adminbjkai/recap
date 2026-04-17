@@ -56,7 +56,7 @@ Phase 1 delivers the reliable core:
 
 ## Phase 3 (in progress)
 
-Phase 3 adds semantic alignment on top of Phase 2. Four slices are
+Phase 3 adds semantic alignment on top of Phase 2. Five slices are
 implemented:
 
 - Transcript-window alignment — for each candidate frame, the
@@ -99,8 +99,23 @@ implemented:
   `selected_frames.json`, or modify `report.md`. All weights are fixed
   code-level constants. Pure stdlib, no new dependencies. Run via
   `recap rank --job <path>` after `recap chapters`. `recap run` does
-  not invoke this stage. The rest of Phase 3 (keep/reject rules) is
-  not implemented.
+  not invoke this stage.
+- Deterministic pre-VLM keep/reject shortlist — reads
+  `frame_ranks.json` and writes `frame_shortlist.json`. Rejects
+  frames already marked as `duplicate_of` and frames that miss both
+  a CLIP similarity floor (`0.30`) and an OCR novelty floor (`0.25`);
+  within each chapter the remaining frames are labeled hero (1) plus
+  up to two supporting, with the rest marked
+  `dropped_over_budget`. All thresholds, the 1+2 budget, and
+  `POLICY_VERSION = "keep_reject_v1"` are fixed code-level
+  constants. This is marking-only and pre-VLM: it does not write
+  `selected_frames.json` (reserved for Phase 4 post-VLM finalists),
+  invoke any VLM, generate captions, embed screenshots, export
+  documents, add UI, or do any speaker work. Blur / low-information
+  detection and VLM-dependent "shows code / diagrams / settings /
+  dashboards" judgments are deferred. Pure stdlib, no new
+  dependencies. Run via `recap shortlist --job <path>` after
+  `recap rank`. `recap run` does not invoke this stage.
 
 ## Phase 2 (checklist complete)
 
@@ -183,6 +198,7 @@ Per-stage commands (useful for re-running a single stage, or resuming):
 .venv/bin/python -m recap similarity --job jobs/<job_id>
 .venv/bin/python -m recap chapters   --job jobs/<job_id>
 .venv/bin/python -m recap rank       --job jobs/<job_id>
+.venv/bin/python -m recap shortlist  --job jobs/<job_id>
 .venv/bin/python -m recap assemble   --job jobs/<job_id>
 .venv/bin/python -m recap status     --job jobs/<job_id>
 ```
@@ -232,6 +248,24 @@ even if the drift does not change ranking results. It does not apply
 keep/reject thresholds, enforce a screenshot budget, write
 `selected_frames.json`, or modify `report.md`. It is pure stdlib and
 requires no new dependencies or system binaries.
+`recap shortlist` is the deterministic pre-VLM keep/reject slice
+and is also not invoked by `recap run`; it reads `frame_ranks.json`
+only and writes `frame_shortlist.json`. Within each chapter, frames
+marked `duplicate_of` and frames whose CLIP similarity and OCR
+novelty both fall below the code-level thresholds are rejected; the
+remaining frames in rank order become a hero (1) plus up to two
+supporting, with any extras marked `dropped_over_budget`. The
+artifact includes `input_fingerprints` (SHA-256 over canonical JSON
+of `frame_ranks.json`), so drift in any of the underlying inputs
+propagates through `recap rank` into this skip contract. It is
+explicitly pre-VLM: it does not write `selected_frames.json`
+(reserved for Phase 4 post-VLM finalists), invoke any VLM, generate
+captions, embed screenshots in `report.md`, export DOCX / HTML /
+Notion / PDF, add UI, or do any speaker diarization / recognition /
+separation work. Blur / low-information detection and
+VLM-dependent "shows code / diagrams / settings / dashboards"
+judgments are deferred. It is pure stdlib and requires no new
+dependencies or system binaries.
 
 Stages skip work when their artifacts already exist. Pass `--force` to
 recompute a stage.

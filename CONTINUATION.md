@@ -12,7 +12,7 @@ system does and produces, read `HANDOFF.md`.
   duplicate marking with Tesseract OCR novelty scoring
   (`recap dedupe`). Every item in the `TASKS.md` Phase 2 checklist is
   ticked.
-- Four Phase 3 slices are implemented: transcript-window alignment
+- Five Phase 3 slices are implemented: transcript-window alignment
   per candidate frame (`recap window` → `frame_windows.json`, ±6 s
   fixed window around each scene midpoint); OpenCLIP frame/text
   cosine similarity (`recap similarity` →
@@ -22,19 +22,32 @@ system does and produces, read `HANDOFF.md`.
   chapters from transcript pause gaps only (`PAUSE_SECONDS = 2.0`,
   `MIN_CHAPTER_SECONDS = 30.0`, `SOURCE_SIGNAL = "pauses"`, all
   pinned at the code level; chapters shorter than the minimum are
-  iteratively merged to avoid over-fragmentation); and per-chapter
+  iteratively merged to avoid over-fragmentation); per-chapter
   deterministic ranking fusion (`recap rank` →
   `frame_ranks.json`) that scores and ranks candidate frames
   within each chapter using OpenCLIP similarity, OCR text novelty,
-  and a duplicate penalty with fixed code-level weights. The
-  chapters slice is explicitly **not** full Stage 4 chaptering —
+  and a duplicate penalty with fixed code-level weights; and a
+  deterministic pre-VLM keep/reject shortlist
+  (`recap shortlist` → `frame_shortlist.json`) that labels each
+  frame with hero / supporting / rejected_duplicate /
+  rejected_weak_signal / dropped_over_budget under fixed
+  thresholds (`CLIP_KEEP_THRESHOLD = 0.30`,
+  `OCR_NOVELTY_THRESHOLD = 0.25`) and a `1 + 2` per-chapter budget
+  matched to the Stage 7 "top 1 to 3" VLM input. The chapters
+  slice is explicitly **not** full Stage 4 chaptering —
   scene-boundary fusion, topic-shift detection, speaker-change
   detection, and chapter titling remain deferred. The ranking
   slice is marking-only — it does not apply keep/reject thresholds,
   enforce a screenshot budget, write `selected_frames.json`, or
-  modify `report.md`. The remaining Phase 3 bullets (full-fusion
-  chaptering, keep/reject rules) and all of Phase 4 remain out of
-  scope.
+  modify `report.md`. The shortlist slice is marking-only and
+  pre-VLM — it does not write `selected_frames.json` (reserved
+  for Phase 4 post-VLM finalists), invoke any VLM, generate
+  captions, embed screenshots, export documents, add UI, or do
+  any speaker diarization / recognition / separation work; blur /
+  low-information detection and the VLM-dependent "shows code /
+  diagrams / settings / dashboards" keep rule remain deferred.
+  The remaining Phase 3 bullet (full-fusion chaptering) and all of
+  Phase 4 remain out of scope.
 - `recap run` itself remains Phase 1 only.
 - No other Phase 3+ scaffolding, stubs, abstractions, or configuration
   exist.
@@ -67,7 +80,7 @@ Phase 2 (checklist complete):
   distance band are fixed code-level constants; OCR does not
   influence `duplicate_of`)
 
-Phase 3 (first four slices):
+Phase 3 (first five slices):
 
 - Transcript-window alignment (`frame_windows.json`, opt-in via
   `recap window --job <path>`; for each candidate frame, collects the
@@ -121,6 +134,28 @@ Phase 3 (first four slices):
   marking-only: it does not apply keep/reject thresholds, enforce
   a screenshot budget, write `selected_frames.json`, or modify
   `report.md`).
+- Deterministic pre-VLM keep/reject shortlist
+  (`frame_shortlist.json`, opt-in via
+  `recap shortlist --job <path>`; reads `frame_ranks.json` only
+  and labels every candidate frame with a closed-vocabulary
+  `decision` of `hero`, `supporting`, `rejected_duplicate`,
+  `rejected_weak_signal`, or `dropped_over_budget` under fixed
+  code-level constants `CLIP_KEEP_THRESHOLD = 0.30`,
+  `OCR_NOVELTY_THRESHOLD = 0.25`, `HERO_PER_CHAPTER = 1`,
+  `SUPPORTING_PER_CHAPTER = 2`, `TOTAL_PER_CHAPTER = 3`, and
+  `POLICY_VERSION = "keep_reject_v1"`. The 3-frame budget matches
+  Stage 7's "top 1 to 3 candidate frames per chapter" VLM input;
+  this is a pre-VLM shortlist, not the final report screenshot
+  budget. The artifact includes `input_fingerprints` (SHA-256
+  over canonical JSON of `frame_ranks.json`), so drift in any
+  upstream artifact propagates through `recap rank` into this
+  skip contract. Pure stdlib, no new dependencies. Marking-only
+  and pre-VLM: does not write `selected_frames.json` (reserved
+  for Phase 4 post-VLM finalists), invoke any VLM, generate
+  captions, embed screenshots, export documents, add UI, or do
+  any speaker diarization / recognition / separation work. Blur /
+  low-information detection and the VLM-dependent "shows code /
+  diagrams / settings / dashboards" keep rule remain deferred).
 
 Stage 7 is deliberately absent. Stage 6 is complete for the
 Phase 2 checklist (pHash, SSIM, and OCR all shipped) and now also
@@ -129,8 +164,10 @@ first two Phase 3 slices. Stage 4 (chaptering) has a first slice
 shipped — pause-only chapter proposal via `recap chapters` — but
 scene-boundary fusion, topic-shift detection, speaker-change
 detection, and chapter titling remain Phase 3 work. Per-chapter
-ranking fusion is now implemented via `recap rank`. The screenshot
-keep/reject rules remain Phase 3 work.
+ranking fusion is now implemented via `recap rank`. The
+deterministic pre-VLM keep/reject shortlist is now implemented
+via `recap shortlist`; blur / low-information detection and the
+VLM-dependent visual-quality keep rules remain deferred.
 
 ## Binding sources of truth
 
@@ -180,15 +217,18 @@ task runner is wired up.
 
 No session may jump ahead of the approved phase. Today the approved
 work is Phase 1 (complete) plus the full Phase 2 checklist (complete)
-plus the first four Phase 3 slices (transcript-window alignment via
+plus the first five Phase 3 slices (transcript-window alignment via
 `recap window`, OpenCLIP frame/text similarity via
 `recap similarity`, the pause-only chapter proposal via
-`recap chapters`, and per-chapter ranking fusion via
-`recap rank`). Any remaining Phase 3/4 work — full-fusion
+`recap chapters`, per-chapter ranking fusion via `recap rank`, and
+the deterministic pre-VLM keep/reject shortlist via
+`recap shortlist`). Any remaining Phase 3/4 work — full-fusion
 chaptering (scene boundaries, topic shifts, speaker changes, chapter
-titling), keep/reject rules, VLM verification, DOCX/HTML/Notion
-export, WhisperX, queues, workers, plugin systems — stays out until
-the next chunk is explicitly approved.
+titling), blur / low-information detection, VLM verification,
+captions, `selected_frames.json`, report screenshot embedding,
+DOCX/HTML/Notion/PDF export, WhisperX, pyannote, Deepgram, Groq,
+UI, queues, workers, plugin systems — stays out until the next
+chunk is explicitly approved.
 
 If a proposed change requires scope not documented in `MASTER_BRIEF.md`,
 stop and raise it for a product decision instead of inventing scope.
@@ -234,12 +274,14 @@ PATH). To exercise the Phase 3 entry points, run
 and `torch`; first run downloads the OpenCLIP `ViT-B-32` OpenAI
 weights), then `recap chapters --job jobs/<job_id>` (pure stdlib;
 reads `transcript.json` only and writes
-`chapter_candidates.json`), and then
-`recap rank --job jobs/<job_id>` (pure stdlib; reads
-`scenes.json`, `chapter_candidates.json`, `frame_scores.json`,
-`frame_windows.json`, and `frame_similarities.json` and writes
-`frame_ranks.json`). Re-run each to confirm the skip path, or
-pass `--force` to confirm recompute.
+`chapter_candidates.json`), then `recap rank --job jobs/<job_id>`
+(pure stdlib; reads `scenes.json`, `chapter_candidates.json`,
+`frame_scores.json`, `frame_windows.json`, and
+`frame_similarities.json` and writes `frame_ranks.json`), and
+then `recap shortlist --job jobs/<job_id>` (pure stdlib; reads
+`frame_ranks.json` only and writes `frame_shortlist.json`).
+Re-run each to confirm the skip path, or pass `--force` to
+confirm recompute.
 
 ## Next-session checklist
 

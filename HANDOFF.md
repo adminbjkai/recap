@@ -1,27 +1,33 @@
-# Recap — Phase 1 Handoff (+ Phase 2 checklist complete, + first four Phase 3 slices)
+# Recap — Phase 1 Handoff (+ Phase 2 checklist complete, + first five Phase 3 slices)
 
 This document closes out Phase 1 of Recap and records the Phase 2
 slices approved and implemented so far: Stage 5 candidate frame
 extraction, and the combined pHash + SSIM duplicate marking with
 Tesseract OCR novelty scoring. All checklist items in
-`TASKS.md` Phase 2 are ticked. Four Phase 3 slices are also
+`TASKS.md` Phase 2 are ticked. Five Phase 3 slices are also
 implemented: transcript-window alignment per candidate frame
 (`recap window` → `frame_windows.json`), OpenCLIP frame/text cosine
 similarity (`recap similarity` → `frame_similarities.json`), a
 first chaptering slice that proposes chapters from transcript pause
-gaps only (`recap chapters` → `chapter_candidates.json`), and
+gaps only (`recap chapters` → `chapter_candidates.json`),
 per-chapter deterministic ranking fusion
-(`recap rank` → `frame_ranks.json`). The chaptering slice is
-explicitly **not** full Stage 4 chaptering — it uses pauses only,
+(`recap rank` → `frame_ranks.json`), and a deterministic pre-VLM
+keep/reject shortlist
+(`recap shortlist` → `frame_shortlist.json`). The chaptering slice
+is explicitly **not** full Stage 4 chaptering — it uses pauses only,
 with a minimum-chapter-length merge, and does not consult scene
 boundaries, topic shifts, speaker diarization, or any LLM. The
 ranking slice is marking-only: it does not apply keep/reject
 thresholds, enforce a screenshot budget, write
-`selected_frames.json`, or modify `report.md`. The remainder of
-Phase 3 (full-fusion chaptering, keep/reject rules) and all of
-Phase 4 (VLM verification, export formats) remain out of scope.
-This file reflects the current code in this repository — not a
-plan, not a roadmap. Anything not listed here is explicitly
+`selected_frames.json`, or modify `report.md`. The shortlist slice
+is marking-only and pre-VLM: it does not write
+`selected_frames.json` (reserved for Phase 4 post-VLM finalists),
+invoke any VLM, generate captions, embed screenshots, export
+documents, add UI, or do any speaker diarization / recognition /
+separation work. The remainder of Phase 3 (full-fusion chaptering)
+and all of Phase 4 (VLM verification, export formats) remain out of
+scope. This file reflects the current code in this repository —
+not a plan, not a roadmap. Anything not listed here is explicitly
 deferred.
 
 Binding references: `MASTER_BRIEF.md`, `ARCHITECTURE.md`, `TASKS.md`,
@@ -243,9 +249,75 @@ Phase 1 stages only. The pause-only chapter proposal runs via
 
 This Phase 3 slice is opt-in. `recap run` continues to execute the
 Phase 1 stages only. Per-chapter ranking runs via
-`recap rank --job <path>`. The remaining Phase 3 checklist items
-(full-fusion chaptering, keep/reject rules) and all of Phase 4
-remain deferred.
+`recap rank --job <path>`.
+
+## What the fifth Phase 3 slice includes
+
+- **Deterministic pre-VLM keep/reject shortlist.** Read
+  `frame_ranks.json` and write `frame_shortlist.json`. For every
+  candidate frame in every chapter, a closed-vocabulary
+  `decision` and ordered `reasons` list are recorded. Evaluation
+  is per-frame in the rank-ascending order already in
+  `frame_ranks.json`:
+
+  1. If `duplicate_of is not None` → `decision =
+     "rejected_duplicate"`, reasons = `["duplicate_of_predecessor"]`.
+  2. Else if `clip_similarity_or_0 < CLIP_KEEP_THRESHOLD` and
+     `text_novelty_or_0 < OCR_NOVELTY_THRESHOLD` → `decision =
+     "rejected_weak_signal"`, reasons =
+     `["clip_similarity_below_threshold",
+     "text_novelty_below_threshold"]`.
+  3. Else if the chapter has fewer than `HERO_PER_CHAPTER` heroes
+     → `decision = "hero"`, reasons = `["kept_as_hero"]`.
+  4. Else if the chapter has fewer than `SUPPORTING_PER_CHAPTER`
+     supporting → `decision = "supporting"`, reasons =
+     `["kept_as_supporting"]`.
+  5. Else → `decision = "dropped_over_budget"`, reasons =
+     `["exceeds_total_per_chapter"]`.
+
+  `CLIP_KEEP_THRESHOLD = 0.30`, `OCR_NOVELTY_THRESHOLD = 0.25`,
+  `HERO_PER_CHAPTER = 1`, `SUPPORTING_PER_CHAPTER = 2`,
+  `TOTAL_PER_CHAPTER = 3`, and
+  `POLICY_VERSION = "keep_reject_v1"` are fixed code-level
+  constants in `recap/stages/shortlist.py`. None are exposed as
+  CLI flags, env vars, or config. A retune must bump
+  `POLICY_VERSION` so the skip contract invalidates any stored
+  shortlist. The `TOTAL_PER_CHAPTER = 3` budget is intentionally
+  matched to Stage 7's "top 1 to 3 candidate frames per chapter"
+  VLM verification step — this is a pre-VLM shortlist, not the
+  final report screenshot budget, and it does not implement
+  final screenshot embedding. No new Python or system
+  dependencies are introduced; no ML model is loaded. The stage
+  is marking-only and pre-VLM: it does not write
+  `selected_frames.json` (that filename is reserved for Phase 4
+  post-VLM finalists), invoke any VLM, generate captions, embed
+  screenshots in `report.md`, export DOCX / HTML / Notion / PDF,
+  add UI, or do any speaker diarization / recognition /
+  separation work. It does not touch `transcript.json`,
+  `scenes.json`, `chapter_candidates.json`, `frame_scores.json`,
+  `frame_windows.json`, `frame_similarities.json`,
+  `frame_ranks.json`, `candidate_frames/`, or `report.md`. Blur /
+  low-information detection and VLM-dependent "shows code /
+  diagrams / settings / dashboards" judgments are deferred.
+  Per-chapter entries are `chapter_index` (1-based),
+  `start_seconds`, `end_seconds`, `frame_count`, `kept_count`,
+  `hero_scene_index` (int or null), `supporting_scene_indices`
+  (list of ints, possibly empty), `frames`; per-frame entries
+  are `rank`, `scene_index`, `frame_file`, `midpoint_seconds`,
+  `composite_score`, `clip_similarity` (original, possibly
+  null), `text_novelty` (original, possibly null),
+  `duplicate_of` (original, possibly null), `decision`,
+  `reasons`; top-level keys are `video`, `ranks_source`
+  (`frame_ranks.json`), `thresholds`, `budget`, `policy_version`,
+  `input_fingerprints` (SHA-256 hex over canonical JSON of
+  `frame_ranks.json`), `chapter_count`, `frame_count`,
+  `kept_count`, `rejected_count`,
+  `dropped_over_budget_count`, `chapters`.
+
+This Phase 3 slice is opt-in. `recap run` continues to execute the
+Phase 1 stages only. The keep/reject shortlist runs via
+`recap shortlist --job <path>`. The remaining Phase 3 checklist
+item (full-fusion chaptering) and all of Phase 4 remain deferred.
 
 ## Running Phase 1 locally
 
@@ -266,6 +338,7 @@ python3.12 -m venv .venv
 .venv/bin/python -m recap similarity --job jobs/<job_id>
 .venv/bin/python -m recap chapters   --job jobs/<job_id>
 .venv/bin/python -m recap rank       --job jobs/<job_id>
+.venv/bin/python -m recap shortlist  --job jobs/<job_id>
 .venv/bin/python -m recap assemble   --job jobs/<job_id>
 .venv/bin/python -m recap status     --job jobs/<job_id>
 ```
@@ -431,6 +504,39 @@ fusion output:
   (original value, possibly null), and `composite_score` (plain
   Python float).
 
+Running `recap shortlist --job <path>` adds the keep/reject
+pre-VLM shortlist output:
+
+- `frame_shortlist.json` — top-level `video`, `ranks_source`
+  (`frame_ranks.json`), `thresholds` (dict with
+  `clip_keep_threshold` `0.30` and `ocr_novelty_threshold`
+  `0.25`), `budget` (dict with `hero_per_chapter` `1`,
+  `supporting_per_chapter` `2`, `total_per_chapter` `3`),
+  `policy_version` (`keep_reject_v1`), `input_fingerprints` (dict
+  with one entry keyed `frame_ranks.json`, value is a 64-char
+  SHA-256 hex digest over canonical JSON), `chapter_count`,
+  `frame_count` (all input frames), `kept_count` (hero +
+  supporting), `rejected_count` (rejected_duplicate +
+  rejected_weak_signal), `dropped_over_budget_count`, and a
+  `chapters` list with one entry per chapter:
+  `chapter_index` (1-based), `start_seconds`, `end_seconds`,
+  `frame_count`, `kept_count`, `hero_scene_index` (int or null),
+  `supporting_scene_indices` (list of ints, possibly empty), and
+  a `frames` list emitted in rank-ascending order (same order as
+  `frame_ranks.json`). Each frame entry has `rank`, `scene_index`,
+  `frame_file`, `midpoint_seconds`, `composite_score`,
+  `clip_similarity` (original, possibly null), `text_novelty`
+  (original, possibly null), `duplicate_of` (original, possibly
+  null), `decision` (one of `hero`, `supporting`,
+  `rejected_duplicate`, `rejected_weak_signal`,
+  `dropped_over_budget`), and `reasons` (ordered list drawn from
+  the closed vocabulary `duplicate_of_predecessor`,
+  `clip_similarity_below_threshold`,
+  `text_novelty_below_threshold`, `kept_as_hero`,
+  `kept_as_supporting`, `exceeds_total_per_chapter`).
+  `selected_frames.json` is **not** written by this stage; it is
+  reserved for Phase 4 post-VLM finalists.
+
 Running `recap dedupe --job <path>` adds the pHash + SSIM + OCR slice
 output:
 
@@ -452,8 +558,8 @@ output:
   `duplicate_of`.
 
 The `stages.scenes`, `stages.dedupe`, `stages.window`,
-`stages.similarity`, `stages.chapters`, and `stages.rank` entries
-on `job.json`
+`stages.similarity`, `stages.chapters`, `stages.rank`, and
+`stages.shortlist` entries on `job.json`
 appear the first time each stage runs (they are intentionally not
 pre-populated for new jobs, so the rollup is not held back by unmet
 Phase 2 or Phase 3 obligations).
@@ -481,14 +587,16 @@ transcript segments — whatever is actually on disk.
   (`metadata.json`, `analysis.mp4`, `audio.wav`, `transcript.json`,
   `transcript.srt`, `scenes.json`, `frame_scores.json`,
   `frame_windows.json`, `frame_similarities.json`,
-  `chapter_candidates.json`, `frame_ranks.json`, `report.md`, and
-  the `candidate_frames/` directory) and resets the `normalize`,
-  `transcribe`, `scenes`, `dedupe`, `window`, `similarity`,
-  `chapters`, `rank`, and `assemble` stage entries to `pending`, so
-  the next `recap run` (plus an explicit `recap scenes`,
+  `chapter_candidates.json`, `frame_ranks.json`,
+  `frame_shortlist.json`, `report.md`, and the `candidate_frames/`
+  directory) and resets the `normalize`, `transcribe`, `scenes`,
+  `dedupe`, `window`, `similarity`, `chapters`, `rank`,
+  `shortlist`, and `assemble` stage entries to `pending`, so the
+  next `recap run` (plus an explicit `recap scenes`,
   `recap dedupe`, `recap window`, `recap similarity`,
-  `recap chapters`, and `recap rank` if those slices were in use)
-  regenerates them cleanly from the new source.
+  `recap chapters`, `recap rank`, and `recap shortlist` if those
+  slices were in use) regenerates them cleanly from the new
+  source.
 - **Stage 5 restart.** `recap scenes` skips when `scenes.json` is
   present and every `frame_file` it lists is on disk; otherwise it
   recomputes. `recap scenes --force` removes `scenes.json` and the
@@ -556,13 +664,35 @@ transcript segments — whatever is actually on disk.
   and every per-chapter and per-frame field. Any drift in any of
   the five input artifacts — including changes to
   `frame_windows.json` fields not directly used in ranking —
-  triggers a recompute via fingerprint mismatch. `recap rank --force` removes
-  `frame_ranks.json` before recomputing. Missing any input
-  artifact, malformed JSON, empty `scenes` or `chapters` lists,
-  non-contiguous chapter intervals, a `scene_index` mismatch
-  across inputs, or a scene whose `midpoint_seconds` falls outside
-  all chapters exits 2 with a one-line `error: ...` message and
-  does not leave a partial `frame_ranks.json` on disk.
+  triggers a recompute via fingerprint mismatch.
+  `recap rank --force` removes `frame_ranks.json` before
+  recomputing. Missing any input artifact, malformed JSON, empty
+  `scenes` or `chapters` lists, non-contiguous chapter intervals,
+  a `scene_index` mismatch across inputs, or a scene whose
+  `midpoint_seconds` falls outside all chapters exits 2 with a
+  one-line `error: ...` message and does not leave a partial
+  `frame_ranks.json` on disk.
+- **`recap shortlist` restart.** `recap shortlist` skips when
+  `frame_shortlist.json` already matches a fresh recomputation
+  from the current `frame_ranks.json` — same `ranks_source`,
+  `thresholds`, `budget`, `policy_version`, `input_fingerprints`
+  (SHA-256 hex over canonical JSON of `frame_ranks.json`),
+  counts, ordered chapters, and every per-frame field. Any drift
+  in `frame_ranks.json` (including drift that propagated into it
+  from `scenes.json`, `chapter_candidates.json`,
+  `frame_scores.json`, `frame_windows.json`, or
+  `frame_similarities.json` via the rank stage's own
+  fingerprint chain) triggers a recompute.
+  `recap shortlist --force` removes `frame_shortlist.json`
+  before recomputing. Missing `frame_ranks.json`, malformed
+  JSON, an empty `chapters` list, a chapter missing required
+  fields, a chapter whose `rank` sequence is not `1..N` in
+  ascending order, a frame missing any required field, a
+  non-integer `rank` or `scene_index`, a non-numeric
+  `composite_score`, `midpoint_seconds`, `clip_similarity`, or
+  `text_novelty`, or a duplicate `scene_index` across the whole
+  input exits 2 with a one-line `error: ...` message and does
+  not leave a partial `frame_shortlist.json` on disk.
 - **`recap dedupe` restart.** `recap dedupe` skips when
   `frame_scores.json` already matches the current `scenes.json` and
   `candidate_frames/` — same metric (`phash+ssim+ocr`), hash size,
@@ -649,10 +779,13 @@ later phases and are **not** present in the current codebase:
   `chapter_candidates.json` — is implemented (see above), but
   scene-boundary fusion, topic-shift detection, speaker-change
   detection, and chapter titling remain deferred. Per-chapter
-  ranking fusion is implemented (see above). The screenshot
-  keep/reject rules are not implemented. Transcript-window
-  alignment and OpenCLIP frame/text similarity — the first two
-  Phase 3 slices — are implemented (see above).
+  ranking fusion is implemented (see above). The deterministic
+  pre-VLM keep/reject shortlist is implemented (see above);
+  blur / low-information detection and the VLM-dependent
+  "shows code / diagrams / settings / dashboards" keep rule
+  remain deferred. Transcript-window alignment and OpenCLIP
+  frame/text similarity — the first two Phase 3 slices — are
+  implemented (see above).
 - Phase 4: optional VLM verification on finalists only
   (`selected_frames.json`), caption generation, chapter-aware Markdown
   assembly with embedded screenshots, and optional DOCX / HTML / Notion /
@@ -663,7 +796,7 @@ These names are preserved in the binding docs and the artifact layout
 section of `ARCHITECTURE.md`, but no code, interface, stub, or
 configuration for any of them exists in the repo.
 
-## Phase 1 closeout (+ Phase 2 checklist complete, + first four Phase 3 slices)
+## Phase 1 closeout (+ Phase 2 checklist complete, + first five Phase 3 slices)
 
 Phase 1 is complete, audited, hardened, and validated end-to-end on a
 real speech sample. The required artifacts are produced, the pipeline
@@ -673,7 +806,7 @@ points are implemented: Stage 5 candidate frame extraction
 (`recap scenes` → `scenes.json` + `candidate_frames/`) and the combined
 pHash + SSIM duplicate marking with Tesseract OCR novelty scoring
 (`recap dedupe` → `frame_scores.json`). Every item in the `TASKS.md`
-Phase 2 checklist is now ticked. Four Phase 3 slices are also
+Phase 2 checklist is now ticked. Five Phase 3 slices are also
 implemented: transcript-window alignment per candidate frame
 (`recap window` → `frame_windows.json`), a deterministic ±6 second
 window around each scene midpoint with the overlapping transcript
@@ -683,17 +816,31 @@ using a pinned `ViT-B-32 / openai` model on CPU with the model's
 shipped preprocessing; a first chaptering slice
 (`recap chapters` → `chapter_candidates.json`) that proposes
 chapters from transcript pause gaps only (`PAUSE_SECONDS = 2.0`,
-`MIN_CHAPTER_SECONDS = 30.0`); and per-chapter deterministic ranking
+`MIN_CHAPTER_SECONDS = 30.0`); per-chapter deterministic ranking
 fusion (`recap rank` → `frame_ranks.json`) that scores and ranks
 candidate frames within each chapter using OpenCLIP similarity, OCR
-text novelty, and a duplicate penalty with fixed code-level weights.
-The chapters slice is explicitly not full Stage 4 chaptering —
-scene-boundary fusion, topic-shift detection, speaker-change
-detection, and chapter titling remain deferred. The ranking slice is
-marking-only — it does not apply keep/reject thresholds, enforce a
-screenshot budget, write `selected_frames.json`, or modify
-`report.md`. All six opt-in entry points have been validated against
-a multi-scene sample, including skip-on-rerun, `--force` recompute
+text novelty, and a duplicate penalty with fixed code-level weights;
+and a deterministic pre-VLM keep/reject shortlist
+(`recap shortlist` → `frame_shortlist.json`) that labels each frame
+as hero / supporting / rejected_duplicate / rejected_weak_signal /
+dropped_over_budget under fixed thresholds
+(`CLIP_KEEP_THRESHOLD = 0.30`, `OCR_NOVELTY_THRESHOLD = 0.25`) and
+a `1 + 2` per-chapter budget that matches Stage 7's "top 1 to 3
+candidate frames per chapter" VLM verification step. The chapters
+slice is explicitly not full Stage 4 chaptering — scene-boundary
+fusion, topic-shift detection, speaker-change detection, and
+chapter titling remain deferred. The ranking slice is marking-only
+— it does not apply keep/reject thresholds, enforce a screenshot
+budget, write `selected_frames.json`, or modify `report.md`. The
+shortlist slice is marking-only and pre-VLM — it does not write
+`selected_frames.json` (that filename is reserved for Phase 4
+post-VLM finalists), invoke any VLM, generate captions, embed
+screenshots, export documents, add UI, or do any speaker
+diarization / recognition / separation work; blur /
+low-information detection and the VLM-dependent "shows code /
+diagrams / settings / dashboards" keep rule remain deferred. All
+seven opt-in entry points have been validated against a
+multi-scene sample, including skip-on-rerun, `--force` recompute
 (byte-identical on re-run on the same machine), and clean
 `error: ... / exit 2` paths for missing or malformed inputs. No
 other Phase 3+ scaffolding has been introduced. Further work should

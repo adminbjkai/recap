@@ -85,6 +85,10 @@ class JobPaths:
     def frame_ranks_json(self) -> Path:
         return self.root / "frame_ranks.json"
 
+    @property
+    def frame_shortlist_json(self) -> Path:
+        return self.root / "frame_shortlist.json"
+
     def original(self, ext: str) -> Path:
         ext = ext.lstrip(".")
         return self.root / f"original.{ext}"

@@ -11,6 +11,7 @@ Subcommands:
   similarity OpenCLIP frame/text cosine similarity (Phase 3 slice; not invoked by `run`).
   chapters   Transcript-pause chapter proposal (Phase 3 slice; not invoked by `run`).
   rank       Per-chapter ranking fusion (Phase 3 slice; not invoked by `run`).
+  shortlist  Keep/reject pre-VLM shortlist (Phase 3 slice; not invoked by `run`).
   assemble   Stage 8 (basic Markdown) only.
   status     Print job.json summary.
 
@@ -38,6 +39,7 @@ from .stages import (
     normalize,
     rank,
     scenes,
+    shortlist,
     similarity,
     transcribe,
     window,
@@ -133,6 +135,12 @@ def cmd_chapters(args) -> int:
 def cmd_rank(args) -> int:
     paths = job_mod.open_job(Path(args.job))
     rank.run(paths, force=args.force)
+    return 0
+
+
+def cmd_shortlist(args) -> int:
+    paths = job_mod.open_job(Path(args.job))
+    shortlist.run(paths, force=args.force)
     return 0
 
 
@@ -236,6 +244,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--job", required=True)
     sp.add_argument("--force", action="store_true")
     sp.set_defaults(func=cmd_rank)
+
+    sp = sub.add_parser(
+        "shortlist",
+        help="Phase 3 slice: keep/reject shortlist -> frame_shortlist.json",
+    )
+    sp.add_argument("--job", required=True)
+    sp.add_argument("--force", action="store_true")
+    sp.set_defaults(func=cmd_shortlist)
 
     sp = sub.add_parser("assemble", help="Stage 8: basic report.md")
     sp.add_argument("--job", required=True)
