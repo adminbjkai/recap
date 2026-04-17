@@ -32,6 +32,7 @@
 - [x] Integrate OpenCLIP scoring between candidate frames and transcript chunks (opt-in via `recap similarity`)
 - [x] Rank frames per chapter using deduplication, OCR novelty, and semantic similarity together (opt-in via `recap rank`; writes `frame_ranks.json`)
 - [x] Apply deterministic screenshot keep/reject rules before shortlist finalization (opt-in via `recap shortlist`; writes `frame_shortlist.json`; `selected_frames.json` remains reserved for Phase 4 post-VLM finalists; blur/VLM-dependent visual-quality rules remain deferred).
+- [x] Add optional Deepgram cloud transcription engine with diarized utterances (opt-in via `--engine deepgram` on `recap run` and `recap transcribe`; `DEEPGRAM_API_KEY` env required only on recompute; adds `utterances`, `speakers`, `words`, `provider_metadata` as additive optional fields on `transcript.json`; `faster-whisper` remains the default; Groq, WhisperX, pyannote, speaker recognition/manual labels, and speaker-change chaptering signals remain deferred).
 
 ## Phase 4: Precision Polish
 

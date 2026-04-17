@@ -714,8 +714,10 @@ transcript segments — whatever is actually on disk.
 
 ## Transcription behavior and the swap seam
 
-The default and only shipped engine is `faster-whisper`. `transcript.json`
-has this stable shape:
+The default engine is `faster-whisper`. `recap run` and
+`recap transcribe` both accept `--engine {faster-whisper,deepgram}`
+(default `faster-whisper`). The faster-whisper `transcript.json`
+shape is unchanged:
 
 ```json
 {
@@ -731,28 +733,136 @@ has this stable shape:
 }
 ```
 
-`engine`, `provider`, `model`, and `segments` are the stable contract read
-by downstream code. `provider` is `null` for local engines and is the only
-addition compared with a strictly-local Whisper setup.
+`engine`, `provider`, `model`, `duration`, and `segments` are the
+stable contract read by downstream code. `provider` is `null` for
+local engines and `"deepgram"` for the Deepgram path.
 
-**Swap seam (present, narrow, not implemented for any other engine).** The
-transcription stage is a function-level strategy. `recap/stages/
-transcribe.py` is the only file in the project that imports
-`faster_whisper` (verified). To add a new engine later (Deepgram, Groq, an
-OpenRouter-hosted Whisper, Nvidia-hosted, Gemma, or another Whisper
-variant), add a sibling `_transcribe_<name>(audio, model_name) -> dict`
-that returns the same shape and add a branch on `engine` inside `run()`.
-No other file, schema, CLI flag, or artifact is expected to change.
+**Deepgram sibling is implemented and optional.** Opt in with
+`--engine deepgram`. Request parameters sent to
+`POST {base_url}/v1/listen` are pinned in
+`recap/stages/transcribe.py` for this slice: `smart_format=true`,
+`punctuate=true`, `utterances=true`, `diarize=true`,
+`detect_language=true`. `DEEPGRAM_DEFAULT_MODEL = "nova-3"`,
+`DEEPGRAM_DEFAULT_BASE_URL = "https://api.deepgram.com"`,
+`DEEPGRAM_TIMEOUT_SECONDS = 300`, and
+`DEEPGRAM_PROVIDER_VERSION = "deepgram_v1"` are fixed code-level
+constants. A retune of any of them must bump
+`DEEPGRAM_PROVIDER_VERSION`. The engine reads three environment
+variables: `DEEPGRAM_API_KEY` (required only when a recompute is
+needed; a skip path that already matches the requested engine and
+model does NOT require the key), `DEEPGRAM_MODEL` (optional
+override of the pinned default), and `DEEPGRAM_BASE_URL` (optional
+override of the pinned default). No new Python dependency is
+introduced — the HTTP call uses stdlib `urllib.request` only.
 
-No registry, abstract base class, plugin system, config file, or env-var
-indirection is in place or planned for Phase 1 — and per the docstring in
-`transcribe.py` should not be added.
+**Deepgram transcript additive shape.** When `engine == "deepgram"`,
+`transcript.json` keeps every required field at the same names and
+types, and adds four optional fields:
+
+```json
+{
+  "engine": "deepgram",
+  "provider": "deepgram",
+  "model": "nova-3",
+  "language": "en",
+  "language_probability": 0.93,
+  "duration": 42.0,
+  "segments": [{"id": 0, "start": 0.5, "end": 3.2, "text": "..."}],
+  "utterances": [
+    {"id": 0, "start": 0.5, "end": 3.2, "text": "...",
+     "speaker": 0, "confidence": 0.98}
+  ],
+  "speakers": [
+    {"id": 0, "utterance_count": 12, "total_seconds": 93.4,
+     "first_seen_seconds": 0.0, "last_seen_seconds": 221.8}
+  ],
+  "words": [
+    {"start": 0.5, "end": 0.9, "word": "hello",
+     "confidence": 0.99, "speaker": 0}
+  ],
+  "provider_metadata": {
+    "provider_version": "deepgram_v1",
+    "model": "nova-3",
+    "diarize": true,
+    "smart_format": true,
+    "punctuate": true,
+    "detect_language": true,
+    "base_url": "https://api.deepgram.com",
+    "request_params": { "model": "nova-3", "smart_format": "true", "...": "..." }
+  }
+}
+```
+
+- `segments` are derived from Deepgram utterances (speaker /
+  confidence stripped) so every current downstream stage reads the
+  same shape it did before. If Deepgram returns no utterances,
+  `segments` falls back to a single entry built from
+  `results.channels[0].alternatives[0].transcript`; if that is also
+  empty the stage exits 2 with `error: deepgram returned no
+  transcript`.
+- `utterances` carry the integer cluster `speaker` and float
+  `confidence` returned by Deepgram. Empty-text utterances are
+  dropped.
+- `speakers` is deterministically derived from `utterances` sorted
+  by `speaker` ascending; per entry: `utterance_count`,
+  `total_seconds` (summed `end - start`), `first_seen_seconds`,
+  `last_seen_seconds`.
+- `words` is present whenever Deepgram returned words; per entry:
+  `start`, `end`, `word` (prefers `punctuated_word`), `confidence`,
+  `speaker`. Empty list otherwise.
+- `provider_metadata` records the pinned request parameters and the
+  resolved `base_url` and `model`. No request id, no raw response
+  dump, no API key.
+
+`faster-whisper` output is **unchanged on disk**: `utterances`,
+`speakers`, `words`, and `provider_metadata` are NOT emitted for
+the faster-whisper path. Every existing downstream stage
+(`recap window`, `recap chapters`, `recap rank`, `recap shortlist`,
+`recap assemble`) reads only `segments` and `duration`; they are
+unaware of the new Deepgram-only fields and continue to work
+unchanged over either engine's transcript. `recap run` stays
+Phase-1-only in stage composition (`ingest → normalize →
+transcribe → assemble`); the only change is that it forwards the
+`--engine` flag to `transcribe.run()`.
+
+**Atomic writes.** Both `transcript.json` and `transcript.srt` are
+written via `.json.tmp` / `.srt.tmp` + `replace()`. On failure the
+temp files are removed so no half-written artifact remains on disk.
+
+**Skip contract.** A job whose stored `transcript.json` already has
+the requested `engine` and `model` (with both `transcript.json` and
+`transcript.srt` present) short-circuits with `skipped: true`. Any
+mismatch on `engine` or `model` triggers a recompute.
+
+**Error paths (all exit 2 with a single-line `error: ...`, no
+traceback, no partial `transcript.json{,.tmp}` or
+`transcript.srt{,.tmp}` on disk):** missing `DEEPGRAM_API_KEY` on
+recompute, HTTP 401/403 (`deepgram authentication failed`), other
+non-2xx (`deepgram request failed`), timeout, network failure,
+invalid JSON, and empty-transcript responses.
+
+**Swap seam (narrow, one `if/elif`, no registry).** The stage is a
+function-level strategy: `recap/stages/transcribe.py` contains
+`_transcribe_faster_whisper(audio, model_name)` and
+`_transcribe_deepgram(audio, model_name, base_url, api_key)` as
+siblings; `run()` dispatches on the `engine` argument. To add a
+future engine (Groq, OpenRouter-hosted Whisper, Nvidia-hosted,
+Gemma, WhisperX, etc.), add another sibling returning the same
+shape and extend the `if/elif`. No registry, ABC, plugin system,
+config file, or env-var indirection is in place or planned.
+
+**Still deferred.** Groq, WhisperX, pyannote, speaker
+recognition/manual labels, speaker-change chaptering signal, UI,
+captions, report screenshot embedding, `selected_frames.json`,
+and DOCX/HTML/Notion/PDF exports.
 
 ## Known limitations and assumptions
 
-- **Single-engine.** Only `faster-whisper` is implemented. `WhisperX` is
-  listed as optional in `TASKS.md` but intentionally not wired up; the
-  seam above is the integration point when it or another engine is added.
+- **Two engines.** `faster-whisper` (default, local) and `deepgram`
+  (optional cloud, opt-in via `--engine deepgram`) are implemented.
+  `WhisperX`, `pyannote`, and Groq are still not wired up; they are
+  listed in `TASKS.md` or noted as deferred and plug into the same
+  function-level swap seam when explicitly approved.
 - **CPU-only transcription.** The model is instantiated on CPU with
   `int8` quantization; no GPU or batched-pipeline configuration is
   exposed.

@@ -21,6 +21,14 @@ invoked without an existing job, a new one is created under `--jobs-root`
 Phase 2 slices are opt-in via `recap scenes --job <path>` (Stage 5) and
 `recap dedupe --job <path>` (pHash + SSIM duplicate marking +
 Tesseract OCR novelty scoring).
+
+Transcription engine selection is exposed on `recap run` and
+`recap transcribe` via `--engine {faster-whisper,deepgram}`. Default
+is `faster-whisper`. The Deepgram engine reads `DEEPGRAM_API_KEY`,
+`DEEPGRAM_MODEL`, and `DEEPGRAM_BASE_URL` from the environment; the
+API key is only required on recompute, so a job whose stored
+transcript already matches the requested engine and model will skip
+without needing credentials.
 """
 
 from __future__ import annotations
@@ -48,6 +56,8 @@ from .stages import (
 
 DEFAULT_JOBS_ROOT = Path("jobs")
 DEFAULT_MODEL = "small"
+DEFAULT_ENGINE = "faster-whisper"
+ENGINE_CHOICES = ("faster-whisper", "deepgram")
 
 
 def _open_or_create(args) -> job_mod.JobPaths:
@@ -74,7 +84,9 @@ def cmd_run(args) -> int:
 
     print(f"[job] {paths.root}")
     normalize.run(paths, force=args.force)
-    transcribe.run(paths, model=args.model, force=args.force)
+    transcribe.run(
+        paths, model=args.model, engine=args.engine, force=args.force
+    )
     assemble.run(paths, force=args.force)
     print(f"[done] {paths.report_md}")
     return 0
@@ -98,7 +110,9 @@ def cmd_normalize(args) -> int:
 
 def cmd_transcribe(args) -> int:
     paths = job_mod.open_job(Path(args.job))
-    transcribe.run(paths, model=args.model, force=args.force)
+    transcribe.run(
+        paths, model=args.model, engine=args.engine, force=args.force
+    )
     return 0
 
 
@@ -181,7 +195,23 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("run", help="run the full Phase 1 pipeline")
     _common(sp)
     sp.add_argument("--source", help="path to the source video (required for new job)")
-    sp.add_argument("--model", default=DEFAULT_MODEL, help="faster-whisper model name")
+    sp.add_argument(
+        "--model",
+        default=DEFAULT_MODEL,
+        help=(
+            "faster-whisper model name; ignored for --engine deepgram, "
+            "which uses DEEPGRAM_MODEL or 'nova-3'"
+        ),
+    )
+    sp.add_argument(
+        "--engine",
+        default=DEFAULT_ENGINE,
+        choices=ENGINE_CHOICES,
+        help=(
+            f"transcription engine (default: {DEFAULT_ENGINE}). "
+            "'deepgram' requires DEEPGRAM_API_KEY in env on recompute."
+        ),
+    )
     sp.set_defaults(func=cmd_run)
 
     sp = sub.add_parser("ingest", help="Stage 1: copy source into a job directory")
@@ -196,7 +226,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("transcribe", help="Stage 3: transcript.json + transcript.srt")
     sp.add_argument("--job", required=True)
-    sp.add_argument("--model", default=DEFAULT_MODEL)
+    sp.add_argument(
+        "--model",
+        default=DEFAULT_MODEL,
+        help=(
+            "faster-whisper model name; ignored for --engine deepgram, "
+            "which uses DEEPGRAM_MODEL or 'nova-3'"
+        ),
+    )
+    sp.add_argument(
+        "--engine",
+        default=DEFAULT_ENGINE,
+        choices=ENGINE_CHOICES,
+        help=(
+            f"transcription engine (default: {DEFAULT_ENGINE}). "
+            "'deepgram' requires DEEPGRAM_API_KEY in env on recompute."
+        ),
+    )
     sp.add_argument("--force", action="store_true")
     sp.set_defaults(func=cmd_transcribe)
 

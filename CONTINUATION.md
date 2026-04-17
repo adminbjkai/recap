@@ -7,6 +7,18 @@ system does and produces, read `HANDOFF.md`.
 ## Current state
 
 - Phase 1 of Recap is implemented, audited, hardened, and closed out.
+- Optional Deepgram cloud transcription engine is wired up via
+  `--engine deepgram` on `recap run` and `recap transcribe`.
+  `faster-whisper` remains the default for both. The Deepgram path
+  adds additive optional fields (`utterances`, `speakers`, `words`,
+  `provider_metadata`) to `transcript.json` without changing the
+  existing `segments` / `duration` contract that every downstream
+  stage reads. No new Python dependency is introduced — stdlib
+  `urllib.request` only. Env vars: `DEEPGRAM_API_KEY` (required
+  only on recompute; skip path does not require it),
+  `DEEPGRAM_MODEL` (optional), `DEEPGRAM_BASE_URL` (optional).
+  The target Linux + RTX 3070 Ti local WhisperX/pyannote path is
+  still **not** wired up.
 - Two Phase 2 opt-in entry points are implemented: Stage 5 candidate
   frame extraction (`recap scenes`) and the combined pHash + SSIM
   duplicate marking with Tesseract OCR novelty scoring

@@ -270,6 +270,42 @@ dependencies or system binaries.
 Stages skip work when their artifacts already exist. Pass `--force` to
 recompute a stage.
 
+### Cloud transcription (Deepgram)
+
+`faster-whisper` is the default transcription engine for both
+`recap run` and `recap transcribe`. An optional cloud engine is
+available via `--engine deepgram` and is opt-in at the command line:
+
+```bash
+.venv/bin/python -m recap transcribe --job jobs/<job_id> --engine deepgram --force
+```
+
+Environment variables (read from the process environment; no `.env`
+loader):
+
+- `DEEPGRAM_API_KEY` — required when a Deepgram recompute is needed.
+  A skip path (stored `engine` and `model` already match the
+  requested ones) does NOT require the key.
+- `DEEPGRAM_MODEL` — optional override of the pinned default
+  `"nova-3"`.
+- `DEEPGRAM_BASE_URL` — optional override of
+  `"https://api.deepgram.com"`.
+
+Deepgram output is additive: `transcript.json` keeps the same
+`segments` / `duration` shape every existing stage reads, and gains
+optional `utterances`, `speakers`, `words`, and `provider_metadata`
+fields containing diarized utterance data (integer speaker cluster
+ids), a per-speaker summary, word-level timestamps when Deepgram
+returns them, and the request parameters used. `faster-whisper`
+transcripts are unchanged on disk — they do not emit those fields.
+
+Downstream stages (`recap window`, `recap chapters`, `recap rank`,
+`recap shortlist`, `recap assemble`) read only `segments` and
+`duration` and work unchanged over either engine's output. Speaker
+recognition/labeling, speaker-change chaptering signals, WhisperX,
+pyannote, Groq, captions, report screenshot embedding,
+`selected_frames.json`, UI, and exports remain deferred.
+
 ### Sample videos
 
 Local recordings for development and validation runs live in
