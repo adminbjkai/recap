@@ -12,6 +12,7 @@ Subcommands:
   chapters   Transcript-pause chapter proposal (Phase 3 slice; not invoked by `run`).
   rank       Per-chapter ranking fusion (Phase 3 slice; not invoked by `run`).
   shortlist  Keep/reject pre-VLM shortlist (Phase 3 slice; not invoked by `run`).
+  verify     Optional VLM verification over the shortlist (Phase 4 slice; not invoked by `run`).
   assemble   Stage 8 (basic Markdown) only.
   status     Print job.json summary.
 
@@ -50,6 +51,7 @@ from .stages import (
     shortlist,
     similarity,
     transcribe,
+    verify,
     window,
 )
 
@@ -58,6 +60,8 @@ DEFAULT_JOBS_ROOT = Path("jobs")
 DEFAULT_MODEL = "small"
 DEFAULT_ENGINE = "faster-whisper"
 ENGINE_CHOICES = ("faster-whisper", "deepgram")
+DEFAULT_VLM_PROVIDER = "mock"
+VLM_PROVIDER_CHOICES = ("mock", "gemini")
 
 
 def _open_or_create(args) -> job_mod.JobPaths:
@@ -155,6 +159,12 @@ def cmd_rank(args) -> int:
 def cmd_shortlist(args) -> int:
     paths = job_mod.open_job(Path(args.job))
     shortlist.run(paths, force=args.force)
+    return 0
+
+
+def cmd_verify(args) -> int:
+    paths = job_mod.open_job(Path(args.job))
+    verify.run(paths, provider=args.provider, force=args.force)
     return 0
 
 
@@ -298,6 +308,26 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--job", required=True)
     sp.add_argument("--force", action="store_true")
     sp.set_defaults(func=cmd_shortlist)
+
+    sp = sub.add_parser(
+        "verify",
+        help=(
+            "Phase 4 slice: optional VLM verification -> selected_frames.json. "
+            "Not invoked by `recap run`."
+        ),
+    )
+    sp.add_argument("--job", required=True)
+    sp.add_argument(
+        "--provider",
+        default=DEFAULT_VLM_PROVIDER,
+        choices=VLM_PROVIDER_CHOICES,
+        help=(
+            f"VLM provider (default: {DEFAULT_VLM_PROVIDER}). "
+            "'gemini' requires GEMINI_API_KEY in env on recompute."
+        ),
+    )
+    sp.add_argument("--force", action="store_true")
+    sp.set_defaults(func=cmd_verify)
 
     sp = sub.add_parser("assemble", help="Stage 8: basic report.md")
     sp.add_argument("--job", required=True)

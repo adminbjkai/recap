@@ -35,6 +35,7 @@ _DOWNSTREAM_ARTIFACTS = (
     "chapter_candidates_json",
     "frame_ranks_json",
     "frame_shortlist_json",
+    "selected_frames_json",
     "report_md",
 )
 _DOWNSTREAM_STAGES = (
@@ -47,6 +48,7 @@ _DOWNSTREAM_STAGES = (
     "chapters",
     "rank",
     "shortlist",
+    "verify",
     "assemble",
 )
 
@@ -85,7 +87,7 @@ def run(paths: JobPaths, source: Path, force: bool = False) -> Path:
             "(this will also discard downstream analysis, audio, transcript, "
             "scenes, candidate frames, frame scores, frame windows, frame "
             "similarities, chapter candidates, frame ranks, frame "
-            "shortlist, and report)."
+            "shortlist, VLM-verified selected frames, and report)."
         )
 
     if existing and not force:

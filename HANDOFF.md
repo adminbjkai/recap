@@ -1,4 +1,4 @@
-# Recap — Phase 1 Handoff (+ Phase 2 checklist complete, + first five Phase 3 slices)
+# Recap — Phase 1 Handoff (+ Phase 2 checklist complete, + first five Phase 3 slices, + first Phase 4 slice)
 
 This document closes out Phase 1 of Recap and records the Phase 2
 slices approved and implemented so far: Stage 5 candidate frame
@@ -24,11 +24,16 @@ ranking slice is marking-only: it does not apply keep/reject
 thresholds, enforce a screenshot budget, write
 `selected_frames.json`, or modify `report.md`. The shortlist slice
 is marking-only and pre-VLM: it does not write
-`selected_frames.json` (reserved for Phase 4 post-VLM finalists),
-invoke any VLM, generate captions, embed screenshots, export
-documents, add UI, or do any speaker diarization / recognition /
-separation work. The remainder of Phase 3 (full-fusion chaptering)
-and all of Phase 4 (VLM verification, export formats) remain out of
+`selected_frames.json`. One Phase 4 slice is also implemented:
+optional VLM verification over the shortlist
+(`recap verify` → `selected_frames.json`) with a deterministic
+`mock` provider (default) and an opt-in `gemini` provider, wired
+up through a narrow function-level swap seam in
+`recap/stages/verify.py`. `recap run` continues to stay
+Phase-1-only. The remainder of Phase 3 (topic-shift detection,
+speaker recognition / manual labels, chapter titling) and the
+remaining Phase 4 items (report screenshot embedding, caption
+rendering, DOCX / HTML / Notion / PDF export) remain out of
 scope. This file reflects the current code in this repository —
 not a plan, not a roadmap. Anything not listed here is explicitly
 deferred.
@@ -371,8 +376,168 @@ Phase 1 stages only. Per-chapter ranking runs via
 
 This Phase 3 slice is opt-in. `recap run` continues to execute the
 Phase 1 stages only. The keep/reject shortlist runs via
-`recap shortlist --job <path>`. The remaining Phase 3 checklist
-item (full-fusion chaptering) and all of Phase 4 remain deferred.
+`recap shortlist --job <path>`.
+
+## What the first Phase 4 slice includes
+
+- **Optional VLM verification over the pre-VLM shortlist.** Read
+  `frame_shortlist.json`, `chapter_candidates.json`, and
+  `frame_windows.json`, load each kept candidate's JPEG from
+  `candidate_frames/<frame_file>`, and write `selected_frames.json`.
+  Only frames with shortlist `decision in {"hero", "supporting"}`
+  are verified; `rejected_duplicate`, `rejected_weak_signal`, and
+  `dropped_over_budget` frames are never sent to the provider.
+  Two providers live as siblings in `recap/stages/verify.py`,
+  dispatched by a single `if/elif` on `--provider` (no registry,
+  ABC, plugin system, queue, worker, or config file):
+
+  - `_verify_mock` (default) — fully deterministic, no network.
+    Per frame: `relevance = "relevant"` when
+    `composite_score >= 0.30`, else `"uncertain"`;
+    `confidence = clamp(composite_score, 0.0, 1.0)`;
+    `caption = null`. Output is byte-identical across re-runs.
+  - `_verify_gemini` (opt-in via `--provider gemini`) — one stdlib
+    `urllib.request` POST per kept frame to
+    `{base_url}/v1beta/models/{model}:generateContent?key=<key>`
+    with an inline `image/jpeg` part. The prompt requires a
+    single strict JSON object shaped
+    `{"relevance","confidence","caption"}`; out-of-vocabulary
+    `relevance`, non-numeric `confidence`, or non-string
+    `caption` raise a stage error. `caption` is stripped,
+    truncated to `VLM_MAX_CAPTION_CHARS = 240`, and an empty
+    string collapses to `null`. One request per frame, no
+    retries in this slice. No API key is persisted to
+    artifacts, logs, docs, or prompts.
+
+  Decision policy (closed vocabulary):
+
+  - `relevance == "not_relevant"` → `decision = "vlm_rejected"`,
+    reasons append `"vlm_not_relevant"`.
+  - `relevance == "relevant"` → keep at the shortlist rung:
+    `"selected_hero"` if the frame was the shortlist hero,
+    else `"selected_supporting"`; reasons append
+    `"vlm_relevant"`.
+  - `relevance == "uncertain"` and
+    `confidence >= VLM_CONFIDENCE_KEEP_THRESHOLD` → keep at the
+    shortlist rung, reasons append `"vlm_uncertain_kept"`.
+    Otherwise reject as `"vlm_not_relevant"`.
+  - Hero promotion: if the original hero is rejected and at
+    least one supporting survives, the surviving supporting with
+    the lowest `rank` is promoted to `"selected_hero"` and its
+    reasons append `"vlm_tie_broken_by_rank"`. The chapter
+    `hero` and `supporting_scene_indices` are rebuilt after
+    promotion.
+
+  Fixed code-level constants in `recap/stages/verify.py`:
+  `VLM_DEFAULT_PROVIDER = "mock"`,
+  `GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"`,
+  `GEMINI_DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com"`,
+  `GEMINI_TIMEOUT_SECONDS = 120`,
+  `VLM_PROVIDER_VERSION = "vlm_v1"`,
+  `VLM_POLICY_VERSION = "vlm_select_v1"`,
+  `VLM_CONFIDENCE_KEEP_THRESHOLD = 0.50`,
+  `CHAPTER_CONTEXT_CHARS = 1500`,
+  `WINDOW_CONTEXT_CHARS = 1500`,
+  `VLM_MAX_CAPTION_CHARS = 240`. None are exposed as CLI flags.
+  A retune of the prompt, request shape, parse rules, or decision
+  policy must bump either `VLM_PROVIDER_VERSION` or
+  `VLM_POLICY_VERSION` so the skip contract invalidates any
+  stored artifact.
+
+  Environment variables (read only on `--provider gemini` and only
+  when a recompute is required): `GEMINI_API_KEY` (required),
+  `GEMINI_MODEL` (optional override of the default), and
+  `GEMINI_BASE_URL` (optional override of the default). A skip
+  path whose stored artifact already matches the requested
+  provider / model does NOT require the key.
+
+  Per-chapter entries: `chapter_index` (1-based), `start_seconds`,
+  `end_seconds`, `hero` (object with `scene_index`, `frame_file`,
+  `midpoint_seconds` when a hero was selected, else `null`),
+  `supporting_scene_indices` (list of ints, possibly empty),
+  `frame_count` (count of shortlist frames in the chapter across
+  all decisions), `verified_count` (count of kept shortlist frames
+  sent to the provider), `selected_count`, `rejected_count`,
+  `frames`. Per-frame entries: `rank`, `scene_index`,
+  `frame_file`, `midpoint_seconds`, `composite_score`,
+  `clip_similarity` (original, possibly null), `text_novelty`
+  (original, possibly null), `window_text` (the truncated
+  per-frame transcript window actually shown to the provider),
+  `shortlist_decision` (`"hero"` or `"supporting"`),
+  `verification` (`{provider, model, relevance, confidence,
+  caption}`), `decision`
+  ∈ `{"selected_hero","selected_supporting","vlm_rejected"}`,
+  `reasons` (ordered; first entry is the shortlist keep reason —
+  `"kept_as_hero"` or `"kept_as_supporting"` — followed by one
+  of `"vlm_relevant"`, `"vlm_uncertain_kept"`,
+  `"vlm_not_relevant"`, optionally `"vlm_tie_broken_by_rank"`).
+  Top-level keys: `video`, `shortlist_source`
+  (`frame_shortlist.json`), `chapters_source`
+  (`chapter_candidates.json`), `windows_source`
+  (`frame_windows.json`), `frames_dir` (`candidate_frames`),
+  `provider` (`"mock"` or `"gemini"`), `model` (`null` for mock,
+  the resolved Gemini model id otherwise), `provider_version`,
+  `policy_version`, `caption_mode` (`"off"` for mock, `"short"`
+  for gemini), `context` (dict with `chapter_context_chars` and
+  `window_context_chars`), `input_fingerprints` (dict with
+  SHA-256 hex digests over canonical JSON for
+  `frame_shortlist.json`, `chapter_candidates.json`, and
+  `frame_windows.json`), `chapter_count`, `frame_count`
+  (top-level total shortlist frames across all chapters and
+  decisions), `verified_count`, `selected_count`,
+  `rejected_count`, and `chapters`.
+
+  **Skip contract.** `recap verify` skips when the stored
+  `selected_frames.json` matches the requested provider, resolved
+  model, `provider_version`, `policy_version`, `caption_mode`,
+  `context`, and all three `input_fingerprints`. On skip the
+  `GEMINI_API_KEY` is NOT required (mirrors the Deepgram slice).
+  Any drift in any of the three input artifacts — including
+  drift in chapter `text` or per-frame `window_text` that does
+  not alter the shortlist decisions — triggers a recompute.
+  `recap verify --force` deletes `selected_frames.json` before
+  recomputing.
+
+  **Atomic writes.** `selected_frames.json` is written via a
+  `.json.tmp` sibling and `os.replace`; any failure removes the
+  temp file, so no partial artifact remains on disk.
+
+  **Error paths (all exit 2 with a single-line `error: ...`, no
+  traceback, no partial `selected_frames.json{,.tmp}` on disk):**
+  missing or malformed `frame_shortlist.json`,
+  `chapter_candidates.json`, or `frame_windows.json`; missing
+  candidate frame image under `candidate_frames/`; missing
+  `GEMINI_API_KEY` on recompute with `--provider gemini`; Gemini
+  401/403 (`gemini authentication failed`), other non-2xx
+  (`gemini request failed`), timeout (`gemini request timed out
+  after <n>s`), network error (`gemini network error: <reason>`),
+  invalid envelope JSON (`gemini returned invalid JSON`),
+  malformed verification payload (`gemini returned invalid
+  verification JSON`), or out-of-vocabulary `relevance`
+  (`gemini returned unsupported relevance`).
+
+  **Ingest invalidation.** `recap ingest --force` against a
+  job with a different source now also removes
+  `selected_frames.json` and resets `stages.verify` to
+  `pending`, matching the existing downstream invalidation
+  behavior for all other Phase 2/3 artifacts.
+
+  This slice is explicitly a verification slice. It does not
+  write to `report.md`, embed screenshots, render captions into
+  the report, export DOCX / HTML / Notion / PDF, add UI, or
+  change the composition of `recap run`. `selected_frames.json`
+  is now produced by `recap verify` rather than being reserved
+  for later work. No new Python or system dependencies are
+  introduced; no ML model is loaded locally.
+
+This Phase 4 slice is opt-in. `recap run` continues to execute
+the Phase 1 stages only. The slice runs via
+`recap verify --job <path> [--provider {mock,gemini}]`. Remaining
+Phase 3 / Phase 4 work (topic-shift detection, speaker
+recognition / manual labels, chapter titling, report screenshot
+embedding, caption rendering into `report.md`, DOCX / HTML /
+Notion / PDF export, WhisperX, pyannote, Groq, UI) remains
+deferred.
 
 ## Running Phase 1 locally
 
@@ -394,6 +559,7 @@ python3.12 -m venv .venv
 .venv/bin/python -m recap chapters   --job jobs/<job_id>
 .venv/bin/python -m recap rank       --job jobs/<job_id>
 .venv/bin/python -m recap shortlist  --job jobs/<job_id>
+.venv/bin/python -m recap verify     --job jobs/<job_id> [--provider {mock,gemini}]
 .venv/bin/python -m recap assemble   --job jobs/<job_id>
 .venv/bin/python -m recap status     --job jobs/<job_id>
 ```
@@ -666,15 +832,15 @@ transcript segments — whatever is actually on disk.
   `transcript.srt`, `scenes.json`, `frame_scores.json`,
   `frame_windows.json`, `frame_similarities.json`,
   `chapter_candidates.json`, `frame_ranks.json`,
-  `frame_shortlist.json`, `report.md`, and the `candidate_frames/`
-  directory) and resets the `normalize`, `transcribe`, `scenes`,
-  `dedupe`, `window`, `similarity`, `chapters`, `rank`,
-  `shortlist`, and `assemble` stage entries to `pending`, so the
-  next `recap run` (plus an explicit `recap scenes`,
-  `recap dedupe`, `recap window`, `recap similarity`,
-  `recap chapters`, `recap rank`, and `recap shortlist` if those
-  slices were in use) regenerates them cleanly from the new
-  source.
+  `frame_shortlist.json`, `selected_frames.json`, `report.md`, and
+  the `candidate_frames/` directory) and resets the `normalize`,
+  `transcribe`, `scenes`, `dedupe`, `window`, `similarity`,
+  `chapters`, `rank`, `shortlist`, `verify`, and `assemble` stage
+  entries to `pending`, so the next `recap run` (plus an explicit
+  `recap scenes`, `recap dedupe`, `recap window`,
+  `recap similarity`, `recap chapters`, `recap rank`,
+  `recap shortlist`, and `recap verify` if those slices were in
+  use) regenerates them cleanly from the new source.
 - **Stage 5 restart.** `recap scenes` skips when `scenes.json` is
   present and every `frame_file` it lists is on disk; otherwise it
   recomputes. `recap scenes --force` removes `scenes.json` and the

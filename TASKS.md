@@ -36,10 +36,10 @@
 
 ## Phase 4: Precision Polish
 
-- [ ] Add optional VLM verification for only the top 1 to 3 frames per chapter
-- [ ] Pass exact transcript context into finalist verification
-- [ ] Support tie-breaking and caption generation during VLM verification
-- [ ] Persist final frame selections to `selected_frames.json`
+- [x] Add optional VLM verification for only the top 1 to 3 frames per chapter (opt-in via `recap verify`; reads `frame_shortlist.json` and only verifies frames with `decision in {"hero","supporting"}`; mock + Gemini providers via stdlib only; `recap run` remains Phase-1-only)
+- [x] Pass exact transcript context into finalist verification (per-frame `window_text` from `frame_windows.json` and per-chapter `text` from `chapter_candidates.json`, truncated to `WINDOW_CONTEXT_CHARS = 1500` / `CHAPTER_CONTEXT_CHARS = 1500`)
+- [x] Support tie-breaking and caption generation during VLM verification (hero promotion of the highest-ranked surviving supporting when the original hero is VLM-rejected, tagged `vlm_tie_broken_by_rank`; captions returned by Gemini are stored on `verification.caption` truncated to `VLM_MAX_CAPTION_CHARS = 240`; mock provider never captions and keeps `caption_mode = "off"`)
+- [x] Persist final frame selections to `selected_frames.json`
 - [ ] Improve Markdown assembly to embed finalized screenshots and captions
 - [ ] Add optional export to DOCX and HTML
 

@@ -7,6 +7,25 @@ system does and produces, read `HANDOFF.md`.
 ## Current state
 
 - Phase 1 of Recap is implemented, audited, hardened, and closed out.
+- The first Phase 4 slice is implemented: optional VLM verification
+  over the pre-VLM shortlist via `recap verify`
+  (`frame_shortlist.json` + `chapter_candidates.json` +
+  `frame_windows.json` + `candidate_frames/*.jpg` →
+  `selected_frames.json`). The default provider is `mock`
+  (deterministic, no network); `--provider gemini` opts in to a
+  stdlib `urllib.request` POST per kept candidate frame to the
+  Gemini `generateContent` endpoint. `recap run` remains
+  Phase-1-only — the new stage is only invoked via
+  `recap verify --job <path>`. The Gemini path reads
+  `GEMINI_API_KEY`, `GEMINI_MODEL`, and `GEMINI_BASE_URL` from the
+  environment only when a recompute is required; skip paths do
+  NOT need the key. API keys are never written to artifacts,
+  logs, docs, or prompts. Hero promotion on VLM-rejected heroes
+  (`vlm_tie_broken_by_rank`) and caption capture from Gemini
+  responses (truncated to `VLM_MAX_CAPTION_CHARS = 240`) are both
+  wired up. Report screenshot embedding, caption rendering into
+  `report.md`, and DOCX / HTML / Notion / PDF export remain
+  deferred.
 - Optional Deepgram cloud transcription engine is wired up via
   `--engine deepgram` on `recap run` and `recap transcribe`.
   `faster-whisper` remains the default for both. The Deepgram path
@@ -271,14 +290,16 @@ chapter proposal via `recap chapters` — pause-only fallback when
 neither speakers nor a usable `scenes.json` are available —
 per-chapter ranking fusion via `recap rank`, and the deterministic
 pre-VLM keep/reject shortlist via `recap shortlist`), plus the
-optional Deepgram transcription engine via `--engine deepgram`. Any
-remaining Phase 3/4 work — full-fusion chaptering (topic shifts,
-speaker recognition / manual labels, chapter titling), blur /
-low-information detection, VLM verification, captions,
-`selected_frames.json`, report screenshot embedding,
-DOCX/HTML/Notion/PDF export, WhisperX, pyannote, Groq, UI, queues,
-workers, plugin systems — stays out until the next chunk is
-explicitly approved.
+optional Deepgram transcription engine via `--engine deepgram`,
+plus the first Phase 4 slice (optional VLM verification via
+`recap verify --job <path> [--provider {mock,gemini}]` →
+`selected_frames.json`). Any remaining Phase 3/4 work —
+full-fusion chaptering (topic shifts, speaker recognition /
+manual labels, chapter titling), blur / low-information
+detection, captions rendered into `report.md`, report screenshot
+embedding, DOCX/HTML/Notion/PDF export, WhisperX, pyannote, Groq,
+UI, queues, workers, plugin systems — stays out until the next
+chunk is explicitly approved.
 
 If a proposed change requires scope not documented in `MASTER_BRIEF.md`,
 stop and raise it for a product decision instead of inventing scope.
@@ -330,6 +351,13 @@ reads `transcript.json` only and writes
 `frame_similarities.json` and writes `frame_ranks.json`), and
 then `recap shortlist --job jobs/<job_id>` (pure stdlib; reads
 `frame_ranks.json` only and writes `frame_shortlist.json`).
+To exercise the first Phase 4 slice, run
+`recap verify --job jobs/<job_id>` (pure stdlib; default
+`--provider mock`, no network; reads `frame_shortlist.json`,
+`chapter_candidates.json`, `frame_windows.json`, and the JPEGs in
+`candidate_frames/` and writes `selected_frames.json`). Pass
+`--provider gemini` with `GEMINI_API_KEY` set to opt in to the
+Gemini path; the skip path does not require the key.
 Re-run each to confirm the skip path, or pass `--force` to
 confirm recompute.
 

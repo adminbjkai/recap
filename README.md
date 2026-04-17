@@ -40,7 +40,11 @@ Each job should produce inspectable intermediate artifacts, including:
 - `scenes.json`
 - `candidate_frames/`
 - `frame_scores.json`
-- `selected_frames.json`
+- `frame_windows.json`
+- `frame_similarities.json`
+- `frame_ranks.json`
+- `frame_shortlist.json`
+- `selected_frames.json` (opt-in; produced by `recap verify`)
 - `report.md`
 
 Optional downstream outputs include `report.docx` and `report.html`.
@@ -140,6 +144,69 @@ implemented:
   dependencies. Run via `recap shortlist --job <path>` after
   `recap rank`. `recap run` does not invoke this stage.
 
+## Phase 4 (first slice)
+
+- Optional VLM verification on the shortlist — reads
+  `frame_shortlist.json`, `chapter_candidates.json`, and
+  `frame_windows.json`, loads each kept candidate's JPEG from
+  `candidate_frames/`, and writes `selected_frames.json`. Two
+  providers are implemented as siblings with a single `if/elif`
+  dispatch (no registry, no ABC, no plugin framework):
+    - **`mock`** (default) — fully deterministic, no network. Sets
+      `relevance = "relevant"` when the frame's composite score is
+      at least `0.30`, else `"uncertain"`; `confidence` equals the
+      clamped composite score; `caption` is always `null`. Used for
+      CI-friendly validation and for Phase-1 users who do not want
+      to enable a cloud call.
+    - **`gemini`** — opt-in via `--provider gemini`. One stdlib
+      `urllib.request` POST per kept candidate to
+      `{base_url}/v1beta/models/{model}:generateContent?key=<key>`
+      with inline `image/jpeg` data. The model is required to
+      return a single strict JSON object shaped
+      `{"relevance","confidence","caption"}`; out-of-vocabulary
+      `relevance`, non-numeric `confidence`, or non-string
+      `caption` exit 2 with a one-line `error: ...`. The request
+      model, base URL, provider/policy versions, context truncation
+      limits, and caption cap are fixed code-level constants
+      (`GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"`,
+      `VLM_PROVIDER_VERSION = "vlm_v1"`,
+      `VLM_POLICY_VERSION = "vlm_select_v1"`,
+      `VLM_CONFIDENCE_KEEP_THRESHOLD = 0.50`,
+      `CHAPTER_CONTEXT_CHARS = WINDOW_CONTEXT_CHARS = 1500`,
+      `VLM_MAX_CAPTION_CHARS = 240`). Environment overrides:
+      `GEMINI_API_KEY` (required only on recompute; skip path does
+      not need the key), `GEMINI_MODEL`, `GEMINI_BASE_URL`. Keys
+      are never persisted to artifacts, logs, or prompts.
+
+  Decision policy (closed vocabulary):
+  `vlm_rejected` when the VLM labels the candidate
+  `not_relevant` or `uncertain` with confidence below
+  `VLM_CONFIDENCE_KEEP_THRESHOLD`; otherwise the candidate is
+  kept at its shortlist rung (`selected_hero` or
+  `selected_supporting`). If the original hero is rejected,
+  the highest-ranked surviving supporting is promoted to
+  `selected_hero` and tagged with `vlm_tie_broken_by_rank`.
+
+  Skip contract: the stored `selected_frames.json` is reused when
+  its `provider`, `model`, `provider_version`, `policy_version`,
+  `caption_mode`, `context`, and `input_fingerprints` (SHA-256 over
+  canonical JSON of `frame_shortlist.json`,
+  `chapter_candidates.json`, and `frame_windows.json`) all match
+  the current run. Any drift in any of the three input artifacts
+  — including context-only drift in chapter text or window text
+  — triggers a recompute. `recap verify --force` removes
+  `selected_frames.json` before recomputing; atomic writes via a
+  `.json.tmp` sibling ensure no partial artifact is left on
+  failure.
+
+  This slice does **not** modify `report.md`, embed screenshots,
+  export documents, add UI, or add any non-stdlib dependency.
+  Report screenshot embedding and caption rendering, DOCX / HTML
+  / Notion / PDF export, topic-shift chapter detection, chapter
+  titling, WhisperX, Groq, and pyannote remain deferred. Run via
+  `recap verify --job <path>` after `recap shortlist`.
+  `recap run` does not invoke this stage.
+
 ## Phase 2 (checklist complete)
 
 Phase 2 adds smart visuals on top of Phase 1. The implemented slices
@@ -222,6 +289,7 @@ Per-stage commands (useful for re-running a single stage, or resuming):
 .venv/bin/python -m recap chapters   --job jobs/<job_id>
 .venv/bin/python -m recap rank       --job jobs/<job_id>
 .venv/bin/python -m recap shortlist  --job jobs/<job_id>
+.venv/bin/python -m recap verify     --job jobs/<job_id> [--provider {mock,gemini}]
 .venv/bin/python -m recap assemble   --job jobs/<job_id>
 .venv/bin/python -m recap status     --job jobs/<job_id>
 ```
@@ -291,13 +359,33 @@ artifact includes `input_fingerprints` (SHA-256 over canonical JSON
 of `frame_ranks.json`), so drift in any of the underlying inputs
 propagates through `recap rank` into this skip contract. It is
 explicitly pre-VLM: it does not write `selected_frames.json`
-(reserved for Phase 4 post-VLM finalists), invoke any VLM, generate
-captions, embed screenshots in `report.md`, export DOCX / HTML /
-Notion / PDF, add UI, or do any speaker diarization / recognition /
-separation work. Blur / low-information detection and
+(that filename is produced by `recap verify`), invoke any VLM,
+generate captions, embed screenshots in `report.md`, export DOCX /
+HTML / Notion / PDF, add UI, or do any speaker diarization /
+recognition / separation work. Blur / low-information detection and
 VLM-dependent "shows code / diagrams / settings / dashboards"
 judgments are deferred. It is pure stdlib and requires no new
 dependencies or system binaries.
+`recap verify` is the first Phase 4 slice and is also not invoked
+by `recap run`; it reads `frame_shortlist.json`,
+`chapter_candidates.json`, `frame_windows.json`, and the JPEGs in
+`candidate_frames/` and writes `selected_frames.json`. The default
+provider is `mock` (fully deterministic, no network); pass
+`--provider gemini` to send each kept shortlist frame plus its
+chapter text and per-frame transcript window to a Gemini
+`generateContent` endpoint. `GEMINI_API_KEY` is required only on
+recompute; a skip path that already matches the requested provider
+and model does not require the key. `GEMINI_MODEL` and
+`GEMINI_BASE_URL` optionally override the pinned
+`gemini-2.5-flash` and `https://generativelanguage.googleapis.com`
+defaults. The artifact records the provider, model, provider /
+policy versions, context truncation limits, and a SHA-256
+fingerprint of each of the three JSON inputs; drift in any one of
+them — including context-only drift in chapter text or window
+text — triggers a recompute. API keys are never written to
+artifacts, logs, docs, or prompts. It is explicitly a verification
+slice: it does not modify `report.md`, embed screenshots, export
+documents, add UI, or add any non-stdlib dependency.
 
 Stages skip work when their artifacts already exist. Pass `--force` to
 recompute a stage.
