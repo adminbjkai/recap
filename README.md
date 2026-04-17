@@ -56,7 +56,7 @@ Phase 1 delivers the reliable core:
 
 ## Phase 3 (in progress)
 
-Phase 3 adds semantic alignment on top of Phase 2. Three slices are
+Phase 3 adds semantic alignment on top of Phase 2. Four slices are
 implemented:
 
 - Transcript-window alignment — for each candidate frame, the
@@ -87,8 +87,20 @@ implemented:
   detection, and LLM titling remain deferred to later Phase 3 slices.
   Pure stdlib, no new dependencies. Run via
   `recap chapters --job <path>` after `recap transcribe`. `recap run`
-  does not invoke this stage. The rest of Phase 3 (full chaptering
-  fusion, per-chapter ranking, keep/reject rules) is not implemented.
+  does not invoke this stage.
+- Per-chapter ranking fusion — for each candidate frame, computes a
+  composite score from OpenCLIP similarity (`W_CLIP = 1.0`), OCR text
+  novelty (`W_OCR = 0.5`), and a duplicate penalty (`W_DUP = 0.5`
+  subtracted when `duplicate_of` is not null). Frames are assigned to
+  chapters by `midpoint_seconds` and ranked within each chapter by
+  composite score descending. Results are written to
+  `frame_ranks.json`. This is marking-only: it does not apply
+  keep/reject thresholds, enforce a screenshot budget, write
+  `selected_frames.json`, or modify `report.md`. All weights are fixed
+  code-level constants. Pure stdlib, no new dependencies. Run via
+  `recap rank --job <path>` after `recap chapters`. `recap run` does
+  not invoke this stage. The rest of Phase 3 (keep/reject rules) is
+  not implemented.
 
 ## Phase 2 (checklist complete)
 
@@ -170,6 +182,7 @@ Per-stage commands (useful for re-running a single stage, or resuming):
 .venv/bin/python -m recap window     --job jobs/<job_id>
 .venv/bin/python -m recap similarity --job jobs/<job_id>
 .venv/bin/python -m recap chapters   --job jobs/<job_id>
+.venv/bin/python -m recap rank       --job jobs/<job_id>
 .venv/bin/python -m recap assemble   --job jobs/<job_id>
 .venv/bin/python -m recap status     --job jobs/<job_id>
 ```
@@ -206,6 +219,19 @@ merge (`MIN_CHAPTER_SECONDS = 30.0`). It does not consult scene
 boundaries, embeddings, or speaker diarization, and does not generate
 chapter titles. It is pure stdlib and requires no new dependencies or
 system binaries.
+`recap rank` is the per-chapter ranking fusion slice and is also not
+invoked by `recap run`; it reads `scenes.json`,
+`chapter_candidates.json`, `frame_scores.json`, `frame_windows.json`,
+and `frame_similarities.json` and writes `frame_ranks.json` with
+per-chapter ranked candidate frames. Each frame's composite score is
+computed from OpenCLIP similarity, OCR text novelty, and a duplicate
+penalty — all with fixed code-level weights. The artifact includes
+`input_fingerprints` (SHA-256 over canonical JSON for each input),
+so drift in any of the five input artifacts triggers a recompute
+even if the drift does not change ranking results. It does not apply
+keep/reject thresholds, enforce a screenshot budget, write
+`selected_frames.json`, or modify `report.md`. It is pure stdlib and
+requires no new dependencies or system binaries.
 
 Stages skip work when their artifacts already exist. Pass `--force` to
 recompute a stage.

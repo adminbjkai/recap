@@ -30,7 +30,7 @@
 - [x] Persist pause-only chapter proposals to `chapter_candidates.json` (full-fusion chaptering remains deferred)
 - [x] Add transcript windowing around frame timestamps using a fuzzy plus or minus 5 to 7 second range (opt-in via `recap window`; writes `frame_windows.json`)
 - [x] Integrate OpenCLIP scoring between candidate frames and transcript chunks (opt-in via `recap similarity`)
-- [ ] Rank frames per chapter using deduplication, OCR novelty, and semantic similarity together
+- [x] Rank frames per chapter using deduplication, OCR novelty, and semantic similarity together (opt-in via `recap rank`; writes `frame_ranks.json`)
 - [ ] Apply screenshot keep and reject rules before shortlist finalization
 
 ## Phase 4: Precision Polish
