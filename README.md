@@ -516,6 +516,27 @@ across reruns because python-docx writes package-level timestamps into
 `core.xml`. Structural parity is what this slice guarantees. PDF and
 Notion exports remain deferred.
 
+### Pre-release validation
+
+A small offline script exercises the three report exporters against a
+tiny committed fixture under `scripts/fixtures/minimal_job/`:
+
+```bash
+.venv/bin/python scripts/verify_reports.py
+```
+
+It runs `recap assemble`, `recap export-html`, and `recap export-docx`
+through both the selected-frames path (hero + supporting images with
+captions omitted) and the absent-selected path (no Chapters section),
+then runs a small set of negative cases — malformed
+`selected_frames.json`, traversal `frame_file`, and missing candidate
+image — to confirm each command exits `2` with a clean one-line error
+and leaves no `.tmp` files behind. It is entirely offline: no model
+downloads, no network calls, no API keys. Requires the project's
+Python dependencies to be installed (in particular `python-docx`).
+Runtime is about one second on a modern laptop. The committed
+fixture is never mutated; each case runs in a fresh temp copy.
+
 ### Cloud transcription (Deepgram)
 
 `faster-whisper` is the default transcription engine for both

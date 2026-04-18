@@ -1,0 +1,20 @@
+{
+  "video": "analysis.mp4",
+  "transcript_source": "transcript.json",
+  "source_signal": "pauses",
+  "pause_seconds": 2.0,
+  "min_chapter_seconds": 30.0,
+  "chapter_count": 1,
+  "chapters": [
+    {
+      "index": 1,
+      "start_seconds": 0.0,
+      "end_seconds": 60.0,
+      "first_segment_id": 0,
+      "last_segment_id": 4,
+      "segment_ids": [0, 1, 2, 3, 4],
+      "trigger": "start",
+      "text": "Welcome to the demo recording for the Recap pipeline. This segment covers the overview of the system. Next we walk through configuration details. We then inspect the generated report. Thanks for watching this short demonstration."
+    }
+  ]
+}

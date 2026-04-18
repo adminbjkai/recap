@@ -1,0 +1,31 @@
+{
+  "created_at": "2026-04-18T00:00:00Z",
+  "error": null,
+  "job_id": "minimal_job",
+  "original_filename": "minimal.mp4",
+  "source_path": "scripts/fixtures/minimal_job/minimal.mp4",
+  "stages": {
+    "ingest": {
+      "status": "completed",
+      "started_at": "2026-04-18T00:00:00Z",
+      "finished_at": "2026-04-18T00:00:01Z"
+    },
+    "normalize": {
+      "status": "completed",
+      "started_at": "2026-04-18T00:00:01Z",
+      "finished_at": "2026-04-18T00:00:02Z"
+    },
+    "transcribe": {
+      "status": "completed",
+      "started_at": "2026-04-18T00:00:02Z",
+      "finished_at": "2026-04-18T00:00:03Z"
+    },
+    "assemble": {
+      "status": "completed",
+      "started_at": "2026-04-18T00:00:03Z",
+      "finished_at": "2026-04-18T00:00:04Z"
+    }
+  },
+  "status": "completed",
+  "updated_at": "2026-04-18T00:00:04Z"
+}

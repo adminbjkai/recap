@@ -1,0 +1,100 @@
+{
+  "provider": "mock",
+  "model": "mock",
+  "provider_version": "vlm_v1",
+  "policy_version": "vlm_select_v1",
+  "caption_mode": "off",
+  "context": {
+    "window_context_chars": 1500,
+    "chapter_context_chars": 1500
+  },
+  "input_fingerprints": {
+    "frame_shortlist.json": "fixture",
+    "chapter_candidates.json": "fixture",
+    "frame_windows.json": "fixture"
+  },
+  "chapter_count": 1,
+  "frame_count": 3,
+  "verified_count": 2,
+  "selected_count": 2,
+  "rejected_count": 1,
+  "chapters": [
+    {
+      "chapter_index": 1,
+      "start_seconds": 0.0,
+      "end_seconds": 60.0,
+      "hero": {
+        "scene_index": 1,
+        "frame_file": "scene-001.jpg",
+        "midpoint_seconds": 10.0
+      },
+      "supporting_scene_indices": [3],
+      "frame_count": 3,
+      "verified_count": 2,
+      "selected_count": 2,
+      "rejected_count": 1,
+      "frames": [
+        {
+          "rank": 1,
+          "scene_index": 1,
+          "frame_file": "scene-001.jpg",
+          "midpoint_seconds": 10.0,
+          "composite_score": 0.85,
+          "clip_similarity": 0.6,
+          "text_novelty": 0.5,
+          "window_text": "demo recording overview",
+          "shortlist_decision": "hero",
+          "verification": {
+            "provider": "mock",
+            "model": "mock",
+            "relevance": "relevant",
+            "confidence": 0.85,
+            "caption": null
+          },
+          "decision": "selected_hero",
+          "reasons": ["kept_as_hero", "vlm_relevant"]
+        },
+        {
+          "rank": 2,
+          "scene_index": 2,
+          "frame_file": "scene-002.jpg",
+          "midpoint_seconds": 30.0,
+          "composite_score": 0.2,
+          "clip_similarity": 0.1,
+          "text_novelty": 0.2,
+          "window_text": "configuration details",
+          "shortlist_decision": "supporting",
+          "verification": {
+            "provider": "mock",
+            "model": "mock",
+            "relevance": "uncertain",
+            "confidence": 0.2,
+            "caption": null
+          },
+          "decision": "vlm_rejected",
+          "reasons": ["kept_as_supporting", "vlm_not_relevant"]
+        },
+        {
+          "rank": 3,
+          "scene_index": 3,
+          "frame_file": "scene-003.jpg",
+          "midpoint_seconds": 50.0,
+          "composite_score": 0.7,
+          "clip_similarity": 0.5,
+          "text_novelty": 0.4,
+          "window_text": "final demonstration",
+          "shortlist_decision": "supporting",
+          "verification": {
+            "provider": "mock",
+            "model": "mock",
+            "relevance": "relevant",
+            "confidence": 0.7,
+            "caption": null
+          },
+          "decision": "selected_supporting",
+          "reasons": ["kept_as_supporting", "vlm_relevant"]
+        }
+      ]
+    }
+  ]
+}

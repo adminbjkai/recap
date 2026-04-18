@@ -778,6 +778,30 @@ This slice is opt-in. `recap run` continues to compose only
 export, topic-shift chaptering, chapter titling, WhisperX,
 pyannote, Groq, and UI all remain deferred.
 
+## Hardening: offline golden-path validation script
+
+`scripts/verify_reports.py` is a small stdlib+`python-docx` script
+that exercises `recap assemble`, `recap export-html`, and
+`recap export-docx` against a tiny committed fixture under
+`scripts/fixtures/minimal_job/` (job.json, metadata.json,
+transcript.json, chapter_candidates.json, selected_frames.json, and
+three ~600-byte JPEGs). It runs each exporter through the
+selected-frames path (asserting heading structure, image link
+presence for the selected hero + supporting frames, absence of
+rejected frames, `python-docx` inline-shape count) and the
+absent-selected path (no `## Chapters` / `<h2>Chapters</h2>` /
+`Chapters` heading; zero DOCX inline shapes), then runs a small
+set of negative cases — malformed `selected_frames.json`
+(`start_seconds = "bad"`), traversal `frame_file = "../report.md"`,
+and a removed referenced candidate image — to confirm each command
+exits `2` with a clean one-line `error: ...` and leaves no
+`report.{md,html,docx}.tmp` file on disk. No network, no model
+downloads, no API keys. Runtime is roughly one second on a modern
+laptop. The committed fixture is never mutated; every case runs
+in a fresh temp copy. This script is the pre-release guard for the
+three exporter slices; running it from a clean checkout confirms
+the Markdown/HTML/DOCX surface still matches the contract.
+
 ## Running Phase 1 locally
 
 ```bash

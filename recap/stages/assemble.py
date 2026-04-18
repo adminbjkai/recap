@@ -86,6 +86,22 @@ def _is_number(v: object) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
+def _is_safe_frame_file(name: object) -> bool:
+    """A frame_file must be a plain filename inside candidate_frames/."""
+    if not isinstance(name, str) or not name:
+        return False
+    if name in (".", ".."):
+        return False
+    if "/" in name or "\\" in name:
+        return False
+    p = Path(name)
+    if p.is_absolute():
+        return False
+    if p.name != name:
+        return False
+    return True
+
+
 def _validate_selected_frames(data: object) -> dict:
     if not isinstance(data, dict):
         raise RuntimeError(
@@ -157,13 +173,11 @@ def _validate_selected_frames(data: object) -> dict:
                     f"selected_frames.json malformed: chapter {ch_idx} "
                     "hero 'scene_index' must be an integer"
                 )
-            if (
-                not isinstance(hero["frame_file"], str)
-                or not hero["frame_file"]
-            ):
+            if not _is_safe_frame_file(hero["frame_file"]):
                 raise RuntimeError(
                     f"selected_frames.json malformed: chapter {ch_idx} "
-                    "hero 'frame_file' must be a non-empty string"
+                    "hero 'frame_file' must be a plain filename inside "
+                    "candidate_frames/ (no path separators, no traversal)"
                 )
             if not _is_number(hero["midpoint_seconds"]):
                 raise RuntimeError(
@@ -183,10 +197,11 @@ def _validate_selected_frames(data: object) -> dict:
                         "selected_frames.json malformed: frame missing "
                         f"'{field}'"
                     )
-            if not isinstance(fr["frame_file"], str) or not fr["frame_file"]:
+            if not _is_safe_frame_file(fr["frame_file"]):
                 raise RuntimeError(
                     "selected_frames.json malformed: frame 'frame_file' "
-                    "must be a non-empty string"
+                    "must be a plain filename inside candidate_frames/ "
+                    "(no path separators, no traversal)"
                 )
             if not _is_int(fr["scene_index"]):
                 raise RuntimeError(
