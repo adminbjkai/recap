@@ -58,6 +58,10 @@ class JobPaths:
         return self.root / "report.md"
 
     @property
+    def report_html(self) -> Path:
+        return self.root / "report.html"
+
+    @property
     def scenes_json(self) -> Path:
         return self.root / "scenes.json"
 

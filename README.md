@@ -291,6 +291,7 @@ Per-stage commands (useful for re-running a single stage, or resuming):
 .venv/bin/python -m recap shortlist  --job jobs/<job_id>
 .venv/bin/python -m recap verify     --job jobs/<job_id> [--provider {mock,gemini}]
 .venv/bin/python -m recap assemble   --job jobs/<job_id>
+.venv/bin/python -m recap export-html --job jobs/<job_id>
 .venv/bin/python -m recap status     --job jobs/<job_id>
 ```
 
@@ -428,6 +429,47 @@ Validation errors during the embedded path exit `2` with a one-line
 not resolve to a `selected_supporting` frame.
 
 DOCX, HTML, Notion, and PDF export remain deferred.
+
+### HTML export
+
+`recap export-html --job <path> [--force]` is an opt-in Phase 4 slice
+that writes `report.html` alongside `report.md`. It is not invoked by
+`recap run`. It reads the same artifacts as `recap assemble`
+(`job.json`, `metadata.json`, `transcript.json`, and — when present —
+`selected_frames.json` plus `chapter_candidates.json`) and writes a
+standalone HTML document with an inline `<style>` block, `<!doctype
+html>`, `<meta charset="utf-8">`, and a viewport meta tag. No external
+CSS or JavaScript is referenced; no network access is performed. All
+content-bearing strings are escaped via stdlib `html.escape` so raw
+transcript or caption content cannot inject markup.
+
+When `selected_frames.json` is present, an `<h2>Chapters</h2>` section
+is rendered between Media and Transcript with one `<section>` per
+chapter: the selected hero image first (when present), then selected
+supporting images in `supporting_scene_indices` order, with captions
+rendered as `<p><em>...</em></p>` only when `verification.caption` is a
+non-empty string. Image `src` values are relative POSIX paths exactly
+`candidate_frames/<frame_file>`; no image is copied, renamed, or
+base64-inlined. Chapter body text from `chapter_candidates.json` is
+rendered as a single escaped `<p>` after the images, or omitted when
+empty. When `selected_frames.json` is absent, no Chapters section is
+rendered.
+
+Skip behavior mirrors `recap assemble`: if `report.html` already
+exists and `--force` is not passed, the stage is skipped. Writes are
+atomic via `report.html.tmp`; on failure the temp file is removed and
+any existing `report.html` is left unchanged.
+
+Validation errors exit 2 with a one-line `error: ...` and match the
+selected-path contract enforced by `recap assemble`: malformed
+`selected_frames.json`, missing or malformed `chapter_candidates.json`,
+a referenced candidate image missing from `candidate_frames/`, or a
+`supporting_scene_indices` entry that does not resolve to a
+`selected_supporting` frame in that chapter.
+
+This slice introduces no new Python or system dependency. DOCX
+(`report.docx`) export remains deferred, as do Notion and PDF
+exports.
 
 ### Cloud transcription (Deepgram)
 

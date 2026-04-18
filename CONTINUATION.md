@@ -7,6 +7,31 @@ system does and produces, read `HANDOFF.md`.
 ## Current state
 
 - Phase 1 of Recap is implemented, audited, hardened, and closed out.
+- The third Phase 4 slice is implemented: optional HTML export via
+  `recap export-html --job <path> [--force]` → `report.html`. It
+  reads the same artifacts `recap assemble` reads (`job.json`,
+  `metadata.json`, `transcript.json`, and — when present —
+  `selected_frames.json` + `chapter_candidates.json`) and emits a
+  standalone HTML document via direct string construction with an
+  inline `<style>` block, `<!doctype html>`, `<meta charset="utf-8">`,
+  and a viewport meta. No Markdown parser is used. No network call
+  is made. All content-bearing strings are escaped with stdlib
+  `html.escape(..., quote=True)`. When `selected_frames.json` is
+  present, an `<h2>Chapters</h2>` section is rendered between Media
+  and Transcript with hero/supporting `<img>` tags whose `src`
+  values are relative POSIX paths `candidate_frames/<frame_file>`;
+  captions render as `<p><em>...</em></p>` only when
+  `verification.caption` is a non-empty string. Validation follows
+  the same selected-path contract enforced by `recap assemble`
+  (type/numeric checks, hero/supporting coherence, chapter index
+  lookup, image existence). Skip contract: `report.html` is
+  written atomically via `report.html.tmp`; reruns without
+  `--force` skip. `recap run` composition is unchanged. No new
+  dependencies. The `export_html` stage is opt-in and not part of
+  `job.STAGES`. DOCX export (`report.docx`) remains the open
+  Phase-4 item; Notion and PDF export, topic-shift chaptering,
+  chapter titling, WhisperX, pyannote, Groq, and UI all remain
+  deferred.
 - The second Phase 4 slice is implemented: `recap assemble` now
   embeds finalized screenshots and captions into `report.md` when
   `selected_frames.json` is present. A new `## Chapters` section is

@@ -41,7 +41,8 @@
 - [x] Support tie-breaking and caption generation during VLM verification (hero promotion of the highest-ranked surviving supporting when the original hero is VLM-rejected, tagged `vlm_tie_broken_by_rank`; captions returned by Gemini are stored on `verification.caption` truncated to `VLM_MAX_CAPTION_CHARS = 240`; mock provider never captions and keeps `caption_mode = "off"`)
 - [x] Persist final frame selections to `selected_frames.json`
 - [x] Improve Markdown assembly to embed finalized screenshots and captions (opt-in via presence of `selected_frames.json`; `recap assemble` reads `selected_frames.json` and `chapter_candidates.json` and inserts a `## Chapters` section between `## Media` and `## Transcript` with hero/supporting images and VLM-provided captions, atomic write via `report.md.tmp`; absent `selected_frames.json` → report is byte-identical to the Phase-1 basic output; no VLM calls; no chapter titling; no new CLI flag; `recap run` remains Phase-1-only)
-- [ ] Add optional export to DOCX and HTML
+- [x] Add optional HTML export to `report.html` (opt-in via `recap export-html --job <path> [--force]`; reads the same artifacts as `recap assemble` and writes a standalone `report.html` with inline CSS; when `selected_frames.json` is present embeds hero/supporting images and captions via relative `candidate_frames/<frame_file>` paths; no new dependencies, no Markdown parsing, no network, no VLM/LLM calls; `recap run` remains Phase-1-only)
+- [ ] Add optional DOCX export to `report.docx`
 
 ## Guardrails
 

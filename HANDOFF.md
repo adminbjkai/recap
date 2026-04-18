@@ -608,6 +608,86 @@ DOCX, HTML, Notion, and PDF export remain deferred, as do
 topic-shift chaptering, chapter titling, WhisperX, pyannote,
 Groq, and UI.
 
+## What the third Phase 4 slice includes
+
+- **Optional HTML export.** `recap export-html --job <path>
+  [--force]` writes `report.html` at the job root. It reads the
+  same artifacts as `recap assemble` (`job.json`,
+  `metadata.json`, `transcript.json`, and — when present —
+  `selected_frames.json` + `chapter_candidates.json`) and emits a
+  standalone HTML document via direct string construction. No
+  Markdown parser is used; no network call is made; no new
+  Python or system dependency is introduced. The document
+  declares `<!doctype html>`, `<html lang="en">`,
+  `<meta charset="utf-8">`, and a viewport meta tag, and embeds
+  a small inline `<style>` block (basic typography plus
+  `img { max-width: 100%; height: auto; }`). Every
+  content-bearing string — job ID, source filename, container /
+  codec metadata, transcript engine, detected language,
+  transcript segment text, chapter body text, and VLM captions —
+  is escaped with stdlib `html.escape(..., quote=True)`, so raw
+  transcript or caption content cannot inject markup.
+- **Content parity with `recap assemble`.** When
+  `selected_frames.json` is present, an `<h2>Chapters</h2>`
+  block sits between Media and Transcript with one
+  `<section class="chapter">` per chapter: the selected hero
+  image first (when present), then selected supporting images in
+  `supporting_scene_indices` order, with `<p><em>...</em></p>`
+  captions rendered only when `verification.caption` is a
+  non-empty string after whitespace collapse, followed by the
+  chapter body text from the matching
+  `chapter_candidates.json` entry as a single escaped `<p>`
+  (omitted if empty). Image `src` values are relative POSIX
+  paths exactly `candidate_frames/<frame_file>`; images are
+  never copied, renamed, re-encoded, or base64-inlined. When
+  `selected_frames.json` is absent, no Chapters section is
+  rendered — only the header, media summary, and transcript
+  segments.
+- **Validation contract (matches `recap assemble`).** When
+  `selected_frames.json` is present the stage enforces the same
+  selected-path contract: structural and numeric/type checks on
+  every chapter and frame (`chapter_index` integer,
+  `start_seconds` / `end_seconds` / `midpoint_seconds` numeric,
+  `decision` in `{"selected_hero", "selected_supporting",
+  "vlm_rejected"}`, hero shape when non-null,
+  `supporting_scene_indices` entries integers); at most one
+  `selected_hero` per chapter; `chapter.hero` must match the
+  selected_hero frame on `scene_index`, `frame_file`, and
+  `midpoint_seconds`; the ordered `scene_index` list of
+  `selected_supporting` frames must exactly equal
+  `supporting_scene_indices`; every selected chapter's
+  `chapter_index` must be present in `chapter_candidates.json`;
+  every referenced candidate image must exist under
+  `candidate_frames/`. Any violation exits `2` with a one-line
+  `error: ...` (`selected_frames.json malformed: ...`,
+  `chapter_candidates.json malformed: ...`,
+  `chapter_candidates.json has no chapter with index <n>
+  required by selected_frames.json`, or `missing candidate
+  frame: candidate_frames/<frame_file>`) and leaves any existing
+  `report.html` unchanged with no `report.html.tmp` on disk.
+- **Skip / restart.** If `report.html` exists and `--force` is
+  not passed, the stage is skipped and
+  `stages.export_html.skipped` is set to `true`. `--force`
+  recomputes. Writes are atomic via a `report.html.tmp` sibling
+  and `Path.replace` on success; on exception the temp file is
+  removed and any existing `report.html` is preserved. The
+  `export_html` stage is **not** added to `job.STAGES`; it
+  appends its own entry under `job.stages` the same way
+  `verify`, `shortlist`, `rank`, etc. do.
+- **What this slice does not do.** It does not modify
+  `recap/stages/assemble.py`, `recap run` composition,
+  `job.STAGES`, or any upstream stage. It does not invoke any
+  VLM/LLM. It does not read or mutate `report.md`. It does not
+  copy, rename, or rewrite images. It does not add a CLI flag
+  beyond `--job` / `--force`. It does not export DOCX, Notion,
+  or PDF, and does not add a Markdown parser dependency.
+
+This slice is opt-in. `recap run` continues to compose only
+`ingest → normalize → transcribe → assemble`. DOCX
+(`report.docx`) export remains the open Phase-4 item; Notion
+and PDF export, topic-shift chaptering, chapter titling,
+WhisperX, pyannote, Groq, and UI all remain deferred.
+
 ## Running Phase 1 locally
 
 ```bash
