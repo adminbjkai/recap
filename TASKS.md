@@ -40,7 +40,7 @@
 - [x] Pass exact transcript context into finalist verification (per-frame `window_text` from `frame_windows.json` and per-chapter `text` from `chapter_candidates.json`, truncated to `WINDOW_CONTEXT_CHARS = 1500` / `CHAPTER_CONTEXT_CHARS = 1500`)
 - [x] Support tie-breaking and caption generation during VLM verification (hero promotion of the highest-ranked surviving supporting when the original hero is VLM-rejected, tagged `vlm_tie_broken_by_rank`; captions returned by Gemini are stored on `verification.caption` truncated to `VLM_MAX_CAPTION_CHARS = 240`; mock provider never captions and keeps `caption_mode = "off"`)
 - [x] Persist final frame selections to `selected_frames.json`
-- [ ] Improve Markdown assembly to embed finalized screenshots and captions
+- [x] Improve Markdown assembly to embed finalized screenshots and captions (opt-in via presence of `selected_frames.json`; `recap assemble` reads `selected_frames.json` and `chapter_candidates.json` and inserts a `## Chapters` section between `## Media` and `## Transcript` with hero/supporting images and VLM-provided captions, atomic write via `report.md.tmp`; absent `selected_frames.json` → report is byte-identical to the Phase-1 basic output; no VLM calls; no chapter titling; no new CLI flag; `recap run` remains Phase-1-only)
 - [ ] Add optional export to DOCX and HTML
 
 ## Guardrails

@@ -7,6 +7,25 @@ system does and produces, read `HANDOFF.md`.
 ## Current state
 
 - Phase 1 of Recap is implemented, audited, hardened, and closed out.
+- The second Phase 4 slice is implemented: `recap assemble` now
+  embeds finalized screenshots and captions into `report.md` when
+  `selected_frames.json` is present. A new `## Chapters` section is
+  inserted between `## Media` and `## Transcript`, with each chapter
+  rendering its selected hero image first, then the selected
+  supporting images in `supporting_scene_indices` order, followed by
+  the chapter body text from `chapter_candidates.json`. Image paths
+  are relative POSIX paths `candidate_frames/<frame_file>`; images
+  are never copied or renamed. Captions render in italics directly
+  below the image only when `verification.caption` is a non-empty
+  string — otherwise no caption and no fallback text. `report.md` is
+  written atomically via `report.md.tmp`. When `selected_frames.json`
+  is absent, the emitted `report.md` is byte-identical to the
+  Phase-1 basic report and `recap run` composition is unchanged
+  (ingest → normalize → transcribe → assemble). The existing simple
+  skip contract is preserved; after `recap verify`, rerun with
+  `recap assemble --force` to refresh the embedded report. Chapter
+  titling, DOCX / HTML / Notion / PDF export, UI, and topic-shift
+  detection all remain deferred.
 - The first Phase 4 slice is implemented: optional VLM verification
   over the pre-VLM shortlist via `recap verify`
   (`frame_shortlist.json` + `chapter_candidates.json` +

@@ -52,8 +52,14 @@ Phase 1 implements only the "reliable core" stages from the brief:
   extract `audio.wav` as 16 kHz mono PCM `s16le`.
 - **Stage 3 — Transcribe.** Run `faster-whisper` on `audio.wav` and write
   `transcript.json` and `transcript.srt`.
-- **Stage 8 — Basic Markdown assembly.** Read real artifacts and write
+- **Stage 8 — Markdown assembly.** Read real artifacts and write
   `report.md` with media summary and timestamped transcript segments.
+  When `selected_frames.json` is present on disk (produced by
+  `recap verify`), additionally embed finalized hero/supporting
+  screenshots and any VLM-provided captions under a `## Chapters`
+  section between `## Media` and `## Transcript`; when absent, output is
+  byte-identical to the Phase-1 basic report. `recap run` itself
+  remains Phase-1-only.
 
 Stage 5 is implemented as the first approved Phase 2 slice (see the
 next section). Every item in the `TASKS.md` Phase 2 checklist is
@@ -534,10 +540,73 @@ This Phase 4 slice is opt-in. `recap run` continues to execute
 the Phase 1 stages only. The slice runs via
 `recap verify --job <path> [--provider {mock,gemini}]`. Remaining
 Phase 3 / Phase 4 work (topic-shift detection, speaker
-recognition / manual labels, chapter titling, report screenshot
-embedding, caption rendering into `report.md`, DOCX / HTML /
+recognition / manual labels, chapter titling, DOCX / HTML /
 Notion / PDF export, WhisperX, pyannote, Groq, UI) remains
 deferred.
+
+## What the second Phase 4 slice includes
+
+- **Report screenshot and caption embedding.** `recap assemble`
+  now reads `selected_frames.json` (when present) and
+  `chapter_candidates.json`, and inserts a `## Chapters` section
+  between `## Media` and `## Transcript` in `report.md`. Each
+  chapter renders the selected hero image first, then the selected
+  supporting images in the order of the chapter's
+  `supporting_scene_indices`, followed by the chapter body `text`
+  from `chapter_candidates.json` (whitespace-collapsed; omitted if
+  empty). Only frames with `decision in {"selected_hero",
+  "selected_supporting"}` are rendered; `vlm_rejected` frames are
+  never rendered. Image links use relative POSIX paths of the form
+  `candidate_frames/<frame_file>` and no image file is copied,
+  renamed, or rewritten. When a rendered frame's
+  `verification.caption` is a non-empty string, the caption is
+  rendered in italics on its own paragraph directly below that
+  image; otherwise no caption is rendered and no fallback text is
+  invented. Chapter headings are `### Chapter {chapter_index} —
+  [HH:MM:SS – HH:MM:SS]`. No chapter titles are generated (titling
+  remains deferred). No VLM is invoked during assembly.
+- **Absent-selected fallback.** When `selected_frames.json` does
+  not exist, the emitted `report.md` is byte-identical to the
+  Phase-1 basic report (no `## Chapters` section, no image links,
+  no captions). `recap run`'s stage composition is unchanged
+  (ingest → normalize → transcribe → assemble), so a fresh run on
+  a new recording still produces the Phase-1 basic report.
+- **Atomic write.** `report.md` is written via a `report.md.tmp`
+  sibling and atomically `replace`d on success. On failure the
+  temp file is removed and any existing `report.md` is left
+  unchanged.
+- **Skip contract.** The existing simple skip contract is
+  preserved: if `report.md` already exists and `--force` is not
+  passed, the stage is skipped. After running `recap verify` to
+  produce or refresh `selected_frames.json`, run
+  `recap assemble --force` to regenerate `report.md` with the
+  embedded screenshots and captions. No fingerprint-based
+  auto-recompute is introduced in this slice.
+- **Validation and errors.** When `selected_frames.json` is
+  present, the stage additionally requires
+  `chapter_candidates.json` to exist and be readable. The
+  following conditions exit `2` with a single-line
+  `error: ...` and leave any existing `report.md` unchanged
+  (no `report.md.tmp` remains on disk): invalid JSON or
+  structurally malformed `selected_frames.json`; a selected
+  frame missing `frame_file`, `scene_index`, `midpoint_seconds`,
+  or `decision`; missing or malformed `chapter_candidates.json`;
+  a candidate image referenced by a selected frame missing from
+  `candidate_frames/` (`error: missing candidate frame:
+  candidate_frames/<frame_file>`); a `supporting_scene_indices`
+  entry that does not resolve to a `selected_supporting` frame
+  in that chapter.
+- **What this slice does not do.** It does not mutate
+  `selected_frames.json`, `chapter_candidates.json`, or any
+  image on disk. It does not add a new CLI flag or new stage
+  to `job.STAGES`. It does not call any VLM. It does not add
+  a Python or system dependency. It does not export DOCX /
+  HTML / Notion / PDF. It does not add UI. It does not
+  implement chapter titling or topic-shift detection.
+
+DOCX, HTML, Notion, and PDF export remain deferred, as do
+topic-shift chaptering, chapter titling, WhisperX, pyannote,
+Groq, and UI.
 
 ## Running Phase 1 locally
 

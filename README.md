@@ -390,6 +390,45 @@ documents, add UI, or add any non-stdlib dependency.
 Stages skip work when their artifacts already exist. Pass `--force` to
 recompute a stage.
 
+### Report screenshot embedding
+
+`recap assemble` is Phase-1-only in `recap run`: it writes a basic
+`report.md` from `job.json`, `metadata.json`, and `transcript.json`,
+with media and timestamped transcript segments. When `selected_frames.json`
+is present on disk (produced by `recap verify`), the same stage
+additionally reads `chapter_candidates.json` and inserts a `## Chapters`
+section between `## Media` and `## Transcript`. Each chapter renders the
+selected hero image first, then the selected supporting images in
+`supporting_scene_indices` order, followed by the chapter body text from
+`chapter_candidates.json`. Image paths are relative POSIX paths of the
+form `candidate_frames/<frame_file>`; images are not copied, renamed, or
+rewritten. When a frame's `verification.caption` is a non-empty string
+(today, only produced by the Gemini VLM path), the caption is rendered
+in italics directly below that image; otherwise no caption is rendered
+(no fallback text). No chapter titles are generated (titling remains
+deferred), and no VLM is ever invoked during assembly.
+
+When `selected_frames.json` is absent, `report.md` is byte-identical to
+the Phase-1 basic report. `recap run` continues to compose only
+ingest → normalize → transcribe → assemble, so a fresh run on a new
+recording still produces the basic report shape.
+
+Assembly uses the existing simple skip contract: if `report.md` already
+exists and `--force` is not passed, the stage is skipped. After running
+`recap verify` to produce or refresh `selected_frames.json`, run
+`recap assemble --force` to regenerate `report.md` with the embedded
+screenshots and captions. `report.md` is written atomically via a
+`report.md.tmp` sibling; on failure, the temp file is removed and any
+existing `report.md` is left unchanged.
+
+Validation errors during the embedded path exit `2` with a one-line
+`error: ...`: malformed `selected_frames.json`, missing or malformed
+`chapter_candidates.json`, a referenced candidate image missing from
+`candidate_frames/`, or a `supporting_scene_indices` reference that does
+not resolve to a `selected_supporting` frame.
+
+DOCX, HTML, Notion, and PDF export remain deferred.
+
 ### Cloud transcription (Deepgram)
 
 `faster-whisper` is the default transcription engine for both
