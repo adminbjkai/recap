@@ -580,6 +580,24 @@ Python dependencies to be installed (in particular `python-docx`).
 Runtime is about one second on a modern laptop. The committed
 fixture is never mutated; each case runs in a fresh temp copy.
 
+A second script smoke-validates the read-only dashboard:
+
+```bash
+.venv/bin/python scripts/verify_ui.py
+```
+
+It copies the fixture into a temp jobs root, picks a free localhost
+port, spawns `recap ui` as a subprocess, and uses stdlib `http.client`
+(so path segments like `..` are sent verbatim) to check the jobs
+index, the per-job detail page, whitelisted JSON and JPEG artifacts,
+an unnormalized traversal URL, a non-whitelisted filename, and an
+unknown route. It then runs the three report exporters against the
+scratch copy and re-checks that `report.html` / `report.docx` / the
+referenced candidate-frame JPEG all serve correctly. Stdlib only, no
+network, no model downloads; runtime is about half a second. The
+UI server is terminated in a `finally` block and the scratch
+directory is cleaned up.
+
 ### Cloud transcription (Deepgram)
 
 `faster-whisper` is the default transcription engine for both

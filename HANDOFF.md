@@ -863,6 +863,31 @@ in a fresh temp copy. This script is the pre-release guard for the
 three exporter slices; running it from a clean checkout confirms
 the Markdown/HTML/DOCX surface still matches the contract.
 
+A second stdlib-only script, `scripts/verify_ui.py`, smoke-validates
+the read-only `recap ui` dashboard. It copies the same fixture into
+a temp jobs root, picks a free localhost port, spawns
+`recap ui` as a subprocess, waits for `/` to respond, and uses
+stdlib `http.client` to issue raw, unnormalized HTTP paths. It
+checks the jobs index, the per-job detail page (asserting stage
+rows for ingest / normalize / transcribe / assemble), the
+whitelisted JSON artifacts (job.json / metadata.json /
+transcript.json with `application/json` content type and
+parseable bodies), a candidate-frame JPEG (with JPEG magic-byte
+verification), plus 404 responses for an unnormalized
+`../../etc/passwd` traversal (no passwd content leak), a
+non-whitelisted `report.html.tmp` filename, and an unknown route
+`/nope`. It then runs `recap assemble` / `export-html` /
+`export-docx` against the scratch copy and re-checks that the
+detail page links report.md/report.html/report.docx, that
+`report.html` and `report.docx` serve with the correct content
+type, and that the `candidate_frames/<file>.jpg` references inside
+`report.html` resolve to valid JPEGs through the same server. The
+UI server process is terminated in a `finally` block via SIGINT
+(falling back to SIGKILL on timeout) and the scratch tree is
+removed. Runtime is about half a second. This is the pre-release
+guard for the dashboard's routing, path safety, and artifact
+serving.
+
 ## Running Phase 1 locally
 
 ```bash

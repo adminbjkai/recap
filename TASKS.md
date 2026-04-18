@@ -56,6 +56,7 @@
 ## Hardening
 
 - [x] Add local offline golden-path validation script for Markdown/HTML/DOCX report generation (`scripts/verify_reports.py` + committed fixture under `scripts/fixtures/minimal_job/`; runs `recap assemble`, `recap export-html`, `recap export-docx` against both the selected and absent-selected paths plus negative cases for malformed `selected_frames.json`, traversal `frame_file`, and missing candidate images; stdlib + `python-docx` only; no network, no model downloads; ~1 second wall-clock)
+- [x] Add local offline UI smoke validation script (`scripts/verify_ui.py`; spawns `recap ui` against a temp copy of `scripts/fixtures/minimal_job`, checks `/`, `/job/<id>/`, whitelisted JSON artifacts, candidate-frame JPEG, unnormalized traversal path via `http.client` for raw-path delivery, and non-whitelisted/unknown routes; then runs `recap assemble`/`export-html`/`export-docx` and re-checks that `report.html`, `report.docx`, and the referenced `candidate_frames/<file>.jpg` all serve correctly; stdlib only; ~0.5 second wall-clock)
 
 ## Guardrails
 
