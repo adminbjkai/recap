@@ -516,6 +516,49 @@ across reruns because python-docx writes package-level timestamps into
 `core.xml`. Structural parity is what this slice guarantees. PDF and
 Notion exports remain deferred.
 
+### Local dashboard
+
+`recap ui --host 127.0.0.1 --port 8765 --jobs-root jobs` starts a
+read-only local web dashboard for existing jobs. It is not invoked by
+`recap run`. Defaults are `127.0.0.1:8765` with the repo-relative
+`jobs/` directory as the jobs root.
+
+```bash
+.venv/bin/python -m recap ui
+# then open http://127.0.0.1:8765/ in a browser
+```
+
+The dashboard:
+
+- scans direct subdirectories of `--jobs-root` that contain a readable
+  `job.json` and lists them sorted by `created_at` descending, with
+  indicators for which of `report.md` / `report.html` / `report.docx`
+  exist and a one-click link to `report.html` when present;
+- renders a per-job detail page at `/job/<job_id>/` with the job's
+  metadata, a stage status table (canonical order: ingest, normalize,
+  transcribe, assemble, scenes, dedupe, window, similarity, chapters,
+  rank, shortlist, verify, export_html, export_docx; unknown stages
+  appended alphabetically), and a list of every whitelisted artifact
+  present on disk;
+- serves each whitelisted artifact from
+  `/job/<job_id>/<filename>`, so clicking `report.html` opens the
+  rendered HTML report in the same tab and its relative
+  `candidate_frames/<file>` image references resolve correctly against
+  the same path prefix.
+
+The server is strictly read-only. There are no POST routes, no forms
+that mutate state, no subprocess calls, and no stage execution. Users
+still create jobs and generate artifacts with the CLI (`recap run`,
+`recap export-html`, `recap export-docx`, etc.) and refresh the page
+to see updates. The server binds to `127.0.0.1` by default. Only a
+fixed whitelist of filenames under `jobs/<id>/` is served (reports,
+job/metadata/transcript JSONs, and JPEG/PNG images under
+`candidate_frames/`), and any URL containing a `..` segment or
+resolving outside `jobs/<id>/` returns 404. No new dependencies are
+required.
+
+Press `Ctrl-C` in the terminal to stop the server.
+
 ### Pre-release validation
 
 A small offline script exercises the three report exporters against a

@@ -16,6 +16,7 @@ Subcommands:
   assemble   Stage 8 Markdown assembly; embeds selected screenshots when present.
   export-html Phase 4 slice: export report.html (not invoked by run).
   export-docx Phase 4 slice: export report.docx (not invoked by run).
+  ui         Local read-only web dashboard for existing jobs and artifacts.
   status     Print job.json summary.
 
 All commands operate on a job directory (`--job <path>`). When `run` is
@@ -42,6 +43,7 @@ import sys
 from pathlib import Path
 
 from . import job as job_mod
+from . import ui as ui_mod
 from .stages import (
     assemble,
     chapters,
@@ -191,6 +193,10 @@ def cmd_export_docx(args) -> int:
     out = export_docx.run(paths, force=args.force)
     print(out)
     return 0
+
+
+def cmd_ui(args) -> int:
+    return ui_mod.serve(args.host, args.port, Path(args.jobs_root))
 
 
 def cmd_status(args) -> int:
@@ -365,6 +371,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--job", required=True)
     sp.add_argument("--force", action="store_true")
     sp.set_defaults(func=cmd_export_docx)
+
+    sp = sub.add_parser(
+        "ui", help="local read-only dashboard for jobs and artifacts"
+    )
+    sp.add_argument("--host", default="127.0.0.1")
+    sp.add_argument("--port", type=int, default=8765)
+    sp.add_argument("--jobs-root", default=str(DEFAULT_JOBS_ROOT))
+    sp.set_defaults(func=cmd_ui)
 
     sp = sub.add_parser("status", help="print job.json")
     sp.add_argument("--job", required=True)

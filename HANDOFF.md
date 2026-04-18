@@ -778,6 +778,67 @@ This slice is opt-in. `recap run` continues to compose only
 export, topic-shift chaptering, chapter titling, WhisperX,
 pyannote, Groq, and UI all remain deferred.
 
+## UI: read-only local web dashboard
+
+`recap ui --host 127.0.0.1 --port 8765 --jobs-root jobs` starts a
+stdlib `http.server.ThreadingHTTPServer` bound to `127.0.0.1` by
+default and serves a small read-only dashboard for existing jobs.
+The module lives at `recap/ui.py` and adds no new runtime
+dependency. It exposes only `GET` routes:
+
+- `GET /` — jobs index. Scans direct subdirectories of the
+  configured jobs root, reads each `job.json`, sorts by
+  `created_at` descending, and renders a table with job id,
+  created-at, status badge, md/html/docx artifact indicators, and
+  a one-click link to `report.html` when present.
+- `GET /job/<job_id>/` — job detail page. Renders metadata, a
+  stage table in the canonical pipeline order (ingest, normalize,
+  transcribe, assemble, scenes, dedupe, window, similarity,
+  chapters, rank, shortlist, verify, export_html, export_docx;
+  unknown stages appended alphabetically) with a compact "extra"
+  cell rendering of fields beyond status/started_at/finished_at/
+  error, and a list of every whitelisted artifact present on
+  disk.
+- `GET /job/<job_id>/<filename>` — serves one of a fixed
+  whitelist of job-root files: `report.md`, `report.html`,
+  `report.docx`, `metadata.json`, `transcript.json`,
+  `transcript.srt`, `job.json`, `selected_frames.json`,
+  `chapter_candidates.json`, `frame_shortlist.json`,
+  `frame_ranks.json`, `frame_similarities.json`,
+  `frame_windows.json`, `frame_scores.json`, `scenes.json`.
+- `GET /job/<job_id>/candidate_frames/<filename>` — serves a
+  single image under `candidate_frames/` with extension `.jpg`,
+  `.jpeg`, or `.png`. Any other extension or any traversal
+  attempt returns 404.
+- Anything else returns 404 with a tiny HTML error body.
+
+Path safety: the jobs root is resolved once at startup; URLs with
+any `..` path segment are rejected before resolution; resolved
+static targets must still live under the jobs root; candidate
+frame filenames must satisfy `Path(name).name == name` and carry
+a whitelisted image extension. No directory listing is ever
+emitted. Job IDs must map to a direct child of the jobs root.
+
+The dashboard is strictly read-only. There are **no** POST routes,
+**no** forms that mutate state, **no** subprocess calls, and **no**
+stage execution. It does not import any stage module, does not
+invoke any CLI subcommand, and does not add a new entry to
+`job.STAGES`. Users still run pipeline work via the CLI and
+refresh the page to see updates. Clicking `report.html` opens the
+rendered HTML in the same tab, and its relative
+`candidate_frames/<file>` image references resolve correctly
+against the same `/job/<id>/` path prefix.
+
+Rendering uses direct string construction with stdlib
+`html.escape(..., quote=True)` on every content-bearing value, a
+small inline `<style>` block, and no external CSS/JS. Cache-Control
+is `no-store` on every response so reloads always reflect current
+disk state. `Ctrl-C` calls `server.server_close()` and exits 0
+cleanly.
+
+Remaining UI items — starting/rerunning/deleting jobs, live status
+updates, auth, and remote access — are explicitly deferred.
+
 ## Hardening: offline golden-path validation script
 
 `scripts/verify_reports.py` is a small stdlib+`python-docx` script

@@ -44,6 +44,15 @@
 - [x] Add optional HTML export to `report.html` (opt-in via `recap export-html --job <path> [--force]`; reads the same artifacts as `recap assemble` and writes a standalone `report.html` with inline CSS; when `selected_frames.json` is present embeds hero/supporting images and captions via relative `candidate_frames/<frame_file>` paths; no new dependencies, no Markdown parsing, no network, no VLM/LLM calls; `recap run` remains Phase-1-only)
 - [x] Add optional DOCX export to `report.docx` (opt-in via `recap export-docx --job <path> [--force]`; uses `python-docx>=1.1`; reads the same artifacts as `recap export-html` and embeds hero/supporting screenshots via `Document.add_picture` at a fixed 6.0-inch width; captions rendered as italic runs only when `verification.caption` is a non-empty string; when `selected_frames.json` is absent the document still renders header/media/transcript with no Chapters section; determinism caveat: DOCX package metadata is timestamped, so reruns are not byte-identical; `recap run` remains Phase-1-only; PDF and Notion export remain deferred)
 
+## UI
+
+- [x] Add read-only local dashboard for existing jobs and artifacts (`recap ui --host 127.0.0.1 --port 8765 --jobs-root jobs`; stdlib `http.server.ThreadingHTTPServer` only, no new dependencies; reads `jobs/<id>/job.json` and serves a jobs index, a per-job detail page, and a small whitelist of artifacts including `report.md`/`report.html`/`report.docx` and `candidate_frames/*.{jpg,jpeg,png}`; path-traversal hardened; 127.0.0.1-only by default; no POST routes, no subprocess calls, no stage execution)
+- [ ] Start or rerun pipeline stages from the UI
+- [ ] Delete or archive jobs from the UI
+- [ ] Live status updates (SSE / WebSocket / polling)
+- [ ] Auth / API key management surface
+- [ ] Remote access (non-localhost binding with TLS and auth)
+
 ## Hardening
 
 - [x] Add local offline golden-path validation script for Markdown/HTML/DOCX report generation (`scripts/verify_reports.py` + committed fixture under `scripts/fixtures/minimal_job/`; runs `recap assemble`, `recap export-html`, `recap export-docx` against both the selected and absent-selected paths plus negative cases for malformed `selected_frames.json`, traversal `frame_file`, and missing candidate images; stdlib + `python-docx` only; no network, no model downloads; ~1 second wall-clock)

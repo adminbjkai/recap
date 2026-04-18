@@ -7,6 +7,26 @@ system does and produces, read `HANDOFF.md`.
 ## Current state
 
 - Phase 1 of Recap is implemented, audited, hardened, and closed out.
+- A read-only local web dashboard is implemented: `recap ui
+  --host 127.0.0.1 --port 8765 --jobs-root jobs` starts a stdlib
+  `http.server.ThreadingHTTPServer` at `recap/ui.py`. No new
+  dependency. Served routes are `GET /` (jobs index), `GET
+  /job/<id>/` (detail page with metadata + canonical stage table
+  + whitelisted artifacts list), `GET /job/<id>/<filename>` (fixed
+  whitelist including `report.md`/`report.html`/`report.docx`,
+  `job.json`, `metadata.json`, transcript files, and each of the
+  Phase 2/3/4 JSON artifacts), and `GET
+  /job/<id>/candidate_frames/<name>` (restricted to `.jpg`/`.jpeg`/
+  `.png`). Anything else returns 404. URLs containing any `..`
+  segment, targets that resolve outside the jobs root, or
+  filenames outside the whitelist all return 404 without leaking
+  file bytes. The dashboard is strictly read-only: no POST routes,
+  no forms, no subprocess calls, no stage execution, no
+  `job.STAGES` mutation. Clicking `report.html` opens the rendered
+  report in the same tab and its relative `candidate_frames/<file>`
+  references resolve against the same path prefix. `recap run`
+  composition is unchanged. Remaining UI items (start/rerun/delete
+  jobs, live status updates, auth, remote access) are deferred.
 - The fourth Phase 4 slice is implemented: optional DOCX export via
   `recap export-docx --job <path> [--force]` → `report.docx`. Uses
   `python-docx >= 1.1` (newly added to both `requirements.txt` and
