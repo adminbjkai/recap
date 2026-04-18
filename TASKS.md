@@ -42,7 +42,7 @@
 - [x] Persist final frame selections to `selected_frames.json`
 - [x] Improve Markdown assembly to embed finalized screenshots and captions (opt-in via presence of `selected_frames.json`; `recap assemble` reads `selected_frames.json` and `chapter_candidates.json` and inserts a `## Chapters` section between `## Media` and `## Transcript` with hero/supporting images and VLM-provided captions, atomic write via `report.md.tmp`; absent `selected_frames.json` → report is byte-identical to the Phase-1 basic output; no VLM calls; no chapter titling; no new CLI flag; `recap run` remains Phase-1-only)
 - [x] Add optional HTML export to `report.html` (opt-in via `recap export-html --job <path> [--force]`; reads the same artifacts as `recap assemble` and writes a standalone `report.html` with inline CSS; when `selected_frames.json` is present embeds hero/supporting images and captions via relative `candidate_frames/<frame_file>` paths; no new dependencies, no Markdown parsing, no network, no VLM/LLM calls; `recap run` remains Phase-1-only)
-- [ ] Add optional DOCX export to `report.docx`
+- [x] Add optional DOCX export to `report.docx` (opt-in via `recap export-docx --job <path> [--force]`; uses `python-docx>=1.1`; reads the same artifacts as `recap export-html` and embeds hero/supporting screenshots via `Document.add_picture` at a fixed 6.0-inch width; captions rendered as italic runs only when `verification.caption` is a non-empty string; when `selected_frames.json` is absent the document still renders header/media/transcript with no Chapters section; determinism caveat: DOCX package metadata is timestamped, so reruns are not byte-identical; `recap run` remains Phase-1-only; PDF and Notion export remain deferred)
 
 ## Guardrails
 

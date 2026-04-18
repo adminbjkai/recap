@@ -7,6 +7,32 @@ system does and produces, read `HANDOFF.md`.
 ## Current state
 
 - Phase 1 of Recap is implemented, audited, hardened, and closed out.
+- The fourth Phase 4 slice is implemented: optional DOCX export via
+  `recap export-docx --job <path> [--force]` → `report.docx`. Uses
+  `python-docx >= 1.1` (newly added to both `requirements.txt` and
+  `pyproject.toml`). Reads the same artifacts as `recap export-html`
+  and `recap assemble` (`job.json`, `metadata.json`,
+  `transcript.json`, and — when present — `selected_frames.json` +
+  `chapter_candidates.json`) and writes a standard OOXML document
+  with `Heading 1 / 2 / 3` blocks, metadata paragraphs, an optional
+  `Chapters` block (only when `selected_frames.json` is present),
+  inline images embedded via `Document.add_picture(path,
+  width=Inches(6.0))`, italic caption paragraphs only when
+  `verification.caption` is a non-empty string after whitespace
+  collapse, and a `Transcript` / `Segments` tail with `List Bullet`
+  paragraphs. Images on disk are never copied, renamed, or
+  re-encoded. Validation mirrors the `recap export-html` contract
+  (structural/numeric checks, hero and supporting coherence,
+  chapter-index lookup, plain-filename safety check on
+  `frame_file`, image existence). Skip contract: `report.docx` is
+  written atomically via `report.docx.tmp`; reruns without
+  `--force` skip. DOCX output is **not** byte-identical across
+  reruns because python-docx writes package-level timestamps into
+  `core.xml`; structural parity is what this slice guarantees.
+  `recap run` composition is unchanged. `export_docx` is opt-in
+  and not part of `job.STAGES`. PDF and Notion export,
+  topic-shift chaptering, chapter titling, WhisperX, pyannote,
+  Groq, and UI all remain deferred.
 - The third Phase 4 slice is implemented: optional HTML export via
   `recap export-html --job <path> [--force]` → `report.html`. It
   reads the same artifacts `recap assemble` reads (`job.json`,
@@ -28,10 +54,12 @@ system does and produces, read `HANDOFF.md`.
   written atomically via `report.html.tmp`; reruns without
   `--force` skip. `recap run` composition is unchanged. No new
   dependencies. The `export_html` stage is opt-in and not part of
-  `job.STAGES`. DOCX export (`report.docx`) remains the open
-  Phase-4 item; Notion and PDF export, topic-shift chaptering,
-  chapter titling, WhisperX, pyannote, Groq, and UI all remain
-  deferred.
+  `job.STAGES`. DOCX export (`report.docx`) has since also been
+  implemented in a later slice (see the `recap export-docx` entry
+  above). PDF and Notion export, topic-shift chaptering, chapter
+  titling, WhisperX, pyannote, Groq, speaker recognition /
+  manual labels, and UI all remain deferred. `recap run` remains
+  Phase-1-only.
 - The second Phase 4 slice is implemented: `recap assemble` now
   embeds finalized screenshots and captions into `report.md` when
   `selected_frames.json` is present. A new `## Chapters` section is

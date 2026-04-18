@@ -15,6 +15,7 @@ Subcommands:
   verify     Optional VLM verification over the shortlist (Phase 4 slice; not invoked by `run`).
   assemble   Stage 8 Markdown assembly; embeds selected screenshots when present.
   export-html Phase 4 slice: export report.html (not invoked by run).
+  export-docx Phase 4 slice: export report.docx (not invoked by run).
   status     Print job.json summary.
 
 All commands operate on a job directory (`--job <path>`). When `run` is
@@ -45,6 +46,7 @@ from .stages import (
     assemble,
     chapters,
     dedupe,
+    export_docx,
     export_html,
     ingest,
     normalize,
@@ -180,6 +182,13 @@ def cmd_assemble(args) -> int:
 def cmd_export_html(args) -> int:
     paths = job_mod.open_job(Path(args.job))
     out = export_html.run(paths, force=args.force)
+    print(out)
+    return 0
+
+
+def cmd_export_docx(args) -> int:
+    paths = job_mod.open_job(Path(args.job))
+    out = export_docx.run(paths, force=args.force)
     print(out)
     return 0
 
@@ -349,6 +358,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--job", required=True)
     sp.add_argument("--force", action="store_true")
     sp.set_defaults(func=cmd_export_html)
+
+    sp = sub.add_parser(
+        "export-docx", help="Phase 4 slice: export report.docx"
+    )
+    sp.add_argument("--job", required=True)
+    sp.add_argument("--force", action="store_true")
+    sp.set_defaults(func=cmd_export_docx)
 
     sp = sub.add_parser("status", help="print job.json")
     sp.add_argument("--job", required=True)

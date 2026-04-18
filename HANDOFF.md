@@ -604,9 +604,11 @@ deferred.
   HTML / Notion / PDF. It does not add UI. It does not
   implement chapter titling or topic-shift detection.
 
-DOCX, HTML, Notion, and PDF export remain deferred, as do
-topic-shift chaptering, chapter titling, WhisperX, pyannote,
-Groq, and UI.
+Optional HTML and DOCX export are both implemented as later
+Phase 4 slices (see below). PDF and Notion export remain
+deferred, as do topic-shift chaptering, chapter titling,
+WhisperX, pyannote, Groq, speaker recognition / manual labels,
+and UI. `recap run` remains Phase-1-only.
 
 ## What the third Phase 4 slice includes
 
@@ -683,10 +685,98 @@ Groq, and UI.
   or PDF, and does not add a Markdown parser dependency.
 
 This slice is opt-in. `recap run` continues to compose only
-`ingest → normalize → transcribe → assemble`. DOCX
-(`report.docx`) export remains the open Phase-4 item; Notion
-and PDF export, topic-shift chaptering, chapter titling,
-WhisperX, pyannote, Groq, and UI all remain deferred.
+`ingest → normalize → transcribe → assemble`. Notion and PDF
+export, topic-shift chaptering, chapter titling, WhisperX,
+pyannote, Groq, and UI all remain deferred.
+
+## What the fourth Phase 4 slice includes
+
+- **Optional DOCX export.** `recap export-docx --job <path>
+  [--force]` writes `report.docx` at the job root using
+  `python-docx >= 1.1` (newly added to `requirements.txt` and
+  `pyproject.toml`). The stage reads the same artifacts as
+  `recap export-html` (`job.json`, `metadata.json`,
+  `transcript.json`, and — when present — `selected_frames.json`
+  + `chapter_candidates.json`) and produces a standard OOXML
+  document via `Document()` and its `add_heading` /
+  `add_paragraph` / `add_picture` primitives. No Pandoc, no
+  LibreOffice, no PDF output, and no hand-drafted XML. No
+  network call is made. No VLM / LLM is invoked.
+- **Content parity with the Markdown and HTML reports.**
+  `Heading 1` is `Recap: {title}`; metadata paragraphs cover Job
+  ID / Source file / Created when available; `Heading 2: Media`
+  lists duration / container / video / audio. When
+  `selected_frames.json` is present, a `Heading 2: Chapters`
+  block appears with one `Heading 3` per chapter embedding the
+  selected hero first and then each selected supporting image in
+  `supporting_scene_indices` order via
+  `Document.add_picture(path, width=Inches(6.0))`. Captions
+  render as italic-run paragraphs only when
+  `verification.caption` is a non-empty string after whitespace
+  collapse. The chapter body text from the matching
+  `chapter_candidates.json` entry is added as a single
+  paragraph after the images, or omitted when empty. The final
+  section is `Heading 2: Transcript` followed by
+  `Heading 3: Segments` and one `List Bullet` paragraph per
+  non-empty transcript segment.
+- **Image handling.** Referenced candidate images are embedded
+  into the DOCX package; the image files on disk are not
+  copied, renamed, or re-encoded. A fixed width of `6.0` inches
+  is applied to every embedded image; no per-frame sizing is
+  computed.
+- **Validation contract (matches `recap export-html`).** When
+  `selected_frames.json` is present the stage enforces the same
+  structural, numeric, and coherence checks export_html does:
+  type checks on every chapter and frame, `decision` closed
+  vocabulary (`selected_hero`, `selected_supporting`,
+  `vlm_rejected`), at most one `selected_hero` per chapter,
+  `chapter.hero` must match the selected_hero frame on
+  `scene_index`, `frame_file`, and `midpoint_seconds`, the
+  ordered `scene_index` list of `selected_supporting` frames
+  must exactly equal `supporting_scene_indices`, every selected
+  chapter's `chapter_index` must be present in
+  `chapter_candidates.json`, and every referenced
+  `frame_file` must pass the plain-filename safety check
+  (no `/`, no `\`, no absolute paths, no `.` or `..`,
+  `Path(name).name == name`) and the file must exist under
+  `candidate_frames/`. Any violation exits `2` with a one-line
+  `error: ...` (`selected_frames.json malformed: ...`,
+  `chapter_candidates.json malformed: ...`,
+  `chapter_candidates.json has no chapter with index <n>
+  required by selected_frames.json`, or `missing candidate
+  frame: candidate_frames/<frame_file>`) and leaves any
+  existing `report.docx` untouched with no `report.docx.tmp`
+  on disk.
+- **Skip / restart.** If `report.docx` exists and `--force` is
+  not passed, the stage is skipped and
+  `stages.export_docx.skipped` is set to `true`. `--force`
+  recomputes. Writes are atomic via `Document.save(str(tmp))`
+  to a `report.docx.tmp` sibling followed by `Path.replace`; on
+  exception the temp file is removed and any existing
+  `report.docx` is preserved. The `export_docx` stage is
+  **not** added to `job.STAGES`; it appends its own entry under
+  `job.stages` exactly like `export_html`, `verify`,
+  `shortlist`, `rank`, etc.
+- **Determinism caveat.** DOCX output is not byte-identical
+  across reruns because python-docx writes package-level
+  timestamps (`dcterms:created`, `dcterms:modified`) into
+  `core.xml`. This slice guarantees structural parity — the
+  set of headings, inline-shape count, and paragraph content
+  — not byte-level stability.
+- **What this slice does not do.** It does not modify
+  `recap/stages/assemble.py`, `recap/stages/export_html.py`,
+  `recap/stages/verify.py`, any upstream stage, `recap run`
+  composition, or `job.STAGES`. It does not invoke any
+  VLM/LLM. It does not read or mutate `report.md`,
+  `report.html`, or `selected_frames.json`. It does not copy,
+  rename, or rewrite images. It does not add a CLI flag
+  beyond `--job` / `--force`. It does not export PDF, Notion,
+  or intermediate XML.
+
+This slice is opt-in. `recap run` continues to compose only
+`ingest → normalize → transcribe → assemble`. PDF and Notion
+export, topic-shift chaptering, chapter titling, WhisperX,
+pyannote, Groq, and UI all remain deferred.
 
 ## Running Phase 1 locally
 

@@ -1,0 +1,565 @@
+"""Phase 4 slice: optional DOCX export.
+
+Reads the same artifacts `recap assemble` and `recap export-html` read
+(`job.json`, `metadata.json`, `transcript.json`, and — when present —
+`selected_frames.json` + `chapter_candidates.json`) and writes
+`report.docx` via `python-docx`. No Markdown parsing, no network, no
+VLM/LLM calls. Images from `candidate_frames/` are embedded into the
+DOCX package with `Document.add_picture(...)`; no image files are
+copied, renamed, or rewritten on disk.
+
+This stage is opt-in via `recap export-docx --job <path>`. It is NOT
+invoked by `recap run` and it is NOT part of `job.STAGES`. It does not
+modify `report.md`, `report.html`, `selected_frames.json`, or any
+upstream artifact.
+
+Validation follows the same selected-path contract as the Markdown and
+HTML exports. The small helpers are intentionally duplicated here
+rather than extracted into a shared module; the slice stays
+self-contained and leaves the other stage files untouched.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+
+from docx import Document
+from docx.shared import Inches
+
+from ..job import COMPLETED, FAILED, RUNNING, JobPaths, read_job, update_stage
+
+
+_WHITESPACE_RE = re.compile(r"\s+")
+
+_SELECTED_FRAME_DECISIONS = (
+    "selected_hero",
+    "selected_supporting",
+    "vlm_rejected",
+)
+
+_IMAGE_WIDTH_INCHES = 6.0
+
+
+def _format_ts(seconds: float | None) -> str:
+    if seconds is None:
+        return "--:--:--"
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def _summarize_metadata(meta: dict) -> dict:
+    fmt = meta.get("format", {}) or {}
+    streams = meta.get("streams", []) or []
+    video = next((s for s in streams if s.get("codec_type") == "video"), None)
+    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
+
+    def _maybe_float(x):
+        try:
+            return float(x)
+        except (TypeError, ValueError):
+            return None
+
+    out = {
+        "duration_seconds": _maybe_float(fmt.get("duration")),
+        "size_bytes": int(fmt.get("size")) if fmt.get("size") else None,
+        "format_name": fmt.get("format_name"),
+    }
+    if video:
+        out["video"] = {
+            "codec": video.get("codec_name"),
+            "width": video.get("width"),
+            "height": video.get("height"),
+            "frame_rate": video.get("avg_frame_rate"),
+        }
+    if audio:
+        out["audio"] = {
+            "codec": audio.get("codec_name"),
+            "sample_rate": audio.get("sample_rate"),
+            "channels": audio.get("channels"),
+        }
+    return out
+
+
+def _collapse_whitespace(text: str) -> str:
+    return _WHITESPACE_RE.sub(" ", text).strip()
+
+
+def _is_int(v: object) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _is_number(v: object) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _is_safe_frame_file(name: object) -> bool:
+    """A frame_file must be a plain filename inside candidate_frames/."""
+    if not isinstance(name, str) or not name:
+        return False
+    if name in (".", ".."):
+        return False
+    if "/" in name or "\\" in name:
+        return False
+    p = Path(name)
+    if p.is_absolute():
+        return False
+    if p.name != name:
+        return False
+    return True
+
+
+def _validate_selected_frames(data: object) -> dict:
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            "selected_frames.json malformed: top-level is not a JSON object"
+        )
+    chapters = data.get("chapters")
+    if not isinstance(chapters, list):
+        raise RuntimeError(
+            "selected_frames.json malformed: 'chapters' missing or not a list"
+        )
+    for ch in chapters:
+        if not isinstance(ch, dict):
+            raise RuntimeError(
+                "selected_frames.json malformed: chapter entry is not an object"
+            )
+        for field in ("chapter_index", "start_seconds", "end_seconds",
+                      "hero", "supporting_scene_indices", "frames"):
+            if field not in ch:
+                raise RuntimeError(
+                    f"selected_frames.json malformed: chapter missing '{field}'"
+                )
+        if not _is_int(ch["chapter_index"]):
+            raise RuntimeError(
+                "selected_frames.json malformed: chapter 'chapter_index' "
+                "must be an integer"
+            )
+        ch_idx = ch["chapter_index"]
+        if not _is_number(ch["start_seconds"]):
+            raise RuntimeError(
+                f"selected_frames.json malformed: chapter {ch_idx} "
+                "'start_seconds' must be numeric"
+            )
+        if not _is_number(ch["end_seconds"]):
+            raise RuntimeError(
+                f"selected_frames.json malformed: chapter {ch_idx} "
+                "'end_seconds' must be numeric"
+            )
+        if not isinstance(ch["frames"], list):
+            raise RuntimeError(
+                f"selected_frames.json malformed: chapter {ch_idx} 'frames' "
+                "is not a list"
+            )
+        if not isinstance(ch["supporting_scene_indices"], list):
+            raise RuntimeError(
+                f"selected_frames.json malformed: chapter {ch_idx} "
+                "'supporting_scene_indices' is not a list"
+            )
+        for si in ch["supporting_scene_indices"]:
+            if not _is_int(si):
+                raise RuntimeError(
+                    f"selected_frames.json malformed: chapter {ch_idx} "
+                    "'supporting_scene_indices' entries must be integers"
+                )
+        hero = ch["hero"]
+        if hero is not None:
+            if not isinstance(hero, dict):
+                raise RuntimeError(
+                    f"selected_frames.json malformed: chapter {ch_idx} "
+                    "'hero' must be null or an object"
+                )
+            for field in ("scene_index", "frame_file", "midpoint_seconds"):
+                if field not in hero:
+                    raise RuntimeError(
+                        f"selected_frames.json malformed: chapter {ch_idx} "
+                        f"hero missing '{field}'"
+                    )
+            if not _is_int(hero["scene_index"]):
+                raise RuntimeError(
+                    f"selected_frames.json malformed: chapter {ch_idx} "
+                    "hero 'scene_index' must be an integer"
+                )
+            if not _is_safe_frame_file(hero["frame_file"]):
+                raise RuntimeError(
+                    f"selected_frames.json malformed: chapter {ch_idx} "
+                    "hero 'frame_file' must be a plain filename inside "
+                    "candidate_frames/ (no path separators, no traversal)"
+                )
+            if not _is_number(hero["midpoint_seconds"]):
+                raise RuntimeError(
+                    f"selected_frames.json malformed: chapter {ch_idx} "
+                    "hero 'midpoint_seconds' must be numeric"
+                )
+        for fr in ch["frames"]:
+            if not isinstance(fr, dict):
+                raise RuntimeError(
+                    "selected_frames.json malformed: frame entry is not "
+                    "an object"
+                )
+            for field in ("frame_file", "scene_index",
+                          "midpoint_seconds", "decision"):
+                if field not in fr:
+                    raise RuntimeError(
+                        "selected_frames.json malformed: frame missing "
+                        f"'{field}'"
+                    )
+            if not _is_safe_frame_file(fr["frame_file"]):
+                raise RuntimeError(
+                    "selected_frames.json malformed: frame 'frame_file' "
+                    "must be a plain filename inside candidate_frames/ "
+                    "(no path separators, no traversal)"
+                )
+            if not _is_int(fr["scene_index"]):
+                raise RuntimeError(
+                    "selected_frames.json malformed: frame 'scene_index' "
+                    "must be an integer"
+                )
+            if not _is_number(fr["midpoint_seconds"]):
+                raise RuntimeError(
+                    "selected_frames.json malformed: frame "
+                    "'midpoint_seconds' must be numeric"
+                )
+            if not isinstance(fr["decision"], str):
+                raise RuntimeError(
+                    "selected_frames.json malformed: frame 'decision' "
+                    "must be a string"
+                )
+            if fr["decision"] not in _SELECTED_FRAME_DECISIONS:
+                raise RuntimeError(
+                    "selected_frames.json malformed: frame 'decision' "
+                    f"must be one of {list(_SELECTED_FRAME_DECISIONS)}"
+                )
+    return data
+
+
+def _validate_chapter_candidates(data: object) -> dict[int, str]:
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            "chapter_candidates.json malformed: top-level is not a JSON object"
+        )
+    chapters = data.get("chapters")
+    if not isinstance(chapters, list):
+        raise RuntimeError(
+            "chapter_candidates.json malformed: 'chapters' missing or not a list"
+        )
+    text_by_index: dict[int, str] = {}
+    for ch in chapters:
+        if not isinstance(ch, dict):
+            raise RuntimeError(
+                "chapter_candidates.json malformed: chapter entry is not an "
+                "object"
+            )
+        if "index" not in ch:
+            raise RuntimeError(
+                "chapter_candidates.json malformed: chapter missing 'index'"
+            )
+        if not isinstance(ch["index"], int) or isinstance(ch["index"], bool):
+            raise RuntimeError(
+                "chapter_candidates.json malformed: chapter 'index' must be "
+                "an integer"
+            )
+        text = ch.get("text", "")
+        if not isinstance(text, str):
+            raise RuntimeError(
+                "chapter_candidates.json malformed: chapter 'text' must be "
+                "a string"
+            )
+        text_by_index[ch["index"]] = text
+    return text_by_index
+
+
+def _caption_for(frame: dict) -> str | None:
+    verification = frame.get("verification")
+    if not isinstance(verification, dict):
+        return None
+    caption = verification.get("caption")
+    if isinstance(caption, str):
+        collapsed = _collapse_whitespace(caption)
+        if collapsed:
+            return collapsed
+    return None
+
+
+def _add_caption(doc, caption: str) -> None:
+    p = doc.add_paragraph()
+    run = p.add_run(caption)
+    run.italic = True
+
+
+def _add_image(doc, image_path: Path) -> None:
+    doc.add_picture(str(image_path), width=Inches(_IMAGE_WIDTH_INCHES))
+
+
+def _check_hero_coherence(ch: dict) -> dict | None:
+    ch_idx = ch["chapter_index"]
+    hero_frames = [
+        fr for fr in ch["frames"]
+        if fr.get("decision") == "selected_hero"
+    ]
+    if len(hero_frames) > 1:
+        raise RuntimeError(
+            f"selected_frames.json malformed: chapter {ch_idx} has "
+            f"{len(hero_frames)} frames with decision='selected_hero' "
+            "(expected at most 1)"
+        )
+    hero = ch.get("hero")
+    if hero_frames:
+        hero_frame_from_list = hero_frames[0]
+        if not isinstance(hero, dict):
+            raise RuntimeError(
+                f"selected_frames.json malformed: chapter {ch_idx} has a "
+                "'selected_hero' frame but chapter.hero is null"
+            )
+        for field in ("scene_index", "frame_file", "midpoint_seconds"):
+            if hero.get(field) != hero_frame_from_list.get(field):
+                raise RuntimeError(
+                    f"selected_frames.json malformed: chapter {ch_idx} "
+                    f"hero.{field} does not match the 'selected_hero' "
+                    "frame in frames[]"
+                )
+        return hero_frame_from_list
+    if hero is not None:
+        raise RuntimeError(
+            f"selected_frames.json malformed: chapter {ch_idx} has "
+            "chapter.hero set but no frame with "
+            "decision='selected_hero'"
+        )
+    return None
+
+
+def _check_supporting_coherence(ch: dict) -> None:
+    ch_idx = ch["chapter_index"]
+    supporting_frame_order = [
+        fr["scene_index"] for fr in ch["frames"]
+        if fr.get("decision") == "selected_supporting"
+    ]
+    ssi = list(ch["supporting_scene_indices"])
+    if supporting_frame_order != ssi:
+        raise RuntimeError(
+            f"selected_frames.json malformed: chapter {ch_idx} "
+            "'supporting_scene_indices' does not match the ordered "
+            "scene_index values of its 'selected_supporting' frames"
+        )
+
+
+def _render_chapters(
+    doc,
+    selected: dict,
+    chapter_text_by_index: dict[int, str],
+    frames_dir: Path,
+) -> None:
+    doc.add_heading("Chapters", level=2)
+
+    for ch in selected["chapters"]:
+        ch_idx = ch["chapter_index"]
+        if ch_idx not in chapter_text_by_index:
+            raise RuntimeError(
+                f"chapter_candidates.json has no chapter with index {ch_idx} "
+                "required by selected_frames.json"
+            )
+
+        hero_frame = _check_hero_coherence(ch)
+        _check_supporting_coherence(ch)
+
+        start = _format_ts(ch.get("start_seconds") or 0.0)
+        end = _format_ts(ch.get("end_seconds") or 0.0)
+        doc.add_heading(
+            f"Chapter {ch_idx} — [{start} – {end}]", level=3
+        )
+
+        frames_by_scene: dict[int, dict] = {}
+        for fr in ch["frames"]:
+            frames_by_scene[fr["scene_index"]] = fr
+
+        if hero_frame is not None:
+            frame_file = hero_frame["frame_file"]
+            image_path = frames_dir / frame_file
+            if not image_path.exists():
+                raise RuntimeError(
+                    f"missing candidate frame: candidate_frames/{frame_file}"
+                )
+            _add_image(doc, image_path)
+            caption = _caption_for(hero_frame)
+            if caption:
+                _add_caption(doc, caption)
+
+        for si in ch["supporting_scene_indices"]:
+            support_frame = frames_by_scene.get(si)
+            if (
+                support_frame is None
+                or support_frame.get("decision") != "selected_supporting"
+            ):
+                raise RuntimeError(
+                    f"selected_frames.json malformed: chapter {ch_idx} "
+                    f"supporting_scene_indices references scene_index {si} "
+                    "without a matching 'selected_supporting' frame"
+                )
+            frame_file = support_frame["frame_file"]
+            image_path = frames_dir / frame_file
+            if not image_path.exists():
+                raise RuntimeError(
+                    f"missing candidate frame: candidate_frames/{frame_file}"
+                )
+            _add_image(doc, image_path)
+            caption = _caption_for(support_frame)
+            if caption:
+                _add_caption(doc, caption)
+
+        body_text = _collapse_whitespace(chapter_text_by_index[ch_idx])
+        if body_text:
+            doc.add_paragraph(body_text)
+
+
+def build_document(
+    job: dict,
+    meta_summary: dict,
+    transcript: dict | None,
+    selected: dict | None,
+    chapter_text_by_index: dict[int, str] | None,
+    frames_dir: Path,
+):
+    doc = Document()
+    title = job.get("original_filename") or job.get("job_id") or "Recap"
+    doc.add_heading(f"Recap: {title}", level=1)
+
+    if job.get("job_id"):
+        doc.add_paragraph(f"Job ID: {job['job_id']}")
+    if job.get("original_filename"):
+        doc.add_paragraph(f"Source file: {job['original_filename']}")
+    if job.get("created_at"):
+        doc.add_paragraph(f"Created: {job['created_at']}")
+
+    doc.add_heading("Media", level=2)
+    dur = meta_summary.get("duration_seconds")
+    if dur is not None:
+        doc.add_paragraph(f"Duration: {_format_ts(dur)} ({dur:.2f}s)")
+    if meta_summary.get("format_name"):
+        doc.add_paragraph(f"Container: {meta_summary['format_name']}")
+    v = meta_summary.get("video")
+    if v:
+        res = f"{v.get('width')}x{v.get('height')}" if v.get("width") else "unknown"
+        doc.add_paragraph(
+            f"Video: {v.get('codec')} {res} @ {v.get('frame_rate')}"
+        )
+    a = meta_summary.get("audio")
+    if a:
+        doc.add_paragraph(
+            f"Audio: {a.get('codec')} {a.get('sample_rate')} Hz, "
+            f"{a.get('channels')} ch"
+        )
+
+    if selected is not None and chapter_text_by_index is not None:
+        _render_chapters(doc, selected, chapter_text_by_index, frames_dir)
+
+    doc.add_heading("Transcript", level=2)
+    if transcript is None:
+        doc.add_paragraph("No transcript available.")
+        return doc
+
+    engine = transcript.get("engine")
+    model = transcript.get("model")
+    doc.add_paragraph(f"Engine: {engine} (model {model})")
+    if transcript.get("language"):
+        doc.add_paragraph(f"Detected language: {transcript['language']}")
+    segs = transcript.get("segments", []) or []
+    doc.add_paragraph(f"Segments: {len(segs)}")
+
+    doc.add_heading("Segments", level=3)
+    for seg in segs:
+        start = _format_ts(seg.get("start") or 0.0)
+        end = _format_ts(seg.get("end") or 0.0)
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        doc.add_paragraph(
+            f"[{start} – {end}] {text}", style="List Bullet"
+        )
+
+    return doc
+
+
+def run(paths: JobPaths, force: bool = False) -> Path:
+    update_stage(paths, "export_docx", RUNNING)
+    tmp = paths.report_docx.with_suffix(".docx.tmp")
+    try:
+        if not force and paths.report_docx.exists():
+            update_stage(
+                paths, "export_docx", COMPLETED, extra={"skipped": True}
+            )
+            return paths.report_docx
+
+        job = read_job(paths)
+
+        meta_summary: dict = {}
+        if paths.metadata_json.exists():
+            with open(paths.metadata_json, "r", encoding="utf-8") as f:
+                meta_summary = _summarize_metadata(json.load(f))
+
+        transcript: dict | None = None
+        if paths.transcript_json.exists():
+            with open(paths.transcript_json, "r", encoding="utf-8") as f:
+                transcript = json.load(f)
+
+        selected: dict | None = None
+        chapter_text_by_index: dict[int, str] | None = None
+        if paths.selected_frames_json.exists():
+            try:
+                with open(
+                    paths.selected_frames_json, "r", encoding="utf-8"
+                ) as f:
+                    selected_raw = json.load(f)
+            except json.JSONDecodeError as e:
+                raise RuntimeError(
+                    f"selected_frames.json malformed: invalid JSON: {e.msg}"
+                ) from e
+            selected = _validate_selected_frames(selected_raw)
+
+            if not paths.chapter_candidates_json.exists():
+                raise RuntimeError(
+                    "chapter_candidates.json is required when "
+                    "selected_frames.json is present but was not found"
+                )
+            try:
+                with open(
+                    paths.chapter_candidates_json, "r", encoding="utf-8"
+                ) as f:
+                    chapters_raw = json.load(f)
+            except json.JSONDecodeError as e:
+                raise RuntimeError(
+                    f"chapter_candidates.json malformed: invalid JSON: {e.msg}"
+                ) from e
+            chapter_text_by_index = _validate_chapter_candidates(chapters_raw)
+
+        doc = build_document(
+            job,
+            meta_summary,
+            transcript,
+            selected,
+            chapter_text_by_index,
+            paths.candidate_frames_dir,
+        )
+
+        doc.save(str(tmp))
+        tmp.replace(paths.report_docx)
+
+        extra: dict = {
+            "report": paths.report_docx.name,
+            "bytes": paths.report_docx.stat().st_size,
+            "embedded_selected_frames": selected is not None,
+        }
+        update_stage(paths, "export_docx", COMPLETED, extra=extra)
+        return paths.report_docx
+    except Exception as e:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+        update_stage(
+            paths, "export_docx", FAILED, error=f"{type(e).__name__}: {e}"
+        )
+        raise

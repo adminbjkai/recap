@@ -292,6 +292,7 @@ Per-stage commands (useful for re-running a single stage, or resuming):
 .venv/bin/python -m recap verify     --job jobs/<job_id> [--provider {mock,gemini}]
 .venv/bin/python -m recap assemble   --job jobs/<job_id>
 .venv/bin/python -m recap export-html --job jobs/<job_id>
+.venv/bin/python -m recap export-docx --job jobs/<job_id>
 .venv/bin/python -m recap status     --job jobs/<job_id>
 ```
 
@@ -428,7 +429,9 @@ Validation errors during the embedded path exit `2` with a one-line
 `candidate_frames/`, or a `supporting_scene_indices` reference that does
 not resolve to a `selected_supporting` frame.
 
-DOCX, HTML, Notion, and PDF export remain deferred.
+Optional HTML and DOCX export are implemented as opt-in slices
+(`recap export-html` and `recap export-docx`, documented below);
+PDF and Notion export remain deferred.
 
 ### HTML export
 
@@ -467,9 +470,51 @@ a referenced candidate image missing from `candidate_frames/`, or a
 `supporting_scene_indices` entry that does not resolve to a
 `selected_supporting` frame in that chapter.
 
-This slice introduces no new Python or system dependency. DOCX
-(`report.docx`) export remains deferred, as do Notion and PDF
-exports.
+This slice introduces no new Python or system dependency. Notion and
+PDF exports remain deferred.
+
+### DOCX export
+
+`recap export-docx --job <path> [--force]` is an opt-in Phase 4 slice
+that writes `report.docx` alongside `report.md` and `report.html`. It
+is not invoked by `recap run`. It reads the same artifacts the HTML
+and Markdown reports read (`job.json`, `metadata.json`,
+`transcript.json`, and — when present — `selected_frames.json` plus
+`chapter_candidates.json`) and emits a standard OOXML `.docx` document
+built with `python-docx` (>= 1.1). No Pandoc, no LibreOffice, no PDF
+path. No network access.
+
+Document structure mirrors the Markdown and HTML reports: an
+`Heading 1` title, metadata paragraphs (Job ID, Source file, Created),
+an `Heading 2: Media` block, an optional `Heading 2: Chapters` block
+(only when `selected_frames.json` is present) with one `Heading 3` per
+chapter embedding the selected hero image first and then the selected
+supporting images in `supporting_scene_indices` order, each followed
+by an italic caption paragraph when `verification.caption` is a
+non-empty string and by the chapter body text from
+`chapter_candidates.json`. Images are embedded into the DOCX package
+via `Document.add_picture(path, width=Inches(6.0))`; no image file is
+copied, renamed, re-encoded, or mutated on disk. The final section is
+`Heading 2: Transcript` with engine / language / segment count
+paragraphs and a `Heading 3: Segments` list of bullet paragraphs.
+
+Skip behavior mirrors the other exports: if `report.docx` exists and
+`--force` is not passed, the stage is skipped. Writes are atomic via
+a `report.docx.tmp` sibling replaced on success; on failure the temp
+file is removed and any existing `report.docx` is left unchanged.
+
+Validation follows the same selected-path contract as
+`recap export-html`: malformed `selected_frames.json`, missing or
+malformed `chapter_candidates.json`, a chapter index absent from
+`chapter_candidates.json`, a referenced candidate image missing from
+`candidate_frames/`, or a `frame_file` that is not a plain filename
+(no path separators, no traversal) each exit `2` with a one-line
+`error: ...` and leave any existing `report.docx` unchanged.
+
+Unlike the Markdown/HTML reports, DOCX output is **not** byte-identical
+across reruns because python-docx writes package-level timestamps into
+`core.xml`. Structural parity is what this slice guarantees. PDF and
+Notion exports remain deferred.
 
 ### Cloud transcription (Deepgram)
 
