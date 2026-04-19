@@ -888,6 +888,32 @@ removed. Runtime is about half a second. This is the pre-release
 guard for the dashboard's routing, path safety, and artifact
 serving.
 
+## Hardening: shared report helpers
+
+`recap/stages/report_helpers.py` is the canonical home for the small
+validators and formatters used by the three report stages. It exports
+`format_ts`, `summarize_metadata`, `collapse_whitespace`, `is_int`,
+`is_number`, `is_safe_frame_file`, `validate_selected_frames`,
+`validate_chapter_candidates`, `caption_for`, `check_hero_coherence`,
+and `check_supporting_coherence`. `recap/stages/assemble.py`,
+`recap/stages/export_html.py`, and `recap/stages/export_docx.py`
+import these names (aliased with a leading underscore locally so the
+existing render-site call sites did not need to change), so a future
+fix to the selected-path validation contract lands in one file instead
+of three. The refactor was verified to be behavior-preserving by
+diffing the no-selected Markdown output and the selected Markdown and
+HTML outputs against pre-refactor baselines; both
+`scripts/verify_reports.py` and `scripts/verify_ui.py` remain green.
+This module is deliberately a flat set of functions and constants —
+not an export framework, not a plugin registry, not a stage
+abstraction. Error-message prefixes (`selected_frames.json malformed:
+…`, `chapter_candidates.json malformed: …`, `chapter_candidates.json
+has no chapter with index … required by selected_frames.json`,
+`missing candidate frame: candidate_frames/…`, `plain filename inside
+candidate_frames/`) are load bearing because `scripts/verify_reports.py`
+matches on them and must not change without updating the script in
+lockstep.
+
 ## Running Phase 1 locally
 
 ```bash
