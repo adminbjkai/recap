@@ -113,6 +113,71 @@ _FULL_RUN_TIMEOUT = 3600.0       # seconds (background `recap run`)
 # background thread when the subprocess ends.
 _run_slot = threading.Semaphore(1)
 
+# Chunk size used when streaming ranged video responses.
+_RANGE_CHUNK_BYTES = 64 * 1024
+
+
+def _parse_range(header: str | None, size: int) -> tuple[int, int] | None:
+    """Parse a single-range `Range: bytes=<spec>` header.
+
+    Returns a `(start, end)` inclusive pair within `[0, size - 1]` when
+    the header specifies a single satisfiable range. Returns None when
+    the header is absent, malformed, multi-range, or not `bytes=` —
+    the caller should fall back to a 200 full-body response.
+
+    Raises `ValueError` with ``"unsatisfiable"`` when the header is a
+    valid single-range syntax but cannot be served against `size`;
+    the caller should respond with `416 Range Not Satisfiable`.
+    """
+    if not header:
+        return None
+    header = header.strip()
+    if not header.lower().startswith("bytes="):
+        return None
+    spec = header[len("bytes="):].strip()
+    if not spec or "," in spec:
+        return None
+    if "-" not in spec:
+        return None
+    lo_str, _, hi_str = spec.partition("-")
+    lo_str = lo_str.strip()
+    hi_str = hi_str.strip()
+    if size <= 0:
+        # Nothing to serve ranged from a zero-byte file; fall back.
+        return None
+    try:
+        if lo_str == "" and hi_str != "":
+            # Suffix range: bytes=-n → last n bytes.
+            n = int(hi_str)
+            if n <= 0:
+                return None
+            start = max(0, size - n)
+            end = size - 1
+        elif lo_str != "" and hi_str == "":
+            # Prefix range: bytes=a-
+            start = int(lo_str)
+            if start < 0:
+                return None
+            if start >= size:
+                raise ValueError("unsatisfiable")
+            end = size - 1
+        elif lo_str != "" and hi_str != "":
+            start = int(lo_str)
+            end = int(hi_str)
+            if start < 0 or end < 0 or start > end:
+                return None
+            if start >= size:
+                raise ValueError("unsatisfiable")
+            if end >= size:
+                end = size - 1
+        else:
+            return None
+    except ValueError as e:
+        if str(e) == "unsatisfiable":
+            raise
+        return None
+    return start, end
+
 # Per-job execution locks so two POSTs to the same job serialize while
 # different jobs still run in parallel. All shared state is guarded by
 # `_job_locks_guard`.
@@ -297,6 +362,7 @@ _JOB_ROOT_FILES: frozenset[str] = frozenset({
     "frame_windows.json",
     "frame_scores.json",
     "scenes.json",
+    "analysis.mp4",
 })
 
 _CANDIDATE_FRAME_EXTS: frozenset[str] = frozenset({".jpg", ".jpeg", ".png"})
@@ -313,6 +379,7 @@ _CONTENT_TYPES: dict[str, str] = {
         "application/vnd.openxmlformats-officedocument"
         ".wordprocessingml.document"
     ),
+    ".mp4": "video/mp4",
 }
 
 # Canonical ordering for the stage table. Unknown stages fall through
@@ -425,6 +492,9 @@ form.new-job select { font: inherit; padding: 0.3rem; }
 table.transcript { table-layout: fixed; }
 table.transcript td:first-child { width: 5em; white-space: nowrap; }
 table.transcript td { vertical-align: top; }
+button.ts { background: transparent; border: none; padding: 0;
+            cursor: pointer; color: inherit; font: inherit; }
+button.ts:hover code { background: #e8f0fe; }
 """.strip()
 
 
@@ -1083,7 +1153,16 @@ def render_transcript(
             and s["text"].strip()
         ]
 
+    has_video = (job_dir / "analysis.mp4").is_file()
+
     lines: list[str] = [f"<h1>Recap · {_e(title)}</h1>"]
+
+    if has_video:
+        lines.append(
+            f'<video id="player" controls preload="metadata" '
+            f'src="/job/{_e(job_id)}/analysis.mp4" '
+            f'style="width:100%;max-width:960px"></video>'
+        )
 
     meta_bits: list[str] = []
     engine = data.get("engine")
@@ -1127,13 +1206,28 @@ def render_transcript(
         )
     lines.append("<tbody>")
     for row in source_rows:
-        start = format_ts(row.get("start") or 0.0)
+        raw_start = row.get("start")
+        if isinstance(raw_start, (int, float)) and not isinstance(
+            raw_start, bool
+        ):
+            start_value = float(raw_start)
+        else:
+            start_value = 0.0
+        start = format_ts(start_value)
         text = (row.get("text") or "").strip()
+        if has_video:
+            time_cell = (
+                f'<button type="button" class="ts" '
+                f'data-start="{start_value}">'
+                f"<code>{_e(start)}</code></button>"
+            )
+        else:
+            time_cell = f"<code>{_e(start)}</code>"
         if use_utterances:
             spk_cell = _format_speaker(row.get("speaker"))
             lines.append(
                 "<tr>"
-                f"<td><code>{_e(start)}</code></td>"
+                f"<td>{time_cell}</td>"
                 f"<td>{spk_cell}</td>"
                 f"<td>{_e(text)}</td>"
                 "</tr>"
@@ -1141,11 +1235,32 @@ def render_transcript(
         else:
             lines.append(
                 "<tr>"
-                f"<td><code>{_e(start)}</code></td>"
+                f"<td>{time_cell}</td>"
                 f"<td>{_e(text)}</td>"
                 "</tr>"
             )
     lines.append("</tbody></table>")
+
+    if has_video:
+        lines.append(
+            "<script>\n"
+            "(function(){\n"
+            "  var player = document.getElementById('player');\n"
+            "  if (!player) return;\n"
+            "  document.querySelectorAll('button.ts').forEach(function(el){\n"
+            "    el.addEventListener('click', function(){\n"
+            "      var t = parseFloat(el.dataset.start);\n"
+            "      if (!isFinite(t) || t < 0) t = 0;\n"
+            "      player.currentTime = t;\n"
+            "      if (player.paused) {\n"
+            "        player.play().catch(function(){});\n"
+            "      }\n"
+            "    });\n"
+            "  });\n"
+            "})();\n"
+            "</script>"
+        )
+
     lines.append(back)
     return _page(f"Recap · {title} · transcript", "\n".join(lines))
 
@@ -1274,6 +1389,75 @@ def _make_handler(jobs_root: Path, sources_root: Path):
             self.end_headers()
             self.wfile.write(data)
 
+        def _send_ranged_file(
+            self, path: Path, content_type: str,
+        ) -> None:
+            try:
+                size = path.stat().st_size
+            except OSError:
+                self._send_html(HTTPStatus.NOT_FOUND, render_404(self.path))
+                return
+
+            range_header = self.headers.get("Range")
+            try:
+                parsed = _parse_range(range_header, size)
+            except ValueError:
+                # 416 — valid single-range syntax but unsatisfiable.
+                self.send_response(
+                    HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE.value
+                )
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Content-Length", "0")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return
+
+            if parsed is None:
+                # Full body.
+                self.send_response(HTTPStatus.OK.value)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(size))
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self._stream_file(path, 0, size)
+                return
+
+            start, end = parsed
+            length = end - start + 1
+            self.send_response(HTTPStatus.PARTIAL_CONTENT.value)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(length))
+            self.send_header(
+                "Content-Range", f"bytes {start}-{end}/{size}"
+            )
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self._stream_file(path, start, length)
+
+        def _stream_file(
+            self, path: Path, start: int, length: int,
+        ) -> None:
+            try:
+                with open(path, "rb") as f:
+                    if start:
+                        f.seek(start)
+                    remaining = length
+                    while remaining > 0:
+                        chunk = f.read(min(_RANGE_CHUNK_BYTES, remaining))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        remaining -= len(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                # Browser aborted mid-transfer; no further action.
+                return
+            except OSError:
+                return
+
         def _not_found(self) -> None:
             self._send_html(HTTPStatus.NOT_FOUND, render_404(self.path))
 
@@ -1332,7 +1516,11 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                 if target is None:
                     self._not_found()
                     return
-                self._send_bytes(target, _content_type_for(target))
+                content_type = _content_type_for(target)
+                if content_type.startswith("video/"):
+                    self._send_ranged_file(target, content_type)
+                else:
+                    self._send_bytes(target, content_type)
                 return
 
             if (

@@ -994,12 +994,53 @@ of transcript text (`<script>` content is rendered as
 malformed-file graceful path. All scratch mutations are restored
 in `finally`.
 
-Remaining UI items — browser file upload, an inline `<video>`
-player with transcript-row jump links, cancelling a running job,
-rerunning opt-in pipeline stages, deleting or archiving jobs,
-persistent run history across server restarts, live status
-streaming (SSE / WebSocket), auth, and remote access — are
-explicitly deferred.
+The transcript page additionally renders an inline `<video
+id="player" controls preload="metadata">` element above the table
+when `analysis.mp4` exists in the job directory, and rewrites each
+Time cell into `<button type="button" class="ts"
+data-start="{float}"><code>HH:MM:SS</code></button>` with a ~10-line
+inline `<script>` that wires clicks to set `player.currentTime =
+parseFloat(el.dataset.start)` and auto-play if paused. The script
+touches no other DOM state and makes no network call. When
+`analysis.mp4` is absent (jobs mid-run, imports without normalize)
+the `<video>`, buttons, and script are silently omitted and the
+Time cells fall back to the previous plain `<code>` rendering —
+the transcript stays usable as a plain table.
+
+`analysis.mp4` is added to `_JOB_ROOT_FILES` and `.mp4 → video/mp4`
+to `_CONTENT_TYPES`. A new `_send_ranged_file` handler helper is
+invoked in the existing 3-segment static-file dispatch whenever
+the resolved content type starts with `video/`. It implements
+single-range HTTP Range support: accepts `Range: bytes=a-b`,
+`bytes=a-`, and `bytes=-n` exclusively, ignores malformed,
+empty, multi-range, or non-`bytes=` Range headers (falls through
+to 200 full body per RFC tolerance), returns 416 with
+`Content-Range: bytes */<size>` when a valid single-range is
+unsatisfiable (start beyond EOF), and on valid range returns 206
+with `Content-Range: bytes <a>-<b>/<size>`. Every video response
+carries `Accept-Ranges: bytes` and `Cache-Control: no-store`. The
+slice is streamed in 64 KiB chunks via `_stream_file`, which
+seeks once then reads-and-writes in a loop; `BrokenPipeError` and
+`ConnectionResetError` are caught silently (browsers routinely
+abort partial range requests while scrubbing). The Range header
+value is never logged. Only `analysis.mp4` is on the whitelist —
+`original.*` and other media formats are explicitly not served.
+`scripts/verify_ui.py` grew to 53 checks covering the
+no-player-when-no-video baseline, the player+buttons+script when
+`analysis.mp4` is present, full-body response headers, a byte
+range `bytes=10-19`, prefix `bytes=0-`, suffix `bytes=-5`,
+out-of-bounds `bytes=200-300` → 416, and a malformed `Range:
+floop` → 200 fallback. All mutations live in the scratch job; a
+pre-test assertion confirms `analysis.mp4` is absent before the
+scratch bytes are written.
+
+Remaining UI items — browser file upload, cancelling a running
+job, rerunning opt-in pipeline stages, deleting or archiving
+jobs, persistent run history across server restarts, active-row
+highlighting and auto-scroll while the video plays,
+speaker-colored transcript rows, speaker-isolated audio, live
+status streaming (SSE / WebSocket), auth, and remote access —
+are explicitly deferred.
 
 ## Hardening: offline golden-path validation script
 

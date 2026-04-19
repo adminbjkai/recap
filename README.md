@@ -621,6 +621,28 @@ Deepgram (`recap transcribe --engine deepgram` or `recap run --engine
 deepgram`). Faster-whisper transcripts render without a Speaker
 column. Local WhisperX/pyannote diarization remains deferred.
 
+When the job has an `analysis.mp4` on disk (produced by the normalize
+stage), the transcript page additionally renders an inline
+`<video controls preload="metadata">` player above the table, and each
+Time cell becomes a small `<button class="ts">` that sets
+`player.currentTime` to that row's start offset. ~10 lines of inline
+JavaScript wire the click handler; there is no external script and no
+framework. When `analysis.mp4` is absent (jobs mid-run, or imported
+without normalize), the player and buttons are silently omitted and
+the transcript renders exactly as before.
+
+`analysis.mp4` is served with HTTP Range support so browsers can scrub
+without downloading the entire file first. The server implements
+single-range requests (`Range: bytes=a-b`, `bytes=a-`, and
+`bytes=-n`), streams the slice in 64 KiB chunks, returns `206 Partial
+Content` with a correct `Content-Range`, and responds `416 Range Not
+Satisfiable` for out-of-bounds ranges. Malformed or multi-range
+`Range` headers are ignored and fall back to a full-body 200. Every
+video response carries `Accept-Ranges: bytes`. Only `analysis.mp4` is
+served as video — `original.*` source uploads and other formats are
+not on the whitelist. Active-row highlighting, speaker-isolated
+audio, and transcript editing remain deferred.
+
 ### Read-only Actions block
 
 The per-job detail page exposes an **Actions** block with three small

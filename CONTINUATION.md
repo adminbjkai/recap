@@ -7,6 +7,33 @@ system does and produces, read `HANDOFF.md`.
 ## Current state
 
 - Phase 1 of Recap is implemented, audited, hardened, and closed out.
+- Inline video playback and transcript-row jump links are implemented
+  on `/job/<id>/transcript`. `analysis.mp4` is now on
+  `_JOB_ROOT_FILES` and `.mp4` maps to `video/mp4` in
+  `_CONTENT_TYPES`. A new `_send_ranged_file` handler helper streams
+  the file in 64 KiB chunks and implements single-range HTTP Range
+  (`bytes=a-b`, `bytes=a-`, `bytes=-n`); it returns `206` with a
+  correct `Content-Range`, `416` with `bytes */<size>` on
+  unsatisfiable ranges, and `200` with the full body when the Range
+  header is absent, malformed, multi-range, or not `bytes=`.
+  `Accept-Ranges: bytes` and `Cache-Control: no-store` are set on
+  every video response. Non-video whitelisted artifacts continue
+  to use the existing `_send_bytes` full-body path unchanged. The
+  transcript page renders a `<video id="player" controls
+  preload="metadata" src="/job/<id>/analysis.mp4">` above the table
+  only when `analysis.mp4` exists; each Time cell becomes
+  `<button type="button" class="ts" data-start="{float}">` wrapped
+  around the existing `<code>HH:MM:SS</code>`, and a ~10-line
+  inline `<script>` wires button clicks to set
+  `player.currentTime` and auto-play if paused. When the MP4 is
+  absent the player, buttons, and script are omitted and the table
+  renders exactly as before. Only `analysis.mp4` is served as
+  video — `original.*` source uploads remain out of scope.
+  `scripts/verify_ui.py` grew to 53 checks covering the
+  no-player-when-no-video baseline plus seven Range-related cases.
+  Non-goals for this slice: multi-range responses, active-row
+  highlighting, auto-scroll during playback, speaker-colored rows,
+  speaker-isolated audio, transcript editing.
 - A read-only browser transcript viewer is implemented at
   `GET /job/<id>/transcript`. It reads `transcript.json` from the
   job directory and prefers the Deepgram-style `utterances[]` data

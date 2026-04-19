@@ -62,6 +62,23 @@ def http_get(port: int, raw_path: str) -> tuple[int, str, bytes]:
         conn.close()
 
 
+def http_get_full(
+    port: int, raw_path: str,
+    extra_headers: dict[str, str] | None = None,
+) -> tuple[int, dict[str, str], bytes]:
+    """Issue a raw GET and return status, all response headers, body."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5.0)
+    try:
+        headers = extra_headers or {}
+        conn.request("GET", raw_path, headers=headers)
+        resp = conn.getresponse()
+        body = resp.read()
+        got = {k: v for k, v in resp.getheaders()}
+        return resp.status, got, body
+    finally:
+        conn.close()
+
+
 _CSRF_RE = re.compile(rb'name="_token" value="([A-Za-z0-9_\-]+)"')
 
 
@@ -673,6 +690,137 @@ def main() -> int:
         finally:
             tp.write_text(original_transcript, encoding="utf-8")
         passed()
+
+        # ---- video playback + jump links ----------------------------
+
+        mp4_path = job_dir / "analysis.mp4"
+        if mp4_path.exists():
+            fail(
+                "video-precondition",
+                f"fixture already has analysis.mp4; this test requires it "
+                f"to be absent at start of the slice",
+            )
+
+        case = "transcript-no-player-when-no-video"
+        _, body = expect_status(
+            case, port, "/job/minimal_job/transcript", 200,
+        )
+        expect_not_contains(case, body, b"<video")
+        expect_not_contains(case, body, b'button type="button" class="ts"')
+        expect_not_contains(case, body, b"document.getElementById('player')")
+        passed()
+
+        # Seed a scratch analysis.mp4 for the remaining cases.
+        mp4_bytes = bytes(range(100))
+        mp4_path.write_bytes(mp4_bytes)
+        try:
+            case = "transcript-player-when-video-exists"
+            _, body = expect_status(
+                case, port, "/job/minimal_job/transcript", 200,
+            )
+            expect_contains(case, body, b'<video id="player"')
+            expect_contains(
+                case, body,
+                b'src="/job/minimal_job/analysis.mp4"',
+            )
+            expect_contains(
+                case, body, b'button type="button" class="ts"',
+            )
+            expect_contains(case, body, b'data-start="')
+            expect_contains(case, body, b"<script>")
+            passed()
+
+            case = "analysis-mp4-full-body"
+            status, headers, body = http_get_full(
+                port, "/job/minimal_job/analysis.mp4",
+            )
+            if status != 200:
+                fail(case, f"expected 200, got {status}")
+            if "video/mp4" not in headers.get("Content-Type", ""):
+                fail(case, f"content-type was {headers.get('Content-Type')!r}")
+            if headers.get("Accept-Ranges") != "bytes":
+                fail(
+                    case,
+                    f"Accept-Ranges was {headers.get('Accept-Ranges')!r}",
+                )
+            if headers.get("Content-Length") != "100":
+                fail(
+                    case,
+                    f"Content-Length was {headers.get('Content-Length')!r}",
+                )
+            if body != mp4_bytes:
+                fail(case, "body did not match scratch bytes")
+            passed()
+
+            case = "analysis-mp4-byte-range"
+            status, headers, body = http_get_full(
+                port, "/job/minimal_job/analysis.mp4",
+                extra_headers={"Range": "bytes=10-19"},
+            )
+            if status != 206:
+                fail(case, f"expected 206, got {status}")
+            if headers.get("Content-Range") != "bytes 10-19/100":
+                fail(case, f"Content-Range was {headers.get('Content-Range')!r}")
+            if headers.get("Content-Length") != "10":
+                fail(case, f"Content-Length was {headers.get('Content-Length')!r}")
+            if body != mp4_bytes[10:20]:
+                fail(case, f"body bytes did not match slice, got {body.hex()}")
+            passed()
+
+            case = "analysis-mp4-prefix-range"
+            status, headers, body = http_get_full(
+                port, "/job/minimal_job/analysis.mp4",
+                extra_headers={"Range": "bytes=0-"},
+            )
+            if status != 206:
+                fail(case, f"expected 206, got {status}")
+            if headers.get("Content-Range") != "bytes 0-99/100":
+                fail(case, f"Content-Range was {headers.get('Content-Range')!r}")
+            if body != mp4_bytes:
+                fail(case, "body did not match full bytes")
+            passed()
+
+            case = "analysis-mp4-suffix-range"
+            status, headers, body = http_get_full(
+                port, "/job/minimal_job/analysis.mp4",
+                extra_headers={"Range": "bytes=-5"},
+            )
+            if status != 206:
+                fail(case, f"expected 206, got {status}")
+            if headers.get("Content-Range") != "bytes 95-99/100":
+                fail(case, f"Content-Range was {headers.get('Content-Range')!r}")
+            if body != mp4_bytes[-5:]:
+                fail(case, f"body did not match last 5 bytes: {body.hex()}")
+            passed()
+
+            case = "analysis-mp4-range-unsatisfiable"
+            status, headers, body = http_get_full(
+                port, "/job/minimal_job/analysis.mp4",
+                extra_headers={"Range": "bytes=200-300"},
+            )
+            if status != 416:
+                fail(case, f"expected 416, got {status}")
+            if headers.get("Content-Range") != "bytes */100":
+                fail(case, f"Content-Range was {headers.get('Content-Range')!r}")
+            if body:
+                fail(case, f"expected empty body, got {len(body)} bytes")
+            passed()
+
+            case = "analysis-mp4-range-malformed"
+            status, headers, body = http_get_full(
+                port, "/job/minimal_job/analysis.mp4",
+                extra_headers={"Range": "floop"},
+            )
+            if status != 200:
+                fail(case, f"expected 200, got {status}")
+            if body != mp4_bytes:
+                fail(case, "body did not match full bytes")
+            passed()
+        finally:
+            try:
+                mp4_path.unlink()
+            except FileNotFoundError:
+                pass
     finally:
         stop_ui(proc)
         shutil.rmtree(scratch_root, ignore_errors=True)

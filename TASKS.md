@@ -52,7 +52,10 @@
 - [x] Start a new `recap run` from the browser via `/new` + `POST /run` (new `--sources-root` flag on `recap ui`, default `sample_videos`; extension whitelist `.mp4/.mov/.mkv/.webm/.m4v`; synchronous `recap ingest` inside the handler; background daemon thread runs the full `recap run` via `subprocess.Popen` with a 1-hour timeout; global `threading.Semaphore(1)` caps concurrent runs; in-memory result cache keyed `(job_id, "run")` visible at `/job/<id>/run/run/last`; `run` stage is read-only via the last-result route and is NOT in `_RUNNABLE_STAGES`; detail page shows a "Run in progress" banner plus a 10-second meta refresh when any stage is running)
 - [ ] Accept a browser file upload for the source video
 - [x] Render a timestamped transcript viewer with optional speaker rows (`GET /job/<id>/transcript`; prefers `utterances[]` with integer or non-empty string speaker ids, renders `Speaker {n}` in a dedicated column; falls back to `segments[]` with no Speaker column; filters rows with empty text; missing or malformed `transcript.json` renders a 200 empty/error state with a single `[recap-ui] transcript skipped: ...` log line; detail page links to the viewer only when `transcript.json` exists; no JavaScript, no video player, no backend changes)
-- [ ] Inline video player with transcript-row jump links
+- [x] Inline video player with transcript-row jump links (whitelists `analysis.mp4` + `video/mp4`; adds a Range-aware static handler that streams in 64 KiB chunks, supports `bytes=a-b`, `bytes=a-`, `bytes=-n` single-range forms, returns 416 on unsatisfiable and 200 full body on malformed Range; `/job/<id>/transcript` renders a `<video id="player" controls preload="metadata">` only when `analysis.mp4` exists and rewrites Time cells into `<button class="ts" data-start="{float}">` + a ~10-line inline script that sets `player.currentTime`; no multi-range support, no active-row highlighting, no speaker-isolated tracks; localhost-only)
+- [ ] Active-row highlighting and auto-scroll as the video plays
+- [ ] Speaker-colored transcript rows
+- [ ] Speaker-isolated audio / per-speaker navigation
 - [ ] Cancel a running job from the browser
 - [ ] Persist `/job/<id>/run/<stage>/last` history across server restarts
 - [ ] Start or rerun pipeline stages from the UI
