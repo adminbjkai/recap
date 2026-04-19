@@ -557,6 +557,29 @@ job/metadata/transcript JSONs, and JPEG/PNG images under
 resolving outside `jobs/<id>/` returns 404. No new dependencies are
 required.
 
+The per-job detail page exposes an **Actions** block with three small
+HTML forms — `Rerun recap assemble`, `Rerun recap export-html`,
+`Rerun recap export-docx` — each of which POSTs to
+`/job/<id>/run/<stage>` and re-runs the corresponding CLI command with
+`--force` as a subprocess under the hood. No other stage is runnable
+from the UI: `recap run` and every opt-in pipeline stage (`scenes`,
+`dedupe`, `window`, `similarity`, `chapters`, `rank`, `shortlist`,
+`verify`) remain CLI-only. Captured `stdout` / `stderr` / exit code
+from the most recent run of each exporter are shown at
+`/job/<id>/run/<stage>/last`.
+
+Every POST carries a CSRF token generated at server startup and
+rendered into each form; the server compares it with
+`secrets.compare_digest` and rejects bad or missing tokens with 403.
+The server also pins the `Host` header to `127.0.0.1:<port>`, caps
+request bodies at 4096 bytes, serializes concurrent runs against the
+same job with a per-job `threading.Lock` (returning 429 with
+`Retry-After: 2` if another run is in flight), and kills the
+subprocess after a 60-second timeout. Captured stdout and stderr are
+truncated to 8 KiB UTF-8 before being shown or cached. The server
+still binds to `127.0.0.1` only — **do not expose this port to a
+network**; the safety model is designed for localhost use only.
+
 The per-job detail page also surfaces a top-of-page **Errors** section
 when any stage in `job.json` has `status == "failed"` (one line per
 failed stage, in canonical pipeline order), and a **Chapters &

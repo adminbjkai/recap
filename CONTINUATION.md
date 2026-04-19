@@ -7,6 +7,31 @@ system does and produces, read `HANDOFF.md`.
 ## Current state
 
 - Phase 1 of Recap is implemented, audited, hardened, and closed out.
+- The dashboard now has its first write-capable surface:
+  `recap ui` renders a three-button Actions block on each job detail
+  page that POSTs to `/job/<id>/run/{assemble,export-html,export-docx}`.
+  Each accepted POST invokes `python -m recap <stage> --job <job_dir>
+  --force` via `subprocess.run`. No other stage is runnable — `recap
+  run` and every opt-in pipeline stage remain CLI-only. Safety: Host
+  header pinned to the bound `host:port`, `Content-Length` capped at
+  4 KiB (returns 411/413 on violation), per-form CSRF token generated
+  via `secrets.token_urlsafe(32)` at server startup and validated with
+  `secrets.compare_digest` (returns 403 on mismatch), per-job
+  `threading.Lock` with a 2 s acquire timeout returning 429 +
+  `Retry-After: 2`. Subprocess runs under a 60 s timeout; captured
+  stdout/stderr are truncated to 8 KiB UTF-8 with a trailing
+  `…truncated (N bytes omitted)` marker and cached in-memory at
+  `_last_run[(job_id, stage)]`. On success the handler responds
+  `303 See Other` with `Location: /job/<id>/run/<stage>/last`, where
+  a dedicated results page renders captured output, exit code, and
+  status; `in-progress` status triggers a 5 s meta-refresh. Rejected
+  POSTs log only a short reason (`host | content-length-missing |
+  body-too-large | body-parse | csrf | lock`) — never the token or
+  subprocess output. `scripts/verify_ui.py` grew to 31 checks covering
+  the happy path, "no runs yet" empty state, token/host failures,
+  oversize body, unknown-stage allowlist, GET-on-POST-route, and raw
+  path traversal. `recap run` composition and `job.STAGES` are
+  unchanged.
 - A read-only local web dashboard is implemented: `recap ui
   --host 127.0.0.1 --port 8765 --jobs-root jobs` starts a stdlib
   `http.server.ThreadingHTTPServer` at `recap/ui.py`. No new

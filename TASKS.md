@@ -48,6 +48,7 @@
 
 - [x] Add read-only local dashboard for existing jobs and artifacts (`recap ui --host 127.0.0.1 --port 8765 --jobs-root jobs`; stdlib `http.server.ThreadingHTTPServer` only, no new dependencies; reads `jobs/<id>/job.json` and serves a jobs index, a per-job detail page, and a small whitelist of artifacts including `report.md`/`report.html`/`report.docx` and `candidate_frames/*.{jpg,jpeg,png}`; path-traversal hardened; 127.0.0.1-only by default; no POST routes, no subprocess calls, no stage execution)
 - [x] Expand job detail page with Errors surface and Chapters & selected-frames thumbnail summary (read-only)
+- [x] Add POST surface to rerun assemble/export-html/export-docx from the dashboard (CSRF token generated at server startup; Host header pinned; 4 KiB body cap; 60 s subprocess timeout; stdout/stderr truncated to 8 KiB UTF-8; per-job threading lock with 2 s acquire timeout returning 429; results cached in-memory and shown at `/job/<id>/run/<stage>/last`; `recap run` and every other stage remain CLI-only)
 - [ ] Start or rerun pipeline stages from the UI
 - [ ] Delete or archive jobs from the UI
 - [ ] Live status updates (SSE / WebSocket / polling)

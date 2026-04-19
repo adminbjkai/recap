@@ -870,8 +870,43 @@ No new routes, no new dependencies, and the static-file whitelist is
 unchanged. `scripts/verify_ui.py` now guards both new sections plus
 the graceful-degradation path.
 
-Remaining UI items — starting/rerunning/deleting jobs, live status
-updates, auth, and remote access — are explicitly deferred.
+The per-job detail page also carries a POST-backed Actions block with
+three HTML forms — `assemble`, `export-html`, `export-docx` — each of
+which invokes `python -m recap <stage> --job <job_dir> --force` via
+`subprocess.run` under a per-job `threading.Lock`. The allowed stage
+set is the frozenset `_RUNNABLE_STAGES = {"assemble", "export-html",
+"export-docx"}`; any other stage in a `/job/<id>/run/<stage>` path
+returns 404 without spawning a subprocess. Every POST is validated in
+order: `Host` header must exactly match the bound `host:port` via
+`secrets.compare_digest` (blocks DNS-rebinding and forged Origin
+attacks), `Content-Length` must be present and within the 4096-byte
+cap (returns 411 / 413), the form body's `_token` field must match a
+`secrets.token_urlsafe(32)` token generated at server startup and
+embedded in every rendered form (returns 403), the job directory must
+pass the existing `_safe_job_dir` check, the stage must be in
+`_RUNNABLE_STAGES`, and the per-job lock must be acquirable within
+2 seconds (returns 429 with `Retry-After: 2`). Two POSTs to the same
+job serialize; two POSTs to different jobs run in parallel. The
+subprocess carries a 60 s timeout (kill on expiry, status="failure",
+stderr="timeout after 60s"), and captured stdout/stderr are truncated
+to 8192 UTF-8 bytes each with a trailing `…truncated (N bytes
+omitted)` marker before being stored in the in-memory `_last_run`
+cache. On success, the server responds with `303 See Other` and
+`Location: /job/<id>/run/<stage>/last`, where a dedicated results
+page renders the captured output, exit code, and status badge; an
+`in-progress` status includes `<meta http-equiv="refresh" content="5">`.
+Only a short rejection reason is logged on failed POSTs (`reason=host
+|content-length-missing|body-too-large|body-parse|csrf|lock`); the
+CSRF token, subprocess stdout/stderr, and full command line are never
+logged. `scripts/verify_ui.py` grew to 31 checks covering the happy
+path for assemble and export-html, the "no runs yet" empty state for
+export-docx, missing/wrong token, forged Host header, oversize body,
+unknown-stage allowlist, GET-on-POST-route, and raw-path traversal.
+
+Remaining UI items — starting `recap run` from the dashboard,
+rerunning opt-in pipeline stages, cancelling a run, deleting or
+archiving jobs, live status updates (SSE / WebSocket), auth, and
+remote access — are explicitly deferred.
 
 ## Hardening: offline golden-path validation script
 

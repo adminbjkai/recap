@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import re
 import shutil
 import signal
 import socket
@@ -18,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 from pathlib import Path
 
 
@@ -56,6 +58,52 @@ def http_get(port: int, raw_path: str) -> tuple[int, str, bytes]:
         body = resp.read()
         ctype = resp.getheader("Content-Type", "")
         return resp.status, ctype, body
+    finally:
+        conn.close()
+
+
+_CSRF_RE = re.compile(rb'name="_token" value="([A-Za-z0-9_\-]+)"')
+
+
+def extract_csrf(body: bytes) -> str:
+    m = _CSRF_RE.search(body)
+    if not m:
+        fail("csrf-token", "no _token hidden input found on detail page")
+    return m.group(1).decode("ascii")
+
+
+def http_post(
+    port: int,
+    path: str,
+    form_fields: dict[str, str] | None,
+    *,
+    host_override: str | None = None,
+    content_length_override: int | None = None,
+) -> tuple[int, dict[str, str], bytes]:
+    """Issue a raw POST. Lets callers forge Host and the declared length."""
+    if form_fields is None:
+        body_bytes = b""
+    else:
+        body_bytes = urllib.parse.urlencode(form_fields).encode("utf-8")
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5.0)
+    try:
+        conn.putrequest("POST", path, skip_host=True, skip_accept_encoding=True)
+        conn.putheader(
+            "Host", host_override or f"127.0.0.1:{port}"
+        )
+        conn.putheader("Content-Type", "application/x-www-form-urlencoded")
+        cl = (
+            content_length_override
+            if content_length_override is not None
+            else len(body_bytes)
+        )
+        conn.putheader("Content-Length", str(cl))
+        conn.endheaders()
+        if body_bytes:
+            conn.send(body_bytes)
+        resp = conn.getresponse()
+        headers = {k: v for k, v in resp.getheaders()}
+        return resp.status, headers, resp.read()
     finally:
         conn.close()
 
@@ -326,6 +374,111 @@ def main() -> int:
 
         # Malformed selected_frames.json must not crash the page; the
         # Chapters section is silently omitted and the page still 200s.
+        # ---- POST / write surface -----------------------------------
+
+        case = "detail-has-action-forms"
+        _, body = expect_status(case, port, "/job/minimal_job/", 200)
+        for stage in (b"assemble", b"export-html", b"export-docx"):
+            needle = b'action="/job/minimal_job/run/' + stage + b'"'
+            expect_contains(case, body, needle)
+        expect_contains(case, body, b'name="_token"')
+        token = extract_csrf(body)
+        passed()
+
+        case = "post-assemble-success"
+        status, headers, _ = http_post(
+            port, "/job/minimal_job/run/assemble", {"_token": token}
+        )
+        if status != 303:
+            fail(case, f"expected 303, got {status}")
+        expected_loc = "/job/minimal_job/run/assemble/last"
+        if headers.get("Location") != expected_loc:
+            fail(case, f"Location header was {headers.get('Location')!r}")
+        _, last_body = expect_status(case, port, expected_loc, 200)
+        expect_contains(case, last_body, b"Exit: <code>0</code>")
+        expect_contains(case, last_body, b"<h2>stdout</h2>")
+        expect_contains(case, last_body, b"<h2>stderr</h2>")
+        passed()
+
+        case = "last-export-docx-no-runs-yet"
+        _, body = expect_status(
+            case, port, "/job/minimal_job/run/export-docx/last", 200
+        )
+        expect_contains(case, body, b"No runs yet")
+        passed()
+
+        case = "post-export-html-success"
+        status, headers, _ = http_post(
+            port, "/job/minimal_job/run/export-html", {"_token": token}
+        )
+        if status != 303:
+            fail(case, f"expected 303, got {status}")
+        _, last_body = expect_status(
+            case, port, "/job/minimal_job/run/export-html/last", 200
+        )
+        expect_contains(case, last_body, b"Exit: <code>0</code>")
+        passed()
+
+        case = "post-missing-token"
+        status, _, _ = http_post(
+            port, "/job/minimal_job/run/assemble", {}
+        )
+        if status != 403:
+            fail(case, f"expected 403, got {status}")
+        passed()
+
+        case = "post-wrong-token"
+        status, _, _ = http_post(
+            port, "/job/minimal_job/run/assemble", {"_token": "wrong"}
+        )
+        if status != 403:
+            fail(case, f"expected 403, got {status}")
+        passed()
+
+        case = "post-wrong-host"
+        status, _, _ = http_post(
+            port, "/job/minimal_job/run/assemble", {"_token": token},
+            host_override="bogus.example:8765",
+        )
+        if status != 403:
+            fail(case, f"expected 403, got {status}")
+        passed()
+
+        case = "post-body-too-large"
+        # Body well over the 4096-byte cap.
+        big = "x" * 5000
+        status, _, _ = http_post(
+            port, "/job/minimal_job/run/assemble",
+            {"_token": token, "fill": big},
+        )
+        if status != 413:
+            fail(case, f"expected 413, got {status}")
+        passed()
+
+        case = "post-unknown-stage"
+        status, _, _ = http_post(
+            port, "/job/minimal_job/run/verify", {"_token": token}
+        )
+        if status != 404:
+            fail(case, f"expected 404, got {status}")
+        passed()
+
+        case = "get-on-post-only"
+        status, _, _ = http_get(port, "/job/minimal_job/run/assemble")
+        if status not in (404, 405):
+            fail(case, f"expected 404 or 405, got {status}")
+        passed()
+
+        case = "post-path-traversal"
+        # Raw path with an unresolvable shape; server must not spawn a
+        # subprocess and must return 404.
+        status, _, _ = http_post(
+            port, "/job/minimal_job/../..//run/assemble", {"_token": token}
+        )
+        if status != 404:
+            fail(case, f"expected 404, got {status}")
+        passed()
+
         case = "detail-malformed-selected"
         sfp = job_dir / "selected_frames.json"
         original_sf = sfp.read_text(encoding="utf-8")

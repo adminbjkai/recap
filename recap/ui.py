@@ -1,13 +1,37 @@
-"""Read-only local web dashboard for Recap jobs.
+"""Local web dashboard for Recap jobs.
 
 Served via `recap ui --host 127.0.0.1 --port 8765 --jobs-root jobs`.
-Renders a jobs index and per-job detail pages, and serves whitelisted
-artifacts (report.md/html/docx, job.json, transcript.*, selected/chapter
-JSONs, and candidate_frames/*.{jpg,jpeg,png}) directly from disk.
+Local-first, stdlib-based: `http.server.ThreadingHTTPServer` plus a
+custom `BaseHTTPRequestHandler`, no new runtime dependencies, no
+external CSS/JS, no network calls.
 
-Entirely read-only: no POST routes, no forms that mutate state, no
-subprocess calls, no stage execution, no new dependencies. Uses stdlib
-`http.server.ThreadingHTTPServer` + a custom `BaseHTTPRequestHandler`.
+GET routes are strictly read-only. They render a jobs index and
+per-job detail pages, and serve whitelisted artifacts (report.md /
+report.html / report.docx, job.json, transcript.*, the
+selected/chapter JSONs, and `candidate_frames/*.{jpg,jpeg,png}`)
+directly from disk. Non-whitelisted filenames and any URL containing
+a `..` segment or resolving outside the jobs root return 404.
+
+The only write-capable surface is a narrow, CSRF-protected,
+Host-pinned POST action exposed on the per-job detail page. POST to
+`/job/<id>/run/<stage>` re-runs exactly one of three exporters —
+`assemble`, `export-html`, or `export-docx` — via
+`subprocess.run([sys.executable, "-m", "recap", stage, "--job",
+<dir>, "--force"], ...)`. Every POST is validated in order: Host
+header equal to the bound `host:port`, Content-Length within a
+4096-byte cap, CSRF token matched with `secrets.compare_digest`,
+job directory under `_safe_job_dir`, stage in `_RUNNABLE_STAGES`,
+per-job `threading.Lock` acquired within 2 s. The subprocess runs
+under a 60 s timeout and its stdout/stderr are truncated to 8 KiB
+UTF-8 before caching. On success the handler returns 303 with
+`Location: /job/<id>/run/<stage>/last`. Results are held only in
+memory.
+
+`recap run` and every opt-in pipeline stage (`scenes`, `dedupe`,
+`window`, `similarity`, `chapters`, `rank`, `shortlist`, `verify`)
+remain CLI-only; the UI never invokes them. `job.STAGES` is
+unchanged and this module imports no stage `run()` function — the
+module-under-test boundary stays at the CLI.
 """
 
 from __future__ import annotations
@@ -15,6 +39,12 @@ from __future__ import annotations
 import html
 import json
 import os
+import secrets
+import subprocess
+import sys
+import threading
+import time
+import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -27,6 +57,121 @@ from .stages.report_helpers import (
     validate_chapter_candidates,
     validate_selected_frames,
 )
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# The only stages that can be executed via a POST from the dashboard.
+# Any path outside this allowlist returns 404 and never spawns a
+# subprocess. `recap run` and every opt-in pipeline stage (`scenes`,
+# `dedupe`, `window`, `similarity`, `chapters`, `rank`, `shortlist`,
+# `verify`) remain CLI-only by design.
+_RUNNABLE_STAGES: frozenset[str] = frozenset({
+    "assemble", "export-html", "export-docx",
+})
+
+_POST_BODY_MAX = 4096            # bytes
+_OUTPUT_TRUNCATE_BYTES = 8192    # stdout/stderr cap, UTF-8 bytes
+_SUBPROCESS_TIMEOUT = 60.0       # seconds
+_LOCK_ACQUIRE_TIMEOUT = 2.0      # seconds
+
+# Per-job execution locks so two POSTs to the same job serialize while
+# different jobs still run in parallel. All shared state is guarded by
+# `_job_locks_guard`.
+_job_locks: dict[str, threading.Lock] = {}
+_job_locks_guard = threading.Lock()
+_last_run: dict[tuple[str, str], dict] = {}
+
+
+def _now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _truncate_output(s: str, limit: int = _OUTPUT_TRUNCATE_BYTES) -> str:
+    if not s:
+        return s
+    data = s.encode("utf-8")
+    if len(data) <= limit:
+        return s
+    head = data[:limit].decode("utf-8", errors="ignore")
+    omitted = len(data) - limit
+    return head + f"\n…truncated ({omitted} bytes omitted)\n"
+
+
+def _get_job_lock(job_id: str) -> threading.Lock:
+    with _job_locks_guard:
+        lock = _job_locks.get(job_id)
+        if lock is None:
+            lock = threading.Lock()
+            _job_locks[job_id] = lock
+        return lock
+
+
+def _set_in_progress(job_id: str, stage: str, started_at: str) -> None:
+    with _job_locks_guard:
+        _last_run[(job_id, stage)] = {
+            "started_at": started_at,
+            "finished_at": None,
+            "exit_code": None,
+            "status": "in-progress",
+            "stdout": "",
+            "stderr": "",
+        }
+
+
+def _set_final(job_id: str, stage: str, entry: dict) -> None:
+    with _job_locks_guard:
+        _last_run[(job_id, stage)] = entry
+
+
+def _get_last(job_id: str, stage: str) -> dict | None:
+    with _job_locks_guard:
+        return _last_run.get((job_id, stage))
+
+
+def _run_stage(stage: str, job_dir: Path) -> dict:
+    """Invoke `recap <stage> --job <job_dir> --force` in a subprocess.
+
+    Always returns a result dict; never raises. stdout/stderr are
+    truncated to `_OUTPUT_TRUNCATE_BYTES`.
+    """
+    started_at = _now_iso()
+    t0 = time.monotonic()
+    args = [
+        sys.executable, "-m", "recap", stage,
+        "--job", str(job_dir), "--force",
+    ]
+    try:
+        result = subprocess.run(
+            args,
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=_SUBPROCESS_TIMEOUT,
+            check=False,
+        )
+        exit_code = result.returncode
+        stdout = _truncate_output(result.stdout or "")
+        stderr = _truncate_output(result.stderr or "")
+        status = "success" if exit_code == 0 else "failure"
+    except subprocess.TimeoutExpired as e:
+        exit_code = None
+        stdout = _truncate_output((e.stdout or b"").decode("utf-8", "ignore")
+                                   if isinstance(e.stdout, (bytes, bytearray))
+                                   else (e.stdout or ""))
+        stderr = _truncate_output(
+            f"timeout after {int(_SUBPROCESS_TIMEOUT)}s"
+        )
+        status = "failure"
+    return {
+        "started_at": started_at,
+        "finished_at": _now_iso(),
+        "exit_code": exit_code,
+        "status": status,
+        "stdout": stdout,
+        "stderr": stderr,
+        "elapsed": time.monotonic() - t0,
+    }
 
 
 # Whitelisted filenames directly under a job directory. Nothing else is
@@ -147,6 +292,17 @@ img.thumb { max-width: 200px; max-height: 120px; object-fit: cover;
                font-weight: 600; }
 .thumb-hero { background: #e6f4ea; color: #137333; }
 .thumb-supporting { background: #eef4ff; color: #1a56db; }
+ul.actions { list-style: none; padding: 0; margin: 0.5rem 0;
+             display: flex; flex-wrap: wrap; gap: 0.5rem; }
+ul.actions li { margin: 0; }
+ul.actions form { margin: 0; display: inline; }
+ul.actions button { font: inherit; cursor: pointer; padding: 0.3rem 0.6rem;
+                    border: 1px solid #bbb; border-radius: 3px;
+                    background: #f7f7f7; }
+ul.actions button:hover { background: #eee; }
+pre.output { background: #f4f4f4; padding: 0.75rem; border-radius: 3px;
+             white-space: pre-wrap; word-break: break-word;
+             font-size: 0.85em; max-height: 20rem; overflow: auto; }
 """.strip()
 
 
@@ -450,8 +606,42 @@ def render_index(jobs_root: Path) -> bytes:
     return _page("Recap · jobs", "\n".join(body))
 
 
+def _actions_section(job_id: str, csrf_token: str) -> list[str]:
+    out: list[str] = ["<h2>Actions</h2>"]
+    out.append(
+        '<p class="secondary">Re-run an exporter against this job. '
+        "Uses <code>--force</code>; output replaces the existing report "
+        "file on disk. Only these three exporters are runnable from the "
+        "dashboard; every other stage stays CLI-only.</p>"
+    )
+    out.append('<ul class="actions">')
+    for stage in ("assemble", "export-html", "export-docx"):
+        out.append(
+            "<li>"
+            f'<form method="post" action="/job/{_e(job_id)}/run/{_e(stage)}">'
+            f'<input type="hidden" name="_token" value="{_e(csrf_token)}">'
+            f"<button>Rerun <code>recap {_e(stage)}</code></button>"
+            "</form>"
+            "</li>"
+        )
+    out.append("</ul>")
+    links = []
+    for stage in ("assemble", "export-html", "export-docx"):
+        links.append(
+            f'<a href="/job/{_e(job_id)}/run/{_e(stage)}/last">'
+            f"{_e(stage)}</a>"
+        )
+    out.append(
+        '<p class="secondary">Last results: ' + ", ".join(links) + "</p>"
+    )
+    return out
+
+
 def render_job(
-    jobs_root: Path, job_id: str, logger_stream: IO | None = None
+    jobs_root: Path,
+    job_id: str,
+    logger_stream: IO | None = None,
+    csrf_token: str | None = None,
 ) -> bytes | None:
     job_dir = jobs_root / job_id
     if not job_dir.is_dir():
@@ -518,6 +708,9 @@ def render_job(
                 )
         body.append("</tbody></table>")
 
+    if csrf_token is not None:
+        body.extend(_actions_section(job_id, csrf_token))
+
     body.extend(_chapters_section(job_dir, job_id, logger_stream))
 
     body.append("<h2>Artifacts</h2>")
@@ -544,6 +737,42 @@ def render_job(
 
     body.append('<p><a href="/">← Back to jobs</a></p>')
     return _page(f"Recap · {title}", "\n".join(body))
+
+
+def render_run_last(job_id: str, stage: str) -> bytes:
+    entry = _get_last(job_id, stage)
+    body: list[str] = []
+    body.append(f"<h1>Recap · {_e(job_id)} · {_e(stage)}</h1>")
+    if entry is None:
+        body.append('<p class="empty">No runs yet.</p>')
+        body.append(f'<p><a href="/job/{_e(job_id)}/">← Back to job</a></p>')
+        return _page(f"Recap · {job_id} · {stage}", "\n".join(body))
+
+    status = entry.get("status", "unknown")
+    if status == "in-progress":
+        body.insert(
+            0, '<meta http-equiv="refresh" content="5">'
+        )
+
+    body.append("<ul>")
+    body.append(f"<li>Stage: <code>{_e(stage)}</code></li>")
+    body.append(f"<li>Started: {_e(entry.get('started_at'))}</li>")
+    if entry.get("finished_at"):
+        body.append(f"<li>Finished: {_e(entry['finished_at'])}</li>")
+    exit_code = entry.get("exit_code")
+    body.append(
+        f"<li>Exit: <code>{_e('' if exit_code is None else exit_code)}</code></li>"
+    )
+    body.append(f"<li>Status: {_status_badge(status)}</li>")
+    body.append("</ul>")
+
+    body.append("<h2>stdout</h2>")
+    body.append(f'<pre class="output">{_e(entry.get("stdout") or "")}</pre>')
+    body.append("<h2>stderr</h2>")
+    body.append(f'<pre class="output">{_e(entry.get("stderr") or "")}</pre>')
+
+    body.append(f'<p><a href="/job/{_e(job_id)}/">← Back to job</a></p>')
+    return _page(f"Recap · {job_id} · {stage}", "\n".join(body))
 
 
 def render_404(path: str) -> bytes:
@@ -699,6 +928,7 @@ def _make_handler(jobs_root: Path):
                 body = render_job(
                     root_resolved, job_id,
                     logger_stream=getattr(self.server, "logger_stream", None),
+                    csrf_token=getattr(self.server, "csrf_token", None),
                 )
                 if body is None:
                     self._not_found()
@@ -715,6 +945,28 @@ def _make_handler(jobs_root: Path):
                 self._send_bytes(target, _content_type_for(target))
                 return
 
+            if (
+                len(segments) == 4
+                and segments[2] == "run"
+                and segments[3] in _RUNNABLE_STAGES
+            ):
+                # GET on a POST-only route: explicitly 405.
+                self.send_response(HTTPStatus.METHOD_NOT_ALLOWED.value)
+                self.send_header("Allow", "POST")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+
+            if (
+                len(segments) == 5
+                and segments[2] == "run"
+                and segments[3] in _RUNNABLE_STAGES
+                and segments[4] == "last"
+            ):
+                body = render_run_last(job_id, segments[3])
+                self._send_html(HTTPStatus.OK, body)
+                return
+
             if len(segments) == 4 and segments[2] == "candidate_frames":
                 target = _safe_candidate_frame(job_dir, segments[3])
                 if target is None:
@@ -724,6 +976,150 @@ def _make_handler(jobs_root: Path):
                 return
 
             self._not_found()
+
+        # ---- POST ---------------------------------------------------
+
+        def _reject_post(
+            self,
+            status: HTTPStatus,
+            reason: str,
+            message: str,
+            *,
+            extra_headers: dict[str, str] | None = None,
+        ) -> None:
+            body = _page(
+                f"Recap · {status.value}",
+                f"<h1>Recap · {status.value}</h1><p>{_e(message)}</p>",
+            )
+            self.send_response(status.value)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            for k, v in (extra_headers or {}).items():
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(body)
+            self.server.logger_stream.write(
+                f"[recap-ui] rejected POST from={self.address_string()} "
+                f"reason={reason}\n"
+            )
+            self.server.logger_stream.flush()
+
+        def do_POST(self) -> None:  # noqa: N802
+            # 1. Host pinning.
+            expected_host = getattr(self.server, "expected_host", "")
+            got_host = self.headers.get("Host") or ""
+            if not expected_host or not secrets.compare_digest(
+                got_host, expected_host
+            ):
+                self._reject_post(
+                    HTTPStatus.FORBIDDEN, "host",
+                    "Host header mismatch.",
+                )
+                return
+
+            # 2. Content-Length limit.
+            raw_len = self.headers.get("Content-Length")
+            try:
+                content_length = int(raw_len) if raw_len is not None else -1
+            except ValueError:
+                content_length = -1
+            if content_length < 0:
+                self._reject_post(
+                    HTTPStatus.LENGTH_REQUIRED, "content-length-missing",
+                    "Content-Length is required.",
+                )
+                return
+            if content_length > _POST_BODY_MAX:
+                self._reject_post(
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "body-too-large",
+                    "Request body exceeds 4096 bytes.",
+                )
+                return
+
+            body_bytes = (
+                self.rfile.read(content_length) if content_length > 0
+                else b""
+            )
+            try:
+                form = urllib.parse.parse_qs(
+                    body_bytes.decode("utf-8", "replace"),
+                    keep_blank_values=True,
+                    max_num_fields=10,
+                )
+            except ValueError:
+                self._reject_post(
+                    HTTPStatus.BAD_REQUEST, "body-parse",
+                    "Could not parse form body.",
+                )
+                return
+
+            # 3. CSRF.
+            expected_token = getattr(self.server, "csrf_token", "") or ""
+            got_token = (form.get("_token") or [""])[0]
+            if not expected_token or not secrets.compare_digest(
+                got_token, expected_token
+            ):
+                self._reject_post(
+                    HTTPStatus.FORBIDDEN, "csrf",
+                    "CSRF token missing or invalid.",
+                )
+                return
+
+            # 4. Path + stage allowlist.
+            try:
+                segments = _split_path(self.path)
+            except ValueError:
+                self._not_found()
+                return
+            if (
+                len(segments) != 4
+                or segments[0] != "job"
+                or segments[2] != "run"
+            ):
+                self._not_found()
+                return
+            job_id = segments[1]
+            stage = segments[3]
+            if stage not in _RUNNABLE_STAGES:
+                self._not_found()
+                return
+            job_dir = _safe_job_dir(root_resolved, job_id)
+            if job_dir is None:
+                self._not_found()
+                return
+
+            # 5. Per-job lock.
+            lock = _get_job_lock(job_id)
+            acquired = lock.acquire(timeout=_LOCK_ACQUIRE_TIMEOUT)
+            if not acquired:
+                self._reject_post(
+                    HTTPStatus.TOO_MANY_REQUESTS, "lock",
+                    "Another run is already in progress for this job. "
+                    "Try again shortly.",
+                    extra_headers={"Retry-After": "2"},
+                )
+                return
+
+            try:
+                _set_in_progress(job_id, stage, _now_iso())
+                result = _run_stage(stage, job_dir)
+                _set_final(job_id, stage, result)
+                self.server.logger_stream.write(
+                    f"[recap-ui] run {stage} job={job_id} "
+                    f"exit={result['exit_code']} "
+                    f"elapsed={result['elapsed']:.2f}s\n"
+                )
+                self.server.logger_stream.flush()
+            finally:
+                lock.release()
+
+            location = f"/job/{job_id}/run/{stage}/last"
+            self.send_response(HTTPStatus.SEE_OTHER.value)
+            self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
 
     return Handler
 
@@ -736,9 +1132,10 @@ def serve(host: str, port: int, jobs_root: Path) -> int:
 
     handler_cls = _make_handler(jobs_root)
     server = ThreadingHTTPServer((host, port), handler_cls)
-    # Attach a stream for log_message to use.
-    import sys
+    # Attach server-wide state used by the handler.
     server.logger_stream = sys.stderr
+    server.csrf_token = secrets.token_urlsafe(32)
+    server.expected_host = f"{host}:{port}"
     print(
         f"Recap UI running at http://{host}:{port} (Ctrl-C to stop)",
         flush=True,
