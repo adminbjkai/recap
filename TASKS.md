@@ -51,7 +51,8 @@
 - [x] Add POST surface to rerun assemble/export-html/export-docx from the dashboard (CSRF token generated at server startup; Host header pinned; 4 KiB body cap; 60 s subprocess timeout; stdout/stderr truncated to 8 KiB UTF-8; per-job threading lock with 2 s acquire timeout returning 429; results cached in-memory and shown at `/job/<id>/run/<stage>/last`; `recap run` and every other stage remain CLI-only)
 - [x] Start a new `recap run` from the browser via `/new` + `POST /run` (new `--sources-root` flag on `recap ui`, default `sample_videos`; extension whitelist `.mp4/.mov/.mkv/.webm/.m4v`; synchronous `recap ingest` inside the handler; background daemon thread runs the full `recap run` via `subprocess.Popen` with a 1-hour timeout; global `threading.Semaphore(1)` caps concurrent runs; in-memory result cache keyed `(job_id, "run")` visible at `/job/<id>/run/run/last`; `run` stage is read-only via the last-result route and is NOT in `_RUNNABLE_STAGES`; detail page shows a "Run in progress" banner plus a 10-second meta refresh when any stage is running)
 - [ ] Accept a browser file upload for the source video
-- [ ] Render a timestamped transcript viewer with optional speaker rows
+- [x] Render a timestamped transcript viewer with optional speaker rows (`GET /job/<id>/transcript`; prefers `utterances[]` with integer or non-empty string speaker ids, renders `Speaker {n}` in a dedicated column; falls back to `segments[]` with no Speaker column; filters rows with empty text; missing or malformed `transcript.json` renders a 200 empty/error state with a single `[recap-ui] transcript skipped: ...` log line; detail page links to the viewer only when `transcript.json` exists; no JavaScript, no video player, no backend changes)
+- [ ] Inline video player with transcript-row jump links
 - [ ] Cancel a running job from the browser
 - [ ] Persist `/job/<id>/run/<stage>/last` history across server restarts
 - [ ] Start or rerun pipeline stages from the UI

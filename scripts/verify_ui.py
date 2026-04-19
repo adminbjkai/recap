@@ -585,6 +585,94 @@ def main() -> int:
         finally:
             jjr.write_text(original_jj, encoding="utf-8")
         passed()
+
+        # ---- transcript viewer -------------------------------------
+
+        case = "detail-has-transcript-link"
+        _, body = expect_status(case, port, "/job/minimal_job/", 200)
+        expect_contains(
+            case, body, b'href="/job/minimal_job/transcript"'
+        )
+        expect_contains(case, body, b"View transcript")
+        passed()
+
+        case = "transcript-page-segments"
+        _, body = expect_status(
+            case, port, "/job/minimal_job/transcript", 200,
+        )
+        expect_contains(case, body, b'<table class="transcript">')
+        expect_contains(case, body, b"<td><code>00:00:")
+        expect_contains(
+            case, body,
+            b"Welcome to the demo recording for the Recap pipeline.",
+        )
+        expect_not_contains(case, body, b"<th>Speaker</th>")
+        passed()
+
+        case = "transcript-page-utterances"
+        tp = job_dir / "transcript.json"
+        original_transcript = tp.read_text(encoding="utf-8")
+        t_data = json.loads(original_transcript)
+        t_data["utterances"] = [
+            {"start": 0.0, "text": "hello", "speaker": 0},
+            {"start": 12.0, "text": "world", "speaker": 1},
+        ]
+        tp.write_text(json.dumps(t_data), encoding="utf-8")
+        try:
+            _, body = expect_status(
+                case, port, "/job/minimal_job/transcript", 200,
+            )
+            expect_contains(case, body, b"<th>Speaker</th>")
+            expect_contains(case, body, b"Speaker 0")
+            expect_contains(case, body, b"Speaker 1")
+            expect_contains(case, body, b"2 speakers")
+        finally:
+            tp.write_text(original_transcript, encoding="utf-8")
+        passed()
+
+        case = "transcript-escape"
+        t_data = json.loads(original_transcript)
+        t_data["segments"][0]["text"] = (
+            "<script>alert(1)</script> & x"
+        )
+        tp.write_text(json.dumps(t_data), encoding="utf-8")
+        try:
+            _, body = expect_status(
+                case, port, "/job/minimal_job/transcript", 200,
+            )
+            expect_contains(
+                case, body,
+                b"&lt;script&gt;alert(1)&lt;/script&gt; &amp; x",
+            )
+            expect_not_contains(case, body, b"<script>alert(1)</script>")
+        finally:
+            tp.write_text(original_transcript, encoding="utf-8")
+        passed()
+
+        case = "transcript-missing-empty-state"
+        moved = tp.with_suffix(".json.bak")
+        tp.rename(moved)
+        try:
+            _, body = expect_status(
+                case, port, "/job/minimal_job/transcript", 200,
+            )
+            expect_contains(case, body, b"No transcript available yet.")
+        finally:
+            moved.rename(tp)
+        passed()
+
+        case = "transcript-malformed-graceful"
+        tp.write_bytes(b"not json")
+        try:
+            _, body = expect_status(
+                case, port, "/job/minimal_job/transcript", 200,
+            )
+            expect_contains(
+                case, body, b"transcript.json could not be parsed.",
+            )
+        finally:
+            tp.write_text(original_transcript, encoding="utf-8")
+        passed()
     finally:
         stop_ui(proc)
         shutil.rmtree(scratch_root, ignore_errors=True)

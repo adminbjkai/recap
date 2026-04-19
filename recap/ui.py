@@ -422,6 +422,9 @@ a.start-new:hover { background: #144cc3; }
 form.new-job label { display: inline-block; margin: 0.35rem 0; }
 form.new-job input[type=text] { font: inherit; padding: 0.3rem; }
 form.new-job select { font: inherit; padding: 0.3rem; }
+table.transcript { table-layout: fixed; }
+table.transcript td:first-child { width: 5em; white-space: nowrap; }
+table.transcript td { vertical-align: top; }
 """.strip()
 
 
@@ -851,6 +854,11 @@ def render_job(
 
     body.extend(_chapters_section(job_dir, job_id, logger_stream))
 
+    if (job_dir / "transcript.json").is_file():
+        body.append(
+            f'<p><a href="/job/{_e(job_id)}/transcript">View transcript</a></p>'
+        )
+
     body.append("<h2>Artifacts</h2>")
     present = [
         name for name in _JOB_ROOT_FILES if (job_dir / name).is_file()
@@ -977,6 +985,169 @@ def render_run_last(job_id: str, stage: str) -> bytes:
         "\n".join(body),
         refresh_seconds=refresh_seconds,
     )
+
+
+def _utterance_speaker_id_valid(speaker: object) -> bool:
+    if isinstance(speaker, bool):
+        return False
+    if isinstance(speaker, int):
+        return True
+    if isinstance(speaker, str) and speaker:
+        return True
+    return False
+
+
+def _format_speaker(speaker: object) -> str:
+    if isinstance(speaker, bool) or speaker is None:
+        return "—"
+    if isinstance(speaker, int):
+        return f"Speaker {speaker}"
+    if isinstance(speaker, str) and speaker:
+        return _e(speaker)
+    return "—"
+
+
+def _utterances_qualify(utts: object) -> bool:
+    if not isinstance(utts, list) or not utts:
+        return False
+    has_speaker = False
+    has_text = False
+    for u in utts:
+        if not isinstance(u, dict):
+            continue
+        if _utterance_speaker_id_valid(u.get("speaker")):
+            has_speaker = True
+        text = u.get("text")
+        if isinstance(text, str) and text.strip():
+            has_text = True
+        if has_speaker and has_text:
+            return True
+    return has_speaker and has_text
+
+
+def render_transcript(
+    job_id: str, job_dir: Path, logger_stream: IO | None = None,
+) -> bytes:
+    transcript_path = job_dir / "transcript.json"
+    # Resolve a display title the same way render_job does.
+    job_data = _read_job_json(job_dir) or {}
+    title = job_data.get("original_filename") or job_id
+    back = f'<p><a href="/job/{_e(job_id)}/">← Back to job</a></p>'
+
+    if not transcript_path.is_file():
+        body = (
+            f"<h1>Recap · {_e(title)}</h1>"
+            '<p class="empty">No transcript available yet.</p>'
+            f"{back}"
+        )
+        return _page(f"Recap · {title} · transcript", body)
+
+    try:
+        with open(transcript_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("transcript.json top-level is not an object")
+    except (OSError, ValueError) as e:
+        if logger_stream is not None:
+            logger_stream.write(
+                f"[recap-ui] transcript skipped: {e}\n"
+            )
+            logger_stream.flush()
+        body = (
+            f"<h1>Recap · {_e(title)}</h1>"
+            '<div class="banner error">'
+            "transcript.json could not be parsed."
+            "</div>"
+            f"{back}"
+        )
+        return _page(f"Recap · {title} · transcript", body)
+
+    utts = data.get("utterances")
+    use_utterances = _utterances_qualify(utts)
+
+    if use_utterances:
+        source_rows: list[dict] = [
+            u for u in utts
+            if isinstance(u, dict)
+            and isinstance(u.get("text"), str)
+            and u["text"].strip()
+        ]
+    else:
+        segs = data.get("segments")
+        if not isinstance(segs, list):
+            segs = []
+        source_rows = [
+            s for s in segs
+            if isinstance(s, dict)
+            and isinstance(s.get("text"), str)
+            and s["text"].strip()
+        ]
+
+    lines: list[str] = [f"<h1>Recap · {_e(title)}</h1>"]
+
+    meta_bits: list[str] = []
+    engine = data.get("engine")
+    model = data.get("model")
+    language = data.get("language")
+    if engine:
+        meta_bits.append(f"engine <code>{_e(engine)}</code>")
+    if model:
+        meta_bits.append(f"model <code>{_e(model)}</code>")
+    if language:
+        meta_bits.append(f"language <code>{_e(language)}</code>")
+    meta_bits.append(f"{len(source_rows)} rows")
+    speaker_count: int | None = None
+    if use_utterances:
+        distinct_speakers = {
+            u.get("speaker") for u in source_rows
+            if _utterance_speaker_id_valid(u.get("speaker"))
+        }
+        speaker_count = len(distinct_speakers)
+        meta_bits.append(f"{speaker_count} speakers")
+    lines.append(
+        f'<p class="secondary">{", ".join(meta_bits)}</p>'
+    )
+
+    if not source_rows:
+        lines.append('<p class="empty">Transcript has no rows.</p>')
+        lines.append(back)
+        return _page(
+            f"Recap · {title} · transcript", "\n".join(lines)
+        )
+
+    lines.append('<table class="transcript">')
+    if use_utterances:
+        lines.append(
+            "<thead><tr><th>Time</th><th>Speaker</th><th>Text</th>"
+            "</tr></thead>"
+        )
+    else:
+        lines.append(
+            "<thead><tr><th>Time</th><th>Text</th></tr></thead>"
+        )
+    lines.append("<tbody>")
+    for row in source_rows:
+        start = format_ts(row.get("start") or 0.0)
+        text = (row.get("text") or "").strip()
+        if use_utterances:
+            spk_cell = _format_speaker(row.get("speaker"))
+            lines.append(
+                "<tr>"
+                f"<td><code>{_e(start)}</code></td>"
+                f"<td>{spk_cell}</td>"
+                f"<td>{_e(text)}</td>"
+                "</tr>"
+            )
+        else:
+            lines.append(
+                "<tr>"
+                f"<td><code>{_e(start)}</code></td>"
+                f"<td>{_e(text)}</td>"
+                "</tr>"
+            )
+    lines.append("</tbody></table>")
+    lines.append(back)
+    return _page(f"Recap · {title} · transcript", "\n".join(lines))
 
 
 def render_404(path: str) -> bytes:
@@ -1144,6 +1315,14 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                 if body is None:
                     self._not_found()
                     return
+                self._send_html(HTTPStatus.OK, body)
+                return
+
+            if len(segments) == 3 and segments[2] == "transcript":
+                body = render_transcript(
+                    job_id, job_dir,
+                    logger_stream=getattr(self.server, "logger_stream", None),
+                )
                 self._send_html(HTTPStatus.OK, body)
                 return
 

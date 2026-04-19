@@ -592,6 +592,35 @@ Browser **file upload** is not part of this slice; users place videos
 under the sources root using whatever tool they prefer (Finder,
 `cp`, `scp`, etc.) and pick them from the `/new` dropdown.
 
+### Transcript viewer
+
+Each job detail page includes a **View transcript** link (shown only
+when `transcript.json` exists). Following it opens
+`GET /job/<id>/transcript`, which renders a server-side HTML table of
+the transcript with a `Time` column, an optional `Speaker` column, and
+the segment text. The page prefers the Deepgram-style `utterances[]`
+data source whenever it contains at least one entry with a valid
+speaker id (integer or non-empty string) and non-empty text; otherwise
+it falls back to the universal `segments[]` layer and the Speaker
+column is omitted. Integer speaker ids render as `Speaker {n}`, string
+ids render as the escaped string, and missing/null speakers render as
+`—`. A metadata line above the table lists engine, model, language,
+row count, and (for utterances) the distinct-speaker count.
+
+Missing `transcript.json` shows `No transcript available yet.` and
+still returns 200. Malformed `transcript.json` shows an inline banner
+(`transcript.json could not be parsed.`), logs one short
+`[recap-ui] transcript skipped: …` line, and still returns 200 —
+the rest of the dashboard keeps working. The viewer is strictly
+read-only: no editing, no video playback, no row-click handlers yet.
+The raw whitelisted artifact route at `/job/<id>/transcript.json` is
+unchanged.
+
+Speaker labels are only available today when the transcript came from
+Deepgram (`recap transcribe --engine deepgram` or `recap run --engine
+deepgram`). Faster-whisper transcripts render without a Speaker
+column. Local WhisperX/pyannote diarization remains deferred.
+
 ### Read-only Actions block
 
 The per-job detail page exposes an **Actions** block with three small

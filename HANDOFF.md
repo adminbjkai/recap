@@ -958,11 +958,48 @@ running banner (via a `job.json` mutate-and-restore test). No full
 `recap run` integration test lives in the verifier — that requires
 faster-whisper weights and is covered manually.
 
-Remaining UI items — browser file upload, cancelling a running job,
+The dashboard also ships a read-only transcript viewer at
+`GET /job/<id>/transcript`. `render_transcript` reads the job's
+`transcript.json` from disk and picks a data source: prefers
+`utterances[]` when it is a non-empty list with at least one dict
+entry carrying a valid `speaker` id (integer and not `bool`, or a
+non-empty string) AND at least one non-empty `text.strip()`;
+otherwise falls back to `segments[]`. Rows with empty text are
+filtered out, matching the existing Markdown/HTML report behavior.
+The utterances source renders a three-column table
+`Time | Speaker | Text` with integer ids formatted as
+`Speaker {id}`, string ids rendered as the escaped string, and
+`null`/missing speakers rendered as `—` so rows stay aligned; the
+segments fallback renders a two-column table with no Speaker
+column. A metadata paragraph above the table surfaces engine,
+model, language, row count, and (utterances only) the
+distinct-speaker count. Missing `transcript.json` produces a 200
+`No transcript available yet.` page; malformed JSON or a non-dict
+top level produces a 200 page with an inline error banner
+(`transcript.json could not be parsed.`) and a single
+`[recap-ui] transcript skipped: <error>` line written to the
+server's log stream — the rest of the dashboard keeps serving.
+The detail page appends a `<p><a href="/job/<id>/transcript">View
+transcript</a></p>` link only when `transcript.json` exists on
+disk; the raw whitelisted `/job/<id>/transcript.json` artifact
+route is unchanged. The viewer is strictly read-only: no
+`<video>` element, no row-click handlers, no JS, no editing, no
+diarization controls. Speaker labels remain sourced from
+Deepgram-style `utterances[]` only; local WhisperX/pyannote is
+deferred. `scripts/verify_ui.py` grew to 45 checks covering the
+detail-page link, segments rendering, utterances rendering with
+synthetic `Speaker 0` / `Speaker 1` / `2 speakers`, HTML escaping
+of transcript text (`<script>` content is rendered as
+`&lt;script&gt;`), the missing-file empty state, and the
+malformed-file graceful path. All scratch mutations are restored
+in `finally`.
+
+Remaining UI items — browser file upload, an inline `<video>`
+player with transcript-row jump links, cancelling a running job,
 rerunning opt-in pipeline stages, deleting or archiving jobs,
-persistent run history across server restarts, a timestamped
-transcript viewer with speaker rows, live status streaming (SSE /
-WebSocket), auth, and remote access — are explicitly deferred.
+persistent run history across server restarts, live status
+streaming (SSE / WebSocket), auth, and remote access — are
+explicitly deferred.
 
 ## Hardening: offline golden-path validation script
 

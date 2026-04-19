@@ -7,6 +7,31 @@ system does and produces, read `HANDOFF.md`.
 ## Current state
 
 - Phase 1 of Recap is implemented, audited, hardened, and closed out.
+- A read-only browser transcript viewer is implemented at
+  `GET /job/<id>/transcript`. It reads `transcript.json` from the
+  job directory and prefers the Deepgram-style `utterances[]` data
+  source when it contains at least one entry with a valid speaker
+  id (integer not `bool`, or non-empty string) and non-empty text;
+  otherwise it falls back to `segments[]` without a Speaker column.
+  Integer speaker ids render as `Speaker {id}`; string ids render
+  escaped; null/missing speakers render as `—`. A metadata line
+  above the table surfaces engine, model, language, row count, and
+  (utterances only) the distinct-speaker count. Missing
+  `transcript.json` → 200 with `No transcript available yet.`;
+  malformed JSON or non-dict top level → 200 with an inline error
+  banner plus a single `[recap-ui] transcript skipped: <error>` log
+  line. All transcript text flows through `html.escape`; a
+  dedicated verifier case injects `<script>` into a segment and
+  asserts it renders escaped. The detail page appends a
+  `View transcript` link only when `transcript.json` is present; the
+  raw `/job/<id>/transcript.json` artifact route is unchanged.
+  `scripts/verify_ui.py` grew to 45 checks covering the link,
+  segments rendering, utterances rendering, HTML escaping, missing
+  and malformed states. The viewer is strictly read-only — no
+  `<video>` element, no JS, no row-click handlers, no editing,
+  no diarization controls. Local WhisperX/pyannote and an inline
+  `<video>` player with transcript-row jump links both remain
+  deferred.
 - Browser-started video processing is implemented. `recap ui` takes
   a new `--sources-root` flag (default `sample_videos`) and serves
   `GET /new` that lists the directory's video files (extension
