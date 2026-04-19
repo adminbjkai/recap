@@ -47,6 +47,7 @@
 ## UI
 
 - [x] Add read-only local dashboard for existing jobs and artifacts (`recap ui --host 127.0.0.1 --port 8765 --jobs-root jobs`; stdlib `http.server.ThreadingHTTPServer` only, no new dependencies; reads `jobs/<id>/job.json` and serves a jobs index, a per-job detail page, and a small whitelist of artifacts including `report.md`/`report.html`/`report.docx` and `candidate_frames/*.{jpg,jpeg,png}`; path-traversal hardened; 127.0.0.1-only by default; no POST routes, no subprocess calls, no stage execution)
+- [x] Expand job detail page with Errors surface and Chapters & selected-frames thumbnail summary (read-only)
 - [ ] Start or rerun pipeline stages from the UI
 - [ ] Delete or archive jobs from the UI
 - [ ] Live status updates (SSE / WebSocket / polling)

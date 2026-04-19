@@ -18,6 +18,15 @@ import os
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import IO
+
+from .stages.report_helpers import (
+    collapse_whitespace,
+    format_ts,
+    is_safe_frame_file,
+    validate_chapter_candidates,
+    validate_selected_frames,
+)
 
 
 # Whitelisted filenames directly under a job directory. Nothing else is
@@ -118,6 +127,26 @@ code { background: #f4f4f4; padding: 0.1rem 0.3rem; border-radius: 3px;
 .check { color: #137333; font-weight: 600; }
 .dash { color: #aaa; }
 .empty { margin: 2rem 0; color: #555; }
+ul.errors { list-style: none; padding: 0; margin: 0.5rem 0; }
+ul.errors li { background: #fce8e6; color: #a50e0e;
+               padding: 0.5rem 0.75rem; border-radius: 3px;
+               margin-bottom: 0.4rem; }
+ul.errors li code { background: #fdd; color: #a50e0e; }
+section.chapter-summary { margin: 1rem 0 2rem; }
+section.chapter-summary h3 { margin-top: 1.5rem; }
+section.chapter-summary p.snippet { color: #333; margin: 0.4rem 0 0.8rem; }
+ul.thumbs { list-style: none; padding: 0;
+            display: flex; flex-wrap: wrap; gap: 0.75rem;
+            margin: 0.5rem 0; }
+ul.thumbs li { display: inline-flex; flex-direction: column;
+               align-items: center; }
+img.thumb { max-width: 200px; max-height: 120px; object-fit: cover;
+            border: 1px solid #ddd; border-radius: 3px; display: block; }
+.thumb-label { font-size: 0.75em; padding: 0.1rem 0.45rem;
+               border-radius: 3px; margin-top: 0.2rem;
+               font-weight: 600; }
+.thumb-hero { background: #e6f4ea; color: #137333; }
+.thumb-supporting { background: #eef4ff; color: #1a56db; }
 """.strip()
 
 
@@ -226,6 +255,133 @@ def _page(title: str, body_html: str) -> bytes:
 # ---- page renderers ------------------------------------------------------
 
 
+_THUMB_LABEL: dict[str, tuple[str, str]] = {
+    "selected_hero": ("hero", "thumb-hero"),
+    "selected_supporting": ("supporting", "thumb-supporting"),
+}
+
+_SNIPPET_CHARS = 200
+
+
+def _errors_section(stages: dict) -> list[str]:
+    """Return HTML lines for failed stages, or [] when none failed."""
+    if not isinstance(stages, dict):
+        return []
+    failed: list[tuple[str, dict]] = []
+    for name, entry in _ordered_stage_entries(stages):
+        if isinstance(entry, dict) and entry.get("status") == "failed":
+            failed.append((name, entry))
+    if not failed:
+        return []
+    out = ["<h2>Errors</h2>", '<ul class="errors">']
+    for name, entry in failed:
+        err = entry.get("error") or "unknown error"
+        out.append(f"<li><code>{_e(name)}</code> — {_e(err)}</li>")
+    out.append("</ul>")
+    return out
+
+
+def _chapters_section(
+    job_dir: Path, job_id: str, logger_stream: IO | None
+) -> list[str]:
+    """Return HTML lines for the Chapters & selected frames block.
+
+    Silently returns [] when either artifact is missing. On invalid JSON
+    or validation failure, returns [] and logs a single line — the page
+    must still render.
+    """
+    selected_path = job_dir / "selected_frames.json"
+    chapters_path = job_dir / "chapter_candidates.json"
+    if not selected_path.is_file() or not chapters_path.is_file():
+        return []
+
+    try:
+        with open(selected_path, "r", encoding="utf-8") as f:
+            selected_raw = json.load(f)
+        selected = validate_selected_frames(selected_raw)
+        with open(chapters_path, "r", encoding="utf-8") as f:
+            chapters_raw = json.load(f)
+        chapter_text_by_index = validate_chapter_candidates(chapters_raw)
+        # Every selected chapter must have a matching entry in
+        # chapter_candidates.json; otherwise the combined artifact state
+        # is invalid and we skip the section rather than render a
+        # partial summary.
+        for ch in selected["chapters"]:
+            ch_idx = ch["chapter_index"]
+            if ch_idx not in chapter_text_by_index:
+                raise RuntimeError(
+                    "chapter_candidates.json has no chapter with index "
+                    f"{ch_idx} required by selected_frames.json"
+                )
+    except (OSError, ValueError, RuntimeError) as e:
+        if logger_stream is not None:
+            logger_stream.write(
+                f"[recap-ui] chapters section skipped: {e}\n"
+            )
+            logger_stream.flush()
+        return []
+
+    sorted_chapters = sorted(
+        selected["chapters"], key=lambda c: c["chapter_index"]
+    )
+
+    out: list[str] = ["<h2>Chapters &amp; selected frames</h2>"]
+    for ch in sorted_chapters:
+        ch_idx = ch["chapter_index"]
+        start = format_ts(ch.get("start_seconds") or 0.0)
+        end = format_ts(ch.get("end_seconds") or 0.0)
+        out.append('<section class="chapter-summary">')
+        out.append(
+            f"<h3>Chapter {_e(ch_idx)} — [{_e(start)} – {_e(end)}]</h3>"
+        )
+
+        raw_text = chapter_text_by_index.get(ch_idx, "")
+        collapsed = collapse_whitespace(raw_text)
+        if collapsed:
+            if len(collapsed) > _SNIPPET_CHARS:
+                snippet = collapsed[:_SNIPPET_CHARS] + "…"
+            else:
+                snippet = collapsed
+            out.append(f'<p class="snippet">{_e(snippet)}</p>')
+
+        kept: list[dict] = [
+            fr for fr in ch["frames"]
+            if fr.get("decision") in _THUMB_LABEL
+        ]
+        if not kept:
+            out.append(
+                '<p class="empty">No selected frames in this chapter.</p>'
+            )
+            out.append("</section>")
+            continue
+
+        out.append('<ul class="thumbs">')
+        for fr in kept:
+            frame_file = fr["frame_file"]
+            # Defense in depth — validators already enforce this.
+            if not is_safe_frame_file(frame_file):
+                continue
+            label_text, label_cls = _THUMB_LABEL[fr["decision"]]
+            src = (
+                f"/job/{_e(job_id)}/candidate_frames/{_e(frame_file)}"
+            )
+            alt = f"Chapter {ch_idx} {label_text} {frame_file}"
+            out.append(
+                "<li>"
+                f'<a href="{src}">'
+                f'<img src="{src}" alt="{_e(alt)}" '
+                'loading="lazy" class="thumb">'
+                "</a>"
+                f'<span class="thumb-label {label_cls}">'
+                f"{_e(label_text)}</span>"
+                "</li>"
+            )
+        out.append("</ul>")
+        out.append("</section>")
+
+    return out
+
+
 def render_index(jobs_root: Path) -> bytes:
     jobs = _list_jobs(jobs_root)
     body: list[str] = []
@@ -294,7 +450,9 @@ def render_index(jobs_root: Path) -> bytes:
     return _page("Recap · jobs", "\n".join(body))
 
 
-def render_job(jobs_root: Path, job_id: str) -> bytes | None:
+def render_job(
+    jobs_root: Path, job_id: str, logger_stream: IO | None = None
+) -> bytes | None:
     job_dir = jobs_root / job_id
     if not job_dir.is_dir():
         return None
@@ -305,6 +463,8 @@ def render_job(jobs_root: Path, job_id: str) -> bytes | None:
     title = data.get("original_filename") or job_id
     body: list[str] = []
     body.append(f"<h1>Recap · {_e(title)}</h1>")
+
+    body.extend(_errors_section(data.get("stages") or {}))
 
     body.append("<h2>Metadata</h2>")
     body.append("<ul>")
@@ -357,6 +517,8 @@ def render_job(jobs_root: Path, job_id: str) -> bytes | None:
                     "</td></tr>"
                 )
         body.append("</tbody></table>")
+
+    body.extend(_chapters_section(job_dir, job_id, logger_stream))
 
     body.append("<h2>Artifacts</h2>")
     present = [
@@ -534,7 +696,10 @@ def _make_handler(jobs_root: Path):
 
             if len(segments) == 2:
                 # /job/<id>  — redirect-equivalent: serve the detail page.
-                body = render_job(root_resolved, job_id)
+                body = render_job(
+                    root_resolved, job_id,
+                    logger_stream=getattr(self.server, "logger_stream", None),
+                )
                 if body is None:
                     self._not_found()
                     return

@@ -154,6 +154,34 @@ def main() -> int:
         _, body = expect_status(case, port, "/job/minimal_job/", 200)
         for stage in (b"ingest", b"normalize", b"transcribe", b"assemble"):
             expect_contains(case, body, b"<code>" + stage + b"</code>")
+        # No stage has failed on a fresh fixture — no Errors section.
+        expect_not_contains(case, body, b"<h2>Errors</h2>")
+        passed()
+
+        # A scratch job without selected_frames.json must NOT render the
+        # Chapters & selected-frames summary.
+        case = "detail-chapters-absent-without-selected"
+        no_sf_scratch = Path(tempfile.mkdtemp(prefix="recap_ui_no_sf_"))
+        try:
+            no_sf_jobs = no_sf_scratch / "jobs"
+            no_sf_jobs.mkdir()
+            no_sf_job = no_sf_jobs / "minimal_job"
+            shutil.copytree(FIXTURE, no_sf_job)
+            (no_sf_job / "selected_frames.json").unlink()
+            no_sf_port = free_port()
+            no_sf_proc = start_ui(no_sf_jobs, no_sf_port)
+            try:
+                wait_for_server(no_sf_port)
+                _, body2 = expect_status(
+                    case, no_sf_port, "/job/minimal_job/", 200,
+                )
+                expect_not_contains(
+                    case, body2, b"<h2>Chapters &amp; selected frames</h2>"
+                )
+            finally:
+                stop_ui(no_sf_proc)
+        finally:
+            shutil.rmtree(no_sf_scratch, ignore_errors=True)
         passed()
 
         for case, path in [
@@ -234,6 +262,83 @@ def main() -> int:
         )
         if not frame_body.startswith(b"\xff\xd8\xff"):
             fail(case, "referenced candidate frame is not a JPEG")
+        passed()
+
+        # Chapters & selected-frames summary on the detail page.
+        case = "detail-chapters-summary"
+        _, body = expect_status(case, port, "/job/minimal_job/", 200)
+        expect_contains(case, body, b"<h2>Chapters &amp; selected frames</h2>")
+        expect_contains(case, body, b"Chapter 1")
+        expect_contains(
+            case, body,
+            b'src="/job/minimal_job/candidate_frames/scene-001.jpg"',
+        )
+        expect_contains(
+            case, body,
+            b'src="/job/minimal_job/candidate_frames/scene-003.jpg"',
+        )
+        expect_contains(case, body, b"hero")
+        expect_contains(case, body, b"supporting")
+        expect_not_contains(case, body, b"scene-002.jpg")
+        passed()
+
+        # Errors section appears when a stage has status=failed.
+        case = "detail-errors-section"
+        jj = job_dir / "job.json"
+        original_job_json = jj.read_text(encoding="utf-8")
+        data = json.loads(original_job_json)
+        data.setdefault("stages", {}).setdefault("assemble", {})
+        data["stages"]["assemble"]["status"] = "failed"
+        data["stages"]["assemble"]["error"] = "synthetic test error <tag>"
+        jj.write_text(json.dumps(data), encoding="utf-8")
+        try:
+            _, body = expect_status(case, port, "/job/minimal_job/", 200)
+            expect_contains(case, body, b"<h2>Errors</h2>")
+            expect_contains(case, body, b"<code>assemble</code>")
+            expect_contains(
+                case, body,
+                b"synthetic test error &lt;tag&gt;",
+            )
+            expect_not_contains(case, body, b"<tag>")
+        finally:
+            jj.write_text(original_job_json, encoding="utf-8")
+        passed()
+
+        # chapter_candidates.json missing the chapter that
+        # selected_frames.json references must not crash the page; the
+        # Chapters section is silently omitted and the page still 200s.
+        case = "detail-chapters-orphan-selected"
+        ccp = job_dir / "chapter_candidates.json"
+        original_cc = ccp.read_text(encoding="utf-8")
+        cc = json.loads(original_cc)
+        # Remove every chapter so no index matches the selected chapter.
+        cc["chapters"] = []
+        cc["chapter_count"] = 0
+        ccp.write_text(json.dumps(cc), encoding="utf-8")
+        try:
+            _, body = expect_status(case, port, "/job/minimal_job/", 200)
+            expect_not_contains(
+                case, body, b"<h2>Chapters &amp; selected frames</h2>"
+            )
+        finally:
+            ccp.write_text(original_cc, encoding="utf-8")
+        passed()
+
+        # Malformed selected_frames.json must not crash the page; the
+        # Chapters section is silently omitted and the page still 200s.
+        case = "detail-malformed-selected"
+        sfp = job_dir / "selected_frames.json"
+        original_sf = sfp.read_text(encoding="utf-8")
+        sf = json.loads(original_sf)
+        sf["chapters"][0]["start_seconds"] = "bad"
+        sfp.write_text(json.dumps(sf), encoding="utf-8")
+        try:
+            _, body = expect_status(case, port, "/job/minimal_job/", 200)
+            expect_not_contains(
+                case, body, b"<h2>Chapters &amp; selected frames</h2>"
+            )
+        finally:
+            sfp.write_text(original_sf, encoding="utf-8")
         passed()
     finally:
         stop_ui(proc)

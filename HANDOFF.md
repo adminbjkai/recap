@@ -836,6 +836,40 @@ is `no-store` on every response so reloads always reflect current
 disk state. `Ctrl-C` calls `server.server_close()` and exits 0
 cleanly.
 
+The per-job detail page additionally renders two read-only sections
+introduced in a follow-up slice. **Errors**, hoisted to the top of
+the page between the `<h1>` header and the Metadata block, appears
+only when one or more stages have `status == "failed"`; it emits a
+`<ul class="errors">` with one line per failed stage in the
+canonical pipeline order (`ingest`, `normalize`, `transcribe`,
+`assemble`, `scenes`, `dedupe`, `window`, `similarity`, `chapters`,
+`rank`, `shortlist`, `verify`, `export_html`, `export_docx`; unknown
+stages appended alphabetically) showing the stage name and the
+escaped error text. **Chapters & selected frames**, inserted between
+the Stages table and the Artifacts list, appears only when both
+`selected_frames.json` and `chapter_candidates.json` are present on
+disk and validate through
+`recap.stages.report_helpers.validate_selected_frames` and
+`validate_chapter_candidates`; it emits one `<section
+class="chapter-summary">` per chapter (sorted by `chapter_index`)
+with a `<h3>` timestamp header, a whitespace-collapsed snippet of
+the chapter body text truncated to 200 characters with a trailing
+ellipsis, and an inline thumbnail row that renders only
+`selected_hero` and `selected_supporting` frames (each thumbnail
+links to the full-size candidate image via the existing
+`/job/<id>/candidate_frames/<file>` route, with a small `hero` /
+`supporting` label badge beneath). `vlm_rejected` frames are never
+rendered. Frame filenames are rechecked with
+`is_safe_frame_file` as defense in depth before any thumbnail URL is
+emitted. When either artifact is missing the section is silently
+omitted; when either artifact is malformed (invalid JSON or failing
+validation) the UI writes a single
+`[recap-ui] chapters section skipped: <error>` line to the server's
+log stream, renders the rest of the page normally, and returns 200.
+No new routes, no new dependencies, and the static-file whitelist is
+unchanged. `scripts/verify_ui.py` now guards both new sections plus
+the graceful-degradation path.
+
 Remaining UI items — starting/rerunning/deleting jobs, live status
 updates, auth, and remote access — are explicitly deferred.
 

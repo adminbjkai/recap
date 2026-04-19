@@ -557,6 +557,19 @@ job/metadata/transcript JSONs, and JPEG/PNG images under
 resolving outside `jobs/<id>/` returns 404. No new dependencies are
 required.
 
+The per-job detail page also surfaces a top-of-page **Errors** section
+when any stage in `job.json` has `status == "failed"` (one line per
+failed stage, in canonical pipeline order), and a **Chapters &
+selected frames** section rendered when both `selected_frames.json`
+and `chapter_candidates.json` exist and validate. Each chapter block
+shows its timestamp, a short snippet of the chapter body text, and
+inline thumbnails for the selected hero and supporting frames linked
+to the full-size candidate images through the existing
+`/job/<id>/candidate_frames/<file>` route. Rejected frames
+(`vlm_rejected`) are not rendered. If either artifact is malformed,
+the Chapters section is silently omitted and the page still returns
+200. No new routes, no new dependencies.
+
 Press `Ctrl-C` in the terminal to stop the server.
 
 ### Pre-release validation
