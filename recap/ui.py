@@ -1,37 +1,55 @@
 """Local web dashboard for Recap jobs.
 
-Served via `recap ui --host 127.0.0.1 --port 8765 --jobs-root jobs`.
-Local-first, stdlib-based: `http.server.ThreadingHTTPServer` plus a
-custom `BaseHTTPRequestHandler`, no new runtime dependencies, no
-external CSS/JS, no network calls.
+Served via `recap ui --host 127.0.0.1 --port 8765 --jobs-root jobs
+[--sources-root sample_videos]`. Local-first and stdlib-based:
+`http.server.ThreadingHTTPServer` plus a custom
+`BaseHTTPRequestHandler`, no new runtime dependencies, no external
+CSS/JS, no network calls.
 
-GET routes are strictly read-only. They render a jobs index and
-per-job detail pages, and serve whitelisted artifacts (report.md /
+GET routes are strictly read-only. They render the jobs index and
+per-job detail pages, serve whitelisted artifacts (report.md /
 report.html / report.docx, job.json, transcript.*, the
 selected/chapter JSONs, and `candidate_frames/*.{jpg,jpeg,png}`)
-directly from disk. Non-whitelisted filenames and any URL containing
-a `..` segment or resolving outside the jobs root return 404.
+directly from disk, render a "start new job" page at `/new`, and
+render last-run result pages at `/job/<id>/run/<stage>/last` for
+stages in `_LAST_RESULT_STAGES`. Non-whitelisted filenames and any
+URL containing a `..` segment or resolving outside the jobs root
+return 404.
 
-The only write-capable surface is a narrow, CSRF-protected,
-Host-pinned POST action exposed on the per-job detail page. POST to
-`/job/<id>/run/<stage>` re-runs exactly one of three exporters —
-`assemble`, `export-html`, or `export-docx` — via
-`subprocess.run([sys.executable, "-m", "recap", stage, "--job",
-<dir>, "--force"], ...)`. Every POST is validated in order: Host
-header equal to the bound `host:port`, Content-Length within a
-4096-byte cap, CSRF token matched with `secrets.compare_digest`,
-job directory under `_safe_job_dir`, stage in `_RUNNABLE_STAGES`,
-per-job `threading.Lock` acquired within 2 s. The subprocess runs
-under a 60 s timeout and its stdout/stderr are truncated to 8 KiB
-UTF-8 before caching. On success the handler returns 303 with
-`Location: /job/<id>/run/<stage>/last`. Results are held only in
-memory.
+Two narrow POST surfaces exist, both CSRF-protected and
+Host-pinned:
 
-`recap run` and every opt-in pipeline stage (`scenes`, `dedupe`,
-`window`, `similarity`, `chapters`, `rank`, `shortlist`, `verify`)
-remain CLI-only; the UI never invokes them. `job.STAGES` is
-unchanged and this module imports no stage `run()` function — the
-module-under-test boundary stays at the CLI.
+1. `POST /job/<id>/run/<stage>` re-runs exactly one of three
+   exporters — `assemble`, `export-html`, `export-docx` — via
+   `subprocess.run([sys.executable, "-m", "recap", stage, "--job",
+   <dir>, "--force"], ...)`. Per-job `threading.Lock`, 60 s
+   subprocess timeout, 8 KiB UTF-8 stdout/stderr truncation.
+
+2. `POST /run` starts a new `recap run` from a video path under the
+   configured `sources_root`. The handler synchronously invokes
+   `python -m recap ingest` (120 s timeout), parses the new job
+   directory from its stdout, then spawns a daemon thread that
+   runs `python -m recap run --job <dir>` via `subprocess.Popen`
+   under a 1-hour `communicate(timeout=3600)` cap. A global
+   `threading.Semaphore(1)` caps concurrent runs at one across the
+   whole server. Results are cached in memory at
+   `_last_run[(job_id, "run")]`. On success the handler 303
+   redirects to the new job's detail page.
+
+Every POST is validated in this order: Host header equal to the
+bound `host:port` via `secrets.compare_digest`, Content-Length
+required and ≤ 4096 bytes, CSRF token matched with
+`secrets.compare_digest`, then path- and semantic-specific
+validation. Rejected POSTs log one short reason to the server's
+log stream; the form body, CSRF token, env vars, and captured
+subprocess output are never logged.
+
+`recap run` composition and `job.STAGES` are unchanged. This module
+imports no stage `run()` function — the module-under-test boundary
+stays at the CLI. `run` appears in `_LAST_RESULT_STAGES` for the
+read-only results route but is NOT in `_RUNNABLE_STAGES`, so there
+is no per-job POST surface for `recap run` beyond the single
+`POST /run` entry.
 """
 
 from __future__ import annotations
@@ -70,10 +88,30 @@ _RUNNABLE_STAGES: frozenset[str] = frozenset({
     "assemble", "export-html", "export-docx",
 })
 
+# Stages whose `/job/<id>/run/<stage>/last` last-result page is
+# serveable. `run` is included so the background `recap run` thread
+# started via `POST /run` has a visible results page, but it is NOT
+# in `_RUNNABLE_STAGES` — users cannot POST to `/job/<id>/run/run`.
+_LAST_RESULT_STAGES: frozenset[str] = _RUNNABLE_STAGES | frozenset({"run"})
+
+# Video file extensions accepted by `POST /run` for a browser-started
+# `recap run`. Enforced after the source path has been resolved under
+# `sources_root`.
+_VIDEO_EXTENSIONS: frozenset[str] = frozenset({
+    ".mp4", ".mov", ".mkv", ".webm", ".m4v",
+})
+
 _POST_BODY_MAX = 4096            # bytes
 _OUTPUT_TRUNCATE_BYTES = 8192    # stdout/stderr cap, UTF-8 bytes
-_SUBPROCESS_TIMEOUT = 60.0       # seconds
-_LOCK_ACQUIRE_TIMEOUT = 2.0      # seconds
+_SUBPROCESS_TIMEOUT = 60.0       # seconds (per-stage rerun)
+_LOCK_ACQUIRE_TIMEOUT = 2.0      # seconds (per-job rerun lock)
+_INGEST_TIMEOUT = 120.0          # seconds (synchronous ingest)
+_FULL_RUN_TIMEOUT = 3600.0       # seconds (background `recap run`)
+
+# One concurrent `recap run` across the whole server. Acquired at POST
+# time via `_run_slot.acquire(blocking=False)` and released by the
+# background thread when the subprocess ends.
+_run_slot = threading.Semaphore(1)
 
 # Per-job execution locks so two POSTs to the same job serialize while
 # different jobs still run in parallel. All shared state is guarded by
@@ -127,6 +165,73 @@ def _set_final(job_id: str, stage: str, entry: dict) -> None:
 def _get_last(job_id: str, stage: str) -> dict | None:
     with _job_locks_guard:
         return _last_run.get((job_id, stage))
+
+
+def _background_run(job_id: str, job_dir: Path) -> None:
+    """Run `python -m recap run --job <job_dir>` and store the result.
+
+    Always releases the global `_run_slot` in the finally block.
+    stdout/stderr are truncated to `_OUTPUT_TRUNCATE_BYTES`.
+    """
+    started_at = _now_iso()
+    t0 = time.monotonic()
+    try:
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "recap", "run", "--job", str(job_dir)],
+                cwd=str(REPO_ROOT),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except OSError as e:
+            _set_final(job_id, "run", {
+                "started_at": started_at,
+                "finished_at": _now_iso(),
+                "exit_code": None,
+                "status": "failure",
+                "stdout": "",
+                "stderr": _truncate_output(
+                    f"failed to spawn recap run: {type(e).__name__}: {e}"
+                ),
+                "elapsed": time.monotonic() - t0,
+            })
+            return
+        try:
+            stdout, stderr = proc.communicate(timeout=_FULL_RUN_TIMEOUT)
+            exit_code = proc.returncode
+            status = "success" if exit_code == 0 else "failure"
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            exit_code = None
+            status = "failure"
+            stderr = (stderr or "") + (
+                f"\ntimeout after {int(_FULL_RUN_TIMEOUT)}s\n"
+            )
+        _set_final(job_id, "run", {
+            "started_at": started_at,
+            "finished_at": _now_iso(),
+            "exit_code": exit_code,
+            "status": status,
+            "stdout": _truncate_output(stdout or ""),
+            "stderr": _truncate_output(stderr or ""),
+            "elapsed": time.monotonic() - t0,
+        })
+    finally:
+        _run_slot.release()
+
+
+def _any_stage_running(job_data: dict) -> bool:
+    if (job_data.get("status") or "") == "running":
+        return True
+    stages = job_data.get("stages") or {}
+    if not isinstance(stages, dict):
+        return False
+    for entry in stages.values():
+        if isinstance(entry, dict) and entry.get("status") == "running":
+            return True
+    return False
 
 
 def _run_stage(stage: str, job_dir: Path) -> dict:
@@ -303,6 +408,20 @@ ul.actions button:hover { background: #eee; }
 pre.output { background: #f4f4f4; padding: 0.75rem; border-radius: 3px;
              white-space: pre-wrap; word-break: break-word;
              font-size: 0.85em; max-height: 20rem; overflow: auto; }
+div.banner { padding: 0.6rem 0.8rem; border-radius: 3px;
+             margin: 1rem 0; font-weight: 500; }
+div.banner.running { background: #fff4e5; color: #7a4a00;
+                     border: 1px solid #f5c97d; }
+div.banner.error { background: #fce8e6; color: #a50e0e;
+                   border: 1px solid #f2b4ae; }
+a.start-new { display: inline-block; margin: 0.5rem 0;
+              padding: 0.4rem 0.8rem; background: #1a56db;
+              color: white; border-radius: 3px; text-decoration: none;
+              font-weight: 600; }
+a.start-new:hover { background: #144cc3; }
+form.new-job label { display: inline-block; margin: 0.35rem 0; }
+form.new-job input[type=text] { font: inherit; padding: 0.3rem; }
+form.new-job select { font: inherit; padding: 0.3rem; }
 """.strip()
 
 
@@ -391,14 +510,22 @@ def _extra_cell(entry: dict) -> str:
     return f"<code>{_e(', '.join(parts))}</code>"
 
 
-def _page(title: str, body_html: str) -> bytes:
+def _page(
+    title: str, body_html: str, *, refresh_seconds: int | None = None
+) -> bytes:
+    refresh = (
+        f'<meta http-equiv="refresh" content="{int(refresh_seconds)}">\n'
+        if refresh_seconds
+        else ""
+    )
     doc = (
         "<!doctype html>\n"
         '<html lang="en">\n'
         "<head>\n"
         '<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
-        f"<title>{_e(title)}</title>\n"
+        + refresh
+        + f"<title>{_e(title)}</title>\n"
         f"<style>{_INLINE_CSS}</style>\n"
         "</head>\n"
         "<body>\n"
@@ -543,6 +670,9 @@ def render_index(jobs_root: Path) -> bytes:
     body: list[str] = []
     body.append(f"<h1>Recap · jobs</h1>")
     body.append(
+        '<p><a class="start-new" href="/new">Start new job</a></p>'
+    )
+    body.append(
         f"<p>Scanning <code>{_e(jobs_root)}</code>.</p>"
     )
     if not jobs:
@@ -651,8 +781,16 @@ def render_job(
         return None
 
     title = data.get("original_filename") or job_id
+    is_running = _any_stage_running(data)
     body: list[str] = []
     body.append(f"<h1>Recap · {_e(title)}</h1>")
+
+    if is_running:
+        body.append(
+            '<div class="banner running">'
+            "Run in progress — this page refreshes every 10 s."
+            "</div>"
+        )
 
     body.extend(_errors_section(data.get("stages") or {}))
 
@@ -736,7 +874,72 @@ def render_job(
         body.append("</ul>")
 
     body.append('<p><a href="/">← Back to jobs</a></p>')
-    return _page(f"Recap · {title}", "\n".join(body))
+    return _page(
+        f"Recap · {title}",
+        "\n".join(body),
+        refresh_seconds=10 if is_running else None,
+    )
+
+
+def render_new(
+    sources_root: Path,
+    csrf_token: str,
+    error: str | None = None,
+) -> bytes:
+    body: list[str] = []
+    body.append("<h1>Recap · start new job</h1>")
+    if error:
+        body.append(f'<div class="banner error">{_e(error)}</div>')
+    body.append(f"<p>Sources root: <code>{_e(sources_root)}</code></p>")
+
+    options: list[tuple[str, str]] = []
+    dir_exists = sources_root.is_dir()
+    if dir_exists:
+        try:
+            for entry in sorted(sources_root.iterdir()):
+                if (
+                    entry.is_file()
+                    and entry.suffix.lower() in _VIDEO_EXTENSIONS
+                ):
+                    options.append((str(entry.resolve()), entry.name))
+        except OSError:
+            dir_exists = False
+
+    body.append('<form class="new-job" method="post" action="/run">')
+    body.append(
+        f'<input type="hidden" name="_token" value="{_e(csrf_token)}">'
+    )
+    if options:
+        body.append("<p><label>Pick a video: ")
+        body.append('<select name="source">')
+        body.append('<option value="">— choose a file —</option>')
+        for abs_path, display in options:
+            body.append(
+                f'<option value="{_e(abs_path)}">{_e(display)}</option>'
+            )
+        body.append("</select></label></p>")
+    elif dir_exists:
+        exts = " ".join(sorted(_VIDEO_EXTENSIONS))
+        body.append(
+            f'<p class="empty">No video files under <code>'
+            f"{_e(sources_root)}</code> with extension in {_e(exts)}. "
+            "Drop a file there or type a full path below.</p>"
+        )
+    else:
+        body.append(
+            '<p class="empty">Sources root does not exist. Create it '
+            f"with <code>mkdir -p {_e(sources_root)}</code> and drop "
+            "video files into it, or type a full path below.</p>"
+        )
+    body.append(
+        '<p><label>Or enter a path: '
+        '<input type="text" name="source_path" size="70" '
+        'placeholder="/absolute/path/to/video.mp4"></label></p>'
+    )
+    body.append('<p><button type="submit">Start</button></p>')
+    body.append("</form>")
+    body.append('<p><a href="/">← Back to jobs</a></p>')
+    return _page("Recap · new job", "\n".join(body))
 
 
 def render_run_last(job_id: str, stage: str) -> bytes:
@@ -749,10 +952,7 @@ def render_run_last(job_id: str, stage: str) -> bytes:
         return _page(f"Recap · {job_id} · {stage}", "\n".join(body))
 
     status = entry.get("status", "unknown")
-    if status == "in-progress":
-        body.insert(
-            0, '<meta http-equiv="refresh" content="5">'
-        )
+    refresh_seconds = 5 if status == "in-progress" else None
 
     body.append("<ul>")
     body.append(f"<li>Stage: <code>{_e(stage)}</code></li>")
@@ -772,7 +972,11 @@ def render_run_last(job_id: str, stage: str) -> bytes:
     body.append(f'<pre class="output">{_e(entry.get("stderr") or "")}</pre>')
 
     body.append(f'<p><a href="/job/{_e(job_id)}/">← Back to job</a></p>')
-    return _page(f"Recap · {job_id} · {stage}", "\n".join(body))
+    return _page(
+        f"Recap · {job_id} · {stage}",
+        "\n".join(body),
+        refresh_seconds=refresh_seconds,
+    )
 
 
 def render_404(path: str) -> bytes:
@@ -861,9 +1065,10 @@ def _content_type_for(path: Path) -> str:
     )
 
 
-def _make_handler(jobs_root: Path):
-    """Build a BaseHTTPRequestHandler subclass closed over jobs_root."""
+def _make_handler(jobs_root: Path, sources_root: Path):
+    """Build a BaseHTTPRequestHandler subclass closed over the roots."""
     root_resolved = jobs_root.resolve()
+    sources_resolved = sources_root.resolve() if sources_root else None
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "RecapUI/1"
@@ -910,6 +1115,12 @@ def _make_handler(jobs_root: Path):
 
             if not segments:
                 body = render_index(root_resolved)
+                self._send_html(HTTPStatus.OK, body)
+                return
+
+            if segments == ["new"]:
+                token = getattr(self.server, "csrf_token", "") or ""
+                body = render_new(sources_resolved, token)
                 self._send_html(HTTPStatus.OK, body)
                 return
 
@@ -960,7 +1171,7 @@ def _make_handler(jobs_root: Path):
             if (
                 len(segments) == 5
                 and segments[2] == "run"
-                and segments[3] in _RUNNABLE_STAGES
+                and segments[3] in _LAST_RESULT_STAGES
                 and segments[4] == "last"
             ):
                 body = render_run_last(job_id, segments[3])
@@ -1004,6 +1215,193 @@ def _make_handler(jobs_root: Path):
                 f"reason={reason}\n"
             )
             self.server.logger_stream.flush()
+
+        def _respond_new_error(
+            self, status: HTTPStatus, reason: str, message: str,
+        ) -> None:
+            """Re-render /new with an inline error message.
+
+            Caller is responsible for any cleanup (e.g. releasing the
+            global run slot) before this method returns.
+            """
+            token = getattr(self.server, "csrf_token", "") or ""
+            body = render_new(
+                sources_resolved or sources_root,
+                token,
+                error=message,
+            )
+            self.send_response(status.value)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            self.server.logger_stream.write(
+                f"[recap-ui] rejected POST /run "
+                f"from={self.address_string()} reason={reason}\n"
+            )
+            self.server.logger_stream.flush()
+
+        def _handle_new_run(self, form: dict) -> None:
+            if sources_resolved is None:
+                self._reject_post(
+                    HTTPStatus.INTERNAL_SERVER_ERROR, "no-sources-root",
+                    "sources-root is not configured.",
+                )
+                return
+
+            # Acquire the global run slot (one concurrent recap run).
+            if not _run_slot.acquire(blocking=False):
+                self._reject_post(
+                    HTTPStatus.TOO_MANY_REQUESTS, "slot",
+                    "Another video is being processed. "
+                    "Please wait and try again.",
+                    extra_headers={"Retry-After": "30"},
+                )
+                return
+
+            slot_transferred = False
+            try:
+                # Source candidate: prefer `source`, fall back to
+                # `source_path` if `source` is blank.
+                source_value = (form.get("source") or [""])[0].strip()
+                source_path_value = (
+                    form.get("source_path") or [""]
+                )[0].strip()
+                candidate = source_value or source_path_value
+                if not candidate:
+                    self._respond_new_error(
+                        HTTPStatus.BAD_REQUEST, "source-missing",
+                        "Select a video or enter a path.",
+                    )
+                    return
+
+                try:
+                    resolved = Path(candidate).expanduser().resolve()
+                except (OSError, RuntimeError, ValueError) as e:
+                    self._respond_new_error(
+                        HTTPStatus.BAD_REQUEST, "source-invalid",
+                        f"Could not resolve source path: {e}",
+                    )
+                    return
+
+                try:
+                    resolved.relative_to(sources_resolved)
+                except ValueError:
+                    self._respond_new_error(
+                        HTTPStatus.FORBIDDEN, "source-outside-root",
+                        "Source path is outside the sources root.",
+                    )
+                    return
+
+                if not resolved.is_file():
+                    self._respond_new_error(
+                        HTTPStatus.BAD_REQUEST, "source-not-file",
+                        "Source does not exist or is not a regular file.",
+                    )
+                    return
+
+                if resolved.suffix.lower() not in _VIDEO_EXTENSIONS:
+                    exts = " ".join(sorted(_VIDEO_EXTENSIONS))
+                    self._respond_new_error(
+                        HTTPStatus.BAD_REQUEST, "source-bad-ext",
+                        f"Unsupported video extension. Allowed: {exts}.",
+                    )
+                    return
+
+                # Synchronous ingest.
+                try:
+                    ingest = subprocess.run(
+                        [
+                            sys.executable, "-m", "recap", "ingest",
+                            "--source", str(resolved),
+                            "--jobs-root", str(root_resolved),
+                        ],
+                        cwd=str(REPO_ROOT),
+                        capture_output=True,
+                        text=True,
+                        timeout=_INGEST_TIMEOUT,
+                        check=False,
+                    )
+                except subprocess.TimeoutExpired:
+                    self._respond_new_error(
+                        HTTPStatus.BAD_REQUEST, "ingest-timeout",
+                        f"ingest timed out after {int(_INGEST_TIMEOUT)}s.",
+                    )
+                    return
+                except OSError as e:
+                    self._respond_new_error(
+                        HTTPStatus.INTERNAL_SERVER_ERROR, "ingest-spawn",
+                        f"failed to spawn recap ingest: "
+                        f"{type(e).__name__}: {e}",
+                    )
+                    return
+
+                if ingest.returncode != 0:
+                    err = (
+                        (ingest.stderr or "").strip()
+                        or (ingest.stdout or "").strip()
+                        or f"ingest failed with exit {ingest.returncode}"
+                    )
+                    # Truncate to keep the error banner readable.
+                    if len(err) > 400:
+                        err = err[:399] + "…"
+                    self._respond_new_error(
+                        HTTPStatus.BAD_REQUEST, "ingest-failed",
+                        f"ingest failed: {err}",
+                    )
+                    return
+
+                stdout_lines = [
+                    ln for ln in (ingest.stdout or "").splitlines()
+                    if ln.strip()
+                ]
+                if not stdout_lines:
+                    self._respond_new_error(
+                        HTTPStatus.INTERNAL_SERVER_ERROR,
+                        "ingest-no-root",
+                        "ingest produced no job root.",
+                    )
+                    return
+                new_job_dir = Path(stdout_lines[-1].strip())
+                job_id = new_job_dir.name
+                safe_job_dir = _safe_job_dir(root_resolved, job_id)
+                if safe_job_dir is None:
+                    self._respond_new_error(
+                        HTTPStatus.INTERNAL_SERVER_ERROR,
+                        "ingest-unexpected-root",
+                        f"ingest produced an unexpected job root: "
+                        f"{stdout_lines[-1]}",
+                    )
+                    return
+
+                # Mark the background run as in-progress and spawn.
+                # Pass the re-resolved safe path, not the raw stdout
+                # parse, so `recap run --job ...` targets only a
+                # direct child of the configured jobs root.
+                _set_in_progress(job_id, "run", _now_iso())
+                thread = threading.Thread(
+                    target=_background_run,
+                    args=(job_id, safe_job_dir),
+                    daemon=True,
+                )
+                thread.start()
+                slot_transferred = True
+
+                self.server.logger_stream.write(
+                    f"[recap-ui] started recap run job={job_id}\n"
+                )
+                self.server.logger_stream.flush()
+
+                location = f"/job/{job_id}/"
+                self.send_response(HTTPStatus.SEE_OTHER.value)
+                self.send_header("Location", location)
+                self.send_header("Content-Length", "0")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+            finally:
+                if not slot_transferred:
+                    _run_slot.release()
 
         def do_POST(self) -> None:  # noqa: N802
             # 1. Host pinning.
@@ -1066,12 +1464,19 @@ def _make_handler(jobs_root: Path):
                 )
                 return
 
-            # 4. Path + stage allowlist.
+            # 4. Path dispatch.
             try:
                 segments = _split_path(self.path)
             except ValueError:
                 self._not_found()
                 return
+
+            # 4a. POST /run — start a new job from a video path.
+            if segments == ["run"]:
+                self._handle_new_run(form)
+                return
+
+            # 4b. POST /job/<id>/run/<stage> — rerun an exporter.
             if (
                 len(segments) != 4
                 or segments[0] != "job"
@@ -1124,13 +1529,17 @@ def _make_handler(jobs_root: Path):
     return Handler
 
 
-def serve(host: str, port: int, jobs_root: Path) -> int:
+def serve(
+    host: str, port: int, jobs_root: Path, sources_root: Path,
+) -> int:
     if not jobs_root.exists():
         raise RuntimeError(f"jobs-root not found: {jobs_root}")
     if not jobs_root.is_dir():
         raise RuntimeError(f"jobs-root is not a directory: {jobs_root}")
 
-    handler_cls = _make_handler(jobs_root)
+    # `sources_root` is allowed to not exist yet — the /new page will
+    # render a helpful message instead of 500'ing.
+    handler_cls = _make_handler(jobs_root, sources_root)
     server = ThreadingHTTPServer((host, port), handler_cls)
     # Attach server-wide state used by the handler.
     server.logger_stream = sys.stderr

@@ -16,7 +16,12 @@ Subcommands:
   assemble   Stage 8 Markdown assembly; embeds selected screenshots when present.
   export-html Phase 4 slice: export report.html (not invoked by run).
   export-docx Phase 4 slice: export report.docx (not invoked by run).
-  ui         Local read-only web dashboard for existing jobs and artifacts.
+  ui         Local web dashboard for existing jobs and artifacts. GET routes
+             are read-only. Two CSRF- and Host-pinned POST surfaces are
+             exposed: /job/<id>/run/<stage> re-runs assemble/export-html/
+             export-docx; /run starts a new `recap run` from a video under
+             `--sources-root`. `recap run` composition and job.STAGES
+             are unchanged; no new dependencies.
   status     Print job.json summary.
 
 All commands operate on a job directory (`--job <path>`). When `run` is
@@ -196,7 +201,12 @@ def cmd_export_docx(args) -> int:
 
 
 def cmd_ui(args) -> int:
-    return ui_mod.serve(args.host, args.port, Path(args.jobs_root))
+    return ui_mod.serve(
+        args.host,
+        args.port,
+        Path(args.jobs_root),
+        Path(args.sources_root),
+    )
 
 
 def cmd_status(args) -> int:
@@ -378,6 +388,15 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--host", default="127.0.0.1")
     sp.add_argument("--port", type=int, default=8765)
     sp.add_argument("--jobs-root", default=str(DEFAULT_JOBS_ROOT))
+    sp.add_argument(
+        "--sources-root",
+        default="sample_videos",
+        help=(
+            "Directory of source videos browsable via the /new page "
+            "(default: sample_videos). POST /run resolves the picked "
+            "video path under this root."
+        ),
+    )
     sp.set_defaults(func=cmd_ui)
 
     sp = sub.add_parser("status", help="print job.json")

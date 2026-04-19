@@ -7,6 +7,36 @@ system does and produces, read `HANDOFF.md`.
 ## Current state
 
 - Phase 1 of Recap is implemented, audited, hardened, and closed out.
+- Browser-started video processing is implemented. `recap ui` takes
+  a new `--sources-root` flag (default `sample_videos`) and serves
+  `GET /new` that lists the directory's video files (extension
+  whitelist `.mp4 .mov .mkv .webm .m4v`) plus a free-text path
+  fallback. `POST /run` validates Host → Content-Length (≤ 4096 B) →
+  CSRF → acquires a module-level `threading.Semaphore(1)` so only
+  one `recap run` is active across the whole server at a time →
+  resolves the source path under the resolved sources root →
+  `is_file()` → whitelisted extension → runs `recap ingest`
+  synchronously with a 120 s timeout → parses the new job directory
+  from `cmd_ingest`'s stdout → spawns a daemon thread that runs
+  `recap run` via `subprocess.Popen` with a 1-hour
+  `communicate(timeout=3600)` → 303 redirects to `/job/<new_id>/`.
+  The background thread truncates stdout/stderr to 8 KiB UTF-8, caches
+  the result in `_last_run[(job_id, "run")]`, and releases the slot
+  in a `finally`. The last-result page lives at
+  `/job/<id>/run/run/last` — `run` is added to a read-only
+  `_LAST_RESULT_STAGES` set but NOT to `_RUNNABLE_STAGES`, so there
+  is no POST surface for `recap run` beyond `/run`. The detail page
+  shows a "Run in progress" banner plus a 10-s meta refresh when
+  `status == "running"` or any stage is `running`. The result cache
+  is in-memory only; a UI server restart loses it. The on-disk
+  `job.json` per-stage state survives. `recap run` composition and
+  `job.STAGES` are unchanged; the UI still imports no stage `run()`
+  function. `scripts/verify_ui.py` grew to 39 checks covering the
+  `/new` form, the `/new` link on the index, every validation
+  rejection path before ingest, and a mutate-and-restore test that
+  proves the running banner + meta refresh render when any stage
+  carries `status == "running"`. Browser file upload, cancel, and
+  persistent run history remain deferred.
 - The dashboard now has its first write-capable surface:
   `recap ui` renders a three-button Actions block on each job detail
   page that POSTs to `/job/<id>/run/{assemble,export-html,export-docx}`.

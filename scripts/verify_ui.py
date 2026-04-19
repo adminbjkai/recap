@@ -124,13 +124,17 @@ def wait_for_server(port: int, timeout: float = 10.0) -> None:
          f" (last={last_err})")
 
 
-def start_ui(jobs_root: Path, port: int) -> subprocess.Popen:
+def start_ui(
+    jobs_root: Path, port: int, sources_root: Path | None = None,
+) -> subprocess.Popen:
     args = [
         sys.executable, "-m", "recap", "ui",
         "--host", "127.0.0.1",
         "--port", str(port),
         "--jobs-root", str(jobs_root),
     ]
+    if sources_root is not None:
+        args.extend(["--sources-root", str(sources_root)])
     proc = subprocess.Popen(
         args, cwd=REPO_ROOT,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -186,8 +190,15 @@ def main() -> int:
     job_dir = jobs_root / "minimal_job"
     shutil.copytree(FIXTURE, job_dir)
 
+    sources_root = scratch_root / "sources"
+    sources_root.mkdir()
+    fake_video = sources_root / "fake.mp4"
+    fake_video.write_bytes(b"")
+    bad_ext = sources_root / "bad.txt"
+    bad_ext.write_bytes(b"")
+
     port = free_port()
-    proc = start_ui(jobs_root, port)
+    proc = start_ui(jobs_root, port, sources_root=sources_root)
     try:
         wait_for_server(port)
         passed()
@@ -196,6 +207,68 @@ def main() -> int:
         case = "index"
         _, body = expect_status(case, port, "/", 200)
         expect_contains(case, body, b"minimal_job")
+        expect_contains(case, body, b'href="/new"')
+        passed()
+
+        # /new page renders a form, hidden token, and lists fake.mp4
+        # but not bad.txt (extension whitelist).
+        case = "new-page"
+        _, body = expect_status(case, port, "/new", 200)
+        expect_contains(case, body, b'action="/run"')
+        expect_contains(case, body, b'name="_token"')
+        expect_contains(case, body, b"fake.mp4")
+        expect_not_contains(case, body, b"bad.txt")
+        new_token = extract_csrf(body)
+        passed()
+
+        # POST /run validations (these never actually spawn ingest:
+        # every case trips a pre-subprocess check.)
+        case = "post-run-missing-token"
+        status, _, _ = http_post(port, "/run", {})
+        if status != 403:
+            fail(case, f"expected 403, got {status}")
+        passed()
+
+        case = "post-run-forged-host"
+        status, _, _ = http_post(
+            port, "/run", {"_token": new_token},
+            host_override="bogus.example:8765",
+        )
+        if status != 403:
+            fail(case, f"expected 403, got {status}")
+        passed()
+
+        case = "post-run-body-too-large"
+        big = "x" * 5000
+        status, _, _ = http_post(
+            port, "/run", {"_token": new_token, "fill": big},
+        )
+        if status != 413:
+            fail(case, f"expected 413, got {status}")
+        passed()
+
+        case = "post-run-missing-source"
+        status, _, _ = http_post(port, "/run", {"_token": new_token})
+        if status != 400:
+            fail(case, f"expected 400, got {status}")
+        passed()
+
+        case = "post-run-outside-sources-root"
+        status, _, _ = http_post(
+            port, "/run",
+            {"_token": new_token, "source_path": "/etc/hosts"},
+        )
+        if status != 403:
+            fail(case, f"expected 403, got {status}")
+        passed()
+
+        case = "post-run-bad-extension"
+        status, _, _ = http_post(
+            port, "/run",
+            {"_token": new_token, "source": str(bad_ext.resolve())},
+        )
+        if status != 400:
+            fail(case, f"expected 400, got {status}")
         passed()
 
         case = "job-detail"
@@ -492,6 +565,25 @@ def main() -> int:
             )
         finally:
             sfp.write_text(original_sf, encoding="utf-8")
+        passed()
+
+        # Detail page shows the "Run in progress" banner and a 10-s
+        # meta refresh when any stage is currently running.
+        case = "detail-running-banner"
+        jjr = job_dir / "job.json"
+        original_jj = jjr.read_text(encoding="utf-8")
+        data = json.loads(original_jj)
+        data.setdefault("stages", {}).setdefault("transcribe", {})
+        data["stages"]["transcribe"]["status"] = "running"
+        jjr.write_text(json.dumps(data), encoding="utf-8")
+        try:
+            _, body = expect_status(case, port, "/job/minimal_job/", 200)
+            expect_contains(case, body, b"Run in progress")
+            expect_contains(
+                case, body, b'meta http-equiv="refresh" content="10"'
+            )
+        finally:
+            jjr.write_text(original_jj, encoding="utf-8")
         passed()
     finally:
         stop_ui(proc)

@@ -903,10 +903,66 @@ path for assemble and export-html, the "no runs yet" empty state for
 export-docx, missing/wrong token, forged Host header, oversize body,
 unknown-stage allowlist, GET-on-POST-route, and raw-path traversal.
 
-Remaining UI items — starting `recap run` from the dashboard,
-rerunning opt-in pipeline stages, cancelling a run, deleting or
-archiving jobs, live status updates (SSE / WebSocket), auth, and
-remote access — are explicitly deferred.
+The dashboard additionally ships a browser-started video-processing
+surface. `recap ui` now takes a `--sources-root` flag (default
+`sample_videos`) and serves `GET /new`, which lists direct child
+video files under that root (filtered by the whitelist `.mp4`,
+`.mov`, `.mkv`, `.webm`, `.m4v`) plus a free-text path fallback.
+Submitting the form POSTs to `/run`. The `/run` handler validates
+`Host`, `Content-Length` (≤ 4096 bytes), `_token`, acquires the
+module-level `_run_slot = threading.Semaphore(1)` non-blockingly
+(429 + `Retry-After: 30` on contention), resolves the submitted path
+under the resolved `sources_root` (`.relative_to()` check — outside →
+403), requires `is_file()` (→ 400) and a whitelisted suffix (→ 400),
+then runs `python -m recap ingest --source <path> --jobs-root
+<jobs_root>` synchronously via `subprocess.run` with a 120 s timeout
+and `capture_output=True`. On non-zero ingest exit, the slot is
+released and the `/new` page is re-rendered with the captured stderr
+as an inline error (400). On success, the handler parses the last
+non-empty stdout line as the new job directory (this depends on
+`cmd_ingest` in `recap/cli.py` printing `paths.root` — the only
+coupling between the UI and the CLI's output format), derives the
+job_id, re-validates via `_safe_job_dir`, writes an `in-progress`
+entry to `_last_run[(job_id, "run")]`, spawns a daemon thread that
+runs `python -m recap run --job <job_dir>` via `subprocess.Popen` +
+`communicate(timeout=3600)`, transfers slot ownership to the thread,
+and responds `303 See Other` with `Location: /job/<new_id>/`. The
+thread captures stdout/stderr, truncates each to 8 KiB UTF-8 via the
+existing `_truncate_output` helper, stores a final `success` or
+`failure` entry in `_last_run`, and releases `_run_slot` in its
+`finally` block. On subprocess timeout, the process is killed and
+the result carries a failure marker with `timeout after 3600s`
+appended to stderr. Rejected POSTs log one short reason (`host |
+content-length-missing | body-too-large | body-parse | csrf | slot
+| source-missing | source-invalid | source-outside-root |
+source-not-file | source-bad-ext | ingest-timeout | ingest-spawn |
+ingest-failed | ingest-no-root | ingest-unexpected-root`); the form
+body, CSRF token, env, and captured command output are never
+logged. The detail page renders a "Run in progress" banner + a
+10-second HTML meta refresh whenever the top-level `status` or any
+stage entry is `running`. The `run` stage name is added to a
+read-only set `_LAST_RESULT_STAGES = _RUNNABLE_STAGES | {"run"}`
+so `GET /job/<id>/run/run/last` renders via the existing
+`render_run_last` helper; `_RUNNABLE_STAGES` itself is unchanged, so
+there is no POST surface for `recap run` beyond `/run`. The
+in-memory run-result cache does NOT survive a `recap ui` server
+restart (documented limitation); the on-disk `job.json` state
+updates written by each stage still do, so the detail page reflects
+the last persisted stage status even if the live subprocess was
+orphaned. `scripts/verify_ui.py` now seeds a scratch
+`sources/fake.mp4` + `sources/bad.txt` and grew to 39 checks
+covering the `/new` rendering, the `/new` link on the index, missing
+/ wrong / forged token + host + body-size, missing source, source
+outside the root, a bad-extension source, and the detail-page
+running banner (via a `job.json` mutate-and-restore test). No full
+`recap run` integration test lives in the verifier — that requires
+faster-whisper weights and is covered manually.
+
+Remaining UI items — browser file upload, cancelling a running job,
+rerunning opt-in pipeline stages, deleting or archiving jobs,
+persistent run history across server restarts, a timestamped
+transcript viewer with speaker rows, live status streaming (SSE /
+WebSocket), auth, and remote access — are explicitly deferred.
 
 ## Hardening: offline golden-path validation script
 

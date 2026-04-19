@@ -557,6 +557,43 @@ job/metadata/transcript JSONs, and JPEG/PNG images under
 resolving outside `jobs/<id>/` returns 404. No new dependencies are
 required.
 
+### Start a new job from the browser
+
+`GET /new` renders a "Start new job" form that lists video files under
+the configured sources root (default `sample_videos/`, configurable
+via `recap ui --sources-root <path>`) and offers a free-text path
+fallback. Submitting the form `POST`s to `/run`, which validates the
+selected path, runs `recap ingest` synchronously, then spawns
+`recap run` in a background daemon thread and redirects the browser
+to the new job's detail page.
+
+Only files whose extension is in `{.mp4, .mov, .mkv, .webm, .m4v}`
+are accepted. The resolved path must live under the sources root; any
+path outside it (or any path that isn't a regular file) is rejected
+with a one-line error on the same `/new` page. The same CSRF token,
+Host pinning, and 4 KiB body cap that guard the existing exporter
+rerun POST surface also guard `/run`.
+
+Only **one** `recap run` is allowed to be in flight across the whole
+server at a time, enforced by a `threading.Semaphore(1)`. A second
+POST while one is running returns 429 with `Retry-After: 30`. The
+background subprocess is capped at 1 hour; captured stdout/stderr are
+truncated to 8 KiB UTF-8 and cached in memory under `(job_id, "run")`,
+visible at `/job/<id>/run/run/last`. The in-memory cache is lost when
+the UI server restarts — the on-disk `job.json` and artifacts survive,
+but the live subprocess is orphaned.
+
+Browser-initiated runs still shell out exclusively to the CLI
+(`python -m recap ingest` then `python -m recap run --job <dir>`).
+The UI does not import any stage `run()` function. `recap run`
+composition and `job.STAGES` remain unchanged.
+
+Browser **file upload** is not part of this slice; users place videos
+under the sources root using whatever tool they prefer (Finder,
+`cp`, `scp`, etc.) and pick them from the `/new` dropdown.
+
+### Read-only Actions block
+
 The per-job detail page exposes an **Actions** block with three small
 HTML forms — `Rerun recap assemble`, `Rerun recap export-html`,
 `Rerun recap export-docx` — each of which POSTs to
