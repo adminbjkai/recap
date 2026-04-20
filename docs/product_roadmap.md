@@ -58,7 +58,11 @@ Slices marked **done** have already shipped on `main`.
 - Visual system in `web/src/index.css` with tokens, typography scale,
   elevation, focus ring, and `prefers-reduced-motion`.
 
-## 3. Groq structured insights + export integration — **this slice**
+## 3. Groq structured insights + export integration — **done**
+
+**Shipped in:**
+- `1532f16 Add structured insights for reports`
+- `e32b6d9 Harden insights and align project guidance`
 
 **Goal:** make the three existing exports (Markdown / HTML / DOCX)
 carry real, useful information, not just a transcript dump.
@@ -84,10 +88,13 @@ carry real, useful information, not just a transcript dump.
 - No full React insights UI yet; a chip is enough for now.
 - No prompt customization beyond env.
 
-## 4. React job detail + rich-report progress
+## 4. React job detail + rich-report progress — **done (dashboard); 4b next**
 
-**Status:** dashboard landing in this slice; rich-report / action
-streaming deferred to a follow-up slice (see "4b" below).
+**Shipped in:**
+- `e709673 Add React job detail dashboard`
+
+Dashboard landing is shipped; rich-report progress + action endpoints
+are deferred to slice 4b. **4b is the next active slice.**
 
 Shipped in this slice:
 
@@ -115,18 +122,28 @@ Shipped in this slice:
   `/app/job/:id/transcript`.
 - Legacy HTML detail page at `/job/:id/` remains live as a fallback.
 
-**4b. React rich-report progress + action endpoints (future):**
+**4b. React rich-report progress + action endpoints — next:**
 
 - Streaming / polling progress while `recap run` or the rich-report
-  chain is executing.
-- React action endpoints for rich-report generation and
-  `recap insights` kick-offs. Until those land, users run the rich-
-  report action on the legacy HTML page or via CLI.
+  chain is executing. Probably polling first, SSE later (slice 13
+  covers the SSE transport work).
+- React action endpoints for the 11-stage rich-report chain and for
+  `recap insights` kick-offs. The existing legacy HTML actions at
+  `/job/<id>/` stay live.
+- New `POST /api/jobs/<id>/insights` dispatch (CSRF + Host-pinned)
+  and `POST /api/jobs/<id>/rich-report` dispatch that reuse the
+  existing per-job locks and `_run_slot` semaphore.
+- React `InsightsPreview` gains a "Generate insights" affordance when
+  `insights.json` is absent; dashboard gains a "Generate rich
+  report" affordance that mirrors the legacy form.
+
+Until 4b lands, users run the rich-report action on the legacy HTML
+page or via CLI.
 
 ## 5. React `/app/new` start flow — **done (start subset)**
 
 **Shipped in:**
-- `Add React new job flow`
+- `07212c5 Add React new job flow`
 
 **What it gives users:**
 - `/app/new` React page with hero, source picker (lists videos under
@@ -154,7 +171,7 @@ Shipped in this slice:
 ## 6. Browser screen recording via MediaRecorder — **done**
 
 **Shipped in:**
-- `Add browser recording import flow`
+- `e88bb52 Add browser recording import flow`
 
 **What it gives users:**
 - A **Record screen** tab on `/app/new` that uses
@@ -183,46 +200,90 @@ Shipped in this slice:
 - Streaming / polling progress UI while `recap run` executes (still
   tracked as slice 4b).
 
-## 7. Folder / project / job organization
+## 7. Chapter sidebar + editable chapter titles
+
+- Sidebar on `/app/job/<id>/transcript` that lists chapters with an
+  active-chapter highlight tied to playback time.
+- Inline chapter-title editing; edits persist as an overlay alongside
+  `speaker_names.json` so `chapter_candidates.json` and
+  `insights.json` stay immutable.
+- Jump-to-chapter in the player.
+- API: extend the existing `speaker-names`-style overlay pattern.
+  Host-pinned + CSRF-guarded POST; read endpoint falls back to the
+  empty overlay when absent/malformed.
+
+## 8. Screenshot / frame review UI
+
+- React surface on the job dashboard (or transcript workspace) that
+  renders `selected_frames.json` hero/supporting choices side-by-side
+  with their chapter excerpt and any VLM-provided caption.
+- Inline keep/reject overrides written as a small overlay file so
+  `selected_frames.json` itself stays immutable and re-runnable.
+- Respect the existing screenshot policy (1 hero per chapter, up to
+  3 supporting, no fixed-interval capture).
+
+## 9. Exports honor overlays fully
+
+- `recap assemble` / `export-html` / `export-docx` render
+  `speaker_names.json` labels (not fallback `Speaker N`), chapter-
+  title overlay titles (not `chapter_candidates.json#title`), and
+  any frame-review overlay from slice 8.
+- Static check in `scripts/verify_reports.py` proves exports stay
+  byte-compatible when no overlay is present.
+- Exports still run from both the CLI and the legacy rich-report
+  form; no new runtime dep.
+
+## 10. Selected-speaker playback
+
+- Toggle on the transcript workspace: "play only segments where
+  Speaker N speaks."
+- Driven entirely client-side from the existing transcript + speaker
+  overlay. No API changes.
+
+## 11. Transcript correction / notes overlay
+
+- Per-segment note / correction field stored as a new overlay file
+  next to `speaker_names.json`.
+- Exports optionally include the corrected text (gated on slice 9
+  landing).
+
+## 12. Folders / projects / archive
 
 - Rename a job (edit `original_filename` + visible title).
 - Move a job between folders / projects.
 - Archive a job (hide from the default index, never delete).
 - Keep `jobs/<id>/` directory layout stable; organization lives in a
-  sidecar index file.
+  sidecar index file at the jobs-root level.
 
-## 8. Chapter sidebar + editable chapter titles
+## 13. Live progress (SSE / polling) + webhooks
 
-- Sidebar that lists chapters + active-chapter highlight.
-- Inline edit of chapter titles (persisted next to insights).
-- Jump-to-chapter in the player.
-
-## 9. Selected-speaker playback
-
-- Toggle: "play only segments where Speaker N speaks."
-- Driven entirely client-side from the existing transcript + speaker
-  overlay.
-
-## 10. Transcript correction / notes overlay
-
-- Per-segment note / correction field stored alongside
-  `speaker_names.json` in a new overlay file.
-- Exports can optionally include the corrected text.
-
-## 11. Webhooks / streaming progress / SSE
-
-- Server-Sent Events channel for job progress.
+- Server-Sent Events channel or long-poll endpoint for job progress
+  (picked in slice 4b's follow-up).
 - Optional outbound webhook on stage transitions for self-hosted
-  automations.
+  automations. Webhooks are opt-in, URL whitelisted, and never carry
+  transcript text or API keys.
 
-## 12. Linux hosting docs / systemd / reverse proxy
+## 14. Linux self-host / deploy hardening
 
 - End-to-end doc for running Recap on a Linux box.
-- Sample `systemd` unit.
-- Reverse-proxy notes covering Host pinning and CSRF.
-- TLS guidance.
+- Sample `systemd` unit with least-privileged user, read-only paths.
+- Reverse-proxy notes covering Host pinning and CSRF with
+  nginx/Caddy/Traefik examples.
+- TLS guidance (Let's Encrypt via the proxy, never in the stdlib
+  server).
 
-## 13. Playwright browser coverage
+## 15. Single-user auth / reverse-proxy auth
+
+- Ship a minimal authentication surface so Recap can safely bind
+  beyond `127.0.0.1`.
+- Primary: reverse-proxy auth integration (`X-Remote-User` header
+  trust when the proxy is configured; disabled by default).
+- Secondary: optional built-in single-user login backed by a hashed
+  password + session cookie. Still single-user — not multi-tenant.
+- Gated on slice 14 landing so the deploy docs and the auth model
+  ship together.
+
+## 16. Playwright browser coverage
 
 - Headless Playwright tests exercising the full React surface against
   a real `recap ui` process.
@@ -230,7 +291,9 @@ Shipped in this slice:
 
 ---
 
-Slices after this point will be triaged once the first seven are in.
-Candidate follow-ups include: exporter integration for transcript
-notes (slice 10 → reports), multi-voice voiceover on export, and
-pluggable LLM providers beyond Groq.
+Slices after this point will be triaged once the first nine above are
+in. Candidate follow-ups include: drag-and-drop upload of pre-
+existing local video files (separate from live recording), pluggable
+LLM providers beyond Groq, and multi-voice voiceover on export.
+Multi-user accounts, native-app wrappers, and cloud-sync targets are
+**not** currently on the roadmap.

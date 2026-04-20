@@ -21,35 +21,50 @@ If any document here conflicts with the user's most recent instruction
 in the conversation, the user's instruction wins. If the agent-level
 docs conflict with each other, the order above is authoritative.
 
-## Status
+## Status (current on `main`)
 
-- **Phase 1 (Reliable Core) is complete and shipped on `main`.** Every
-  Phase 1 stage (ingest / normalize / transcribe / assemble) runs,
-  persists artifacts, and is restartable.
-- **Phase 2 (Smart Visuals v1) is complete:** `recap scenes`, `recap
-  dedupe`, and all associated artifacts are live and covered by
-  `scripts/verify_reports.py` / `scripts/verify_ui.py`.
-- **Phase 3 (Semantic Alignment) slices are live:** `recap window`,
-  `recap similarity`, `recap chapters`, `recap rank`, and `recap
-  shortlist`.
-- **Phase 4 (Precision Polish) slices are live:** `recap verify`,
-  `recap export-html`, `recap export-docx`.
-- **Modern web app is live:** a React/Vite frontend under `/app/`
-  (polished visual system + transcript workspace + jobs index +
-  transcript search + speaker filter chips), plus a JSON API
-  (`/api/csrf`, `/api/jobs`, `/api/jobs/<id>`, `/api/jobs/<id>/
-  transcript`, `/api/jobs/<id>/speaker-names`). The legacy HTML
-  dashboard at `/` remains live as a fallback.
-- **Structured insights is live (opt-in):** `recap insights --provider
-  mock|groq` writes `insights.json`; `recap assemble` / `export-html` /
+Recap has moved well past the original "Phase 1 only" posture — the
+full opt-in stage chain (`scenes` → `dedupe` → `window` →
+`similarity` → `chapters` → `rank` → `shortlist` → `verify`),
+structured insights, and the React SPA are all live. The Phase
+numbers in the original [MASTER_BRIEF.md](MASTER_BRIEF.md) are kept as
+*pipeline-design* vocabulary; they are **not** a description of what
+`recap run` does today.
+
+- **Phase-1 core (`recap run` = ingest → normalize → transcribe →
+  assemble)** is implemented, audited, and frozen. `recap/cli.py`
+  `cmd_run` composition and `recap/job.py::STAGES` are statically
+  pinned by `scripts/verify_reports.py`.
+- **Opt-in visual/semantic/VLM stages live:** `recap scenes`,
+  `recap dedupe`, `recap window`, `recap similarity`, `recap
+  chapters`, `recap rank`, `recap shortlist`, `recap verify`.
+- **Opt-in insights live:** `recap insights --provider mock|groq`
+  writes `insights.json`; `recap assemble` / `export-html` /
   `export-docx` render an `## Overview` section and per-chapter
-  enrichments when it is present. `insights` is NOT in `job.STAGES`
-  and NOT invoked by `recap run`.
+  enrichments when present. `insights` is **not** in `STAGES` and
+  **not** invoked by `recap run`.
+- **Optional reports live:** `recap export-html` → `report.html`,
+  `recap export-docx` → `report.docx`.
+- **Modern web app (React 18 + Vite + TypeScript + plain CSS) is
+  live** at `/app/*`. Routes: `/app/` (jobs index), `/app/new`
+  (start a job — sources pick, **Record screen** via
+  `getDisplayMedia` + `MediaRecorder`, absolute-path fallback, engine
+  selector), `/app/job/<id>` (dashboard), `/app/job/<id>/transcript`
+  (transcript workspace with speaker colors, filter chips, search,
+  rename). The legacy HTML dashboard at `/`, `/new`, and
+  `/job/<id>/` remains live as a fallback.
+- **JSON API** (Host-pinned, CSRF-guarded): `/api/csrf`,
+  `/api/sources`, `/api/engines`, `/api/jobs`, `/api/jobs/<id>`,
+  `/api/jobs/<id>/transcript`, `/api/jobs/<id>/insights`,
+  `/api/jobs/<id>/speaker-names` (GET/POST), `/api/jobs/start`
+  (POST), `/api/recordings` (POST, 2 GiB stream-to-disk upload).
+- **Priority cloud providers:** Deepgram for diarized transcription
+  (`--engine deepgram`, `DEEPGRAM_API_KEY`) and Groq for structured
+  insights (`recap insights --provider groq`, `GROQ_API_KEY`). Both
+  fail cleanly with no key and have offline counterparts.
 
-`recap run` composition remains `ingest → normalize → transcribe →
-assemble` and `recap/job.py STAGES` remains `("ingest", "normalize",
-"transcribe", "assemble")`. Neither may change without an explicit
-green-light from the user.
+`recap run` composition and `recap/job.py STAGES` are frozen. Neither
+may change without an explicit green-light from the user.
 
 ## Priority cloud providers
 
@@ -117,7 +132,7 @@ Before committing:
 
 ## Artifact layout
 
-A completed job may contain any subset of:
+A completed job directory (`jobs/<job_id>/`) may contain any subset of:
 
 - `original.ext`, `metadata.json`, `job.json`
 - `analysis.mp4`, `audio.wav`
@@ -128,12 +143,20 @@ A completed job may contain any subset of:
   `frame_shortlist.json`
 - `chapter_candidates.json`, `selected_frames.json`
 - `speaker_names.json` (overlay; mutates only via
-  `POST /api/jobs/<id>/speaker-names` or a future editor)
-- `insights.json` (opt-in)
+  `POST /api/jobs/<id>/speaker-names`)
+- `insights.json` (opt-in overlay)
 - `report.md`, `report.html`, `report.docx`
 
 Each file's writer lives in `recap/stages/<stage>.py` or `recap/ui.py`.
-Readers must validate shape before use.
+Readers must validate shape before use. Overlays (`speaker_names.json`,
+`insights.json`) never mutate `transcript.json` or any other upstream
+artifact.
+
+**Browser recordings** live outside the per-job directory: they are
+stored directly under `<--sources-root>/recording-<UTC>-<hex>.<ext>`
+so they appear in `GET /api/sources` and can be consumed by
+`POST /api/jobs/start` without inventing a new source kind. The
+browser-supplied filename is never trusted.
 
 ## Stop conditions
 
@@ -161,9 +184,50 @@ Stop and ask before continuing when:
 - Do not swallow errors silently. Opt-in stages fail cleanly with a
   short one-line message and leave no `.tmp` files behind.
 
+## Future slice order (at the time of this doc)
+
+The authoritative, versioned list lives in
+[docs/product_roadmap.md](docs/product_roadmap.md). At the time of
+this writing the next slices — in order — are:
+
+1. **React action controls for insights / rich-report** (roadmap
+   slice 4b). Kick off `recap insights` and the 11-stage rich-report
+   chain from the React dashboard; polling progress first, SSE
+   later.
+2. **Chapter sidebar + editable chapter titles** (slice 7). Sidebar
+   on `/app/job/<id>/transcript` with an active-chapter highlight;
+   inline chapter-title editing persisted as an overlay next to
+   `speaker_names.json`.
+3. **Screenshot / frame review UI** (slice 8). Inline review of
+   `selected_frames.json` hero/supporting choices with keep/reject
+   overrides written as an overlay.
+4. **Exporters honor overlays fully** (slice 9). `recap assemble` /
+   `export-html` / `export-docx` render `speaker_names.json` labels
+   and any chapter-title overlay, not fallback `Speaker N`.
+5. **Folders / projects / archive** (slice 12). Rename / move /
+   archive jobs via a sidecar index file; `jobs/<id>/` layout stays
+   stable.
+6. **Live progress (SSE / polling) + webhooks** (slice 13).
+7. **Linux self-host / deploy hardening** (slice 14). End-to-end
+   host docs, a `systemd` unit, reverse-proxy notes covering Host
+   pinning + CSRF, TLS guidance.
+8. **Single-user / reverse-proxy auth** (slice 15). Minimal auth
+   surface so Recap can safely bind beyond `127.0.0.1`. Gated on
+   slice 14.
+
+Slices that are explicitly **not next** until the list above moves:
+drag-and-drop upload of pre-existing files, dark mode, Playwright
+coverage, multi-tenant accounts, cloud-sync targets, native-app
+wrappers.
+
 ## Enforcement summary
 
-Treat `MASTER_BRIEF.md` as the pipeline philosophy, `docs/
-product_roadmap.md` as the live roadmap, and
-`docs/ux_inspiration.md` as the UX map. Pick one roadmap slice, land
-it with artifacts + validators + docs updates, and stop.
+Treat [MASTER_BRIEF.md](MASTER_BRIEF.md) as the pipeline philosophy
+(historical north star),
+[docs/product_roadmap.md](docs/product_roadmap.md) as the live
+roadmap, [ARCHITECTURE.md](ARCHITECTURE.md) as the current system
+shape, [PRD.md](PRD.md) as the current product target,
+[DECISIONS.md](DECISIONS.md) as the accepted-decisions log, and
+[docs/ux_inspiration.md](docs/ux_inspiration.md) as the UX map. Pick
+one roadmap slice, land it with artifacts + validators + docs
+updates, and stop.

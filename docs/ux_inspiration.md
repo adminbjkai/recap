@@ -60,8 +60,8 @@ diarized, editable transcript.
 ### Maps to Recap slices
 
 - Transcript workspace polish: **done** (slice 2 in the roadmap).
-- Editable chapter titles / sidebar: **slice 8**.
-- Transcript correction / notes overlay: **slice 10**.
+- Editable chapter titles / sidebar: **slice 7**.
+- Transcript correction / notes overlay: **slice 11**.
 
 ## [CapSoftware/Cap](https://github.com/CapSoftware/Cap)
 
@@ -88,9 +88,9 @@ surface and for the recording flow.
 ### Maps to Recap slices
 
 - Jobs-index hero + stats: **done** (slice 2).
-- Browser screen recording: **slice 6**.
-- React upload / start flow: **slice 5**.
-- Webhooks / streaming progress surface: **slice 11**.
+- React upload / start flow: **done** (slice 5).
+- Browser screen recording: **done** (slice 6).
+- Webhooks / streaming progress surface: **slice 13**.
 
 ## [steipete/summarize](https://github.com/steipete/summarize)
 
@@ -123,11 +123,11 @@ cache-aware reuse of expensive artifacts.
 
 ### Maps to Recap slices
 
-- Groq structured insights + report integration: **slice 3 (this
-  slice)**.
-- React rich-report progress: **slice 4**.
-- Chapter sidebar + editable chapter titles: **slice 8**.
-- Webhooks / streaming progress / SSE: **slice 11**.
+- Groq structured insights + report integration: **done** (slice 3).
+- React rich-report progress: **slice 4b** (next active slice).
+- Chapter sidebar + editable chapter titles: **slice 7**.
+- Screenshot / frame review UI: **slice 8**.
+- Webhooks / streaming progress / SSE: **slice 13**.
 
 ## Design-system references
 

@@ -2,6 +2,23 @@
 
 # MASTER_BRIEF.md: Automated Intelligent Video-to-Documentation Pipeline
 
+> **Status (historical north star).** This brief is the original
+> long-form specification for Recap's pipeline philosophy. It is
+> preserved as the **pipeline north star** for how stages should
+> behave — cheap deterministic filters first, semantic alignment on
+> a reduced set, expensive AI (VLM / LLM) only on a small shortlist,
+> Markdown-first outputs. It is **not** a description of what Recap
+> currently ships.
+>
+> For the current architecture (React SPA, JSON API, browser
+> recording, opt-in cloud providers) see
+> [ARCHITECTURE.md](ARCHITECTURE.md). For the ordered list of
+> product slices in flight, see
+> [docs/product_roadmap.md](docs/product_roadmap.md). For accepted
+> decisions and rejected alternatives, see
+> [DECISIONS.md](DECISIONS.md). When those documents conflict with
+> this one, they win.
+
 This document serves as the definitive, action-oriented specification for building an efficient, open-source-first pipeline that converts screen recordings into structured, chaptered documentation with intelligently selected screenshots.
 
 ## 1. Core Philosophy and Strategy
@@ -65,6 +82,11 @@ The fundamental principle of this system is to avoid processing entire videos wi
 * **Reject Rules:** Discard a frame if it is very similar to the last kept frame, lacks OCR novelty, has low transcript relevance, or is blurry/low-information.
 
 ## 5. Recommended Build Phases
+
+> Historical build phasing. Phases 1–4 below were the original
+> delivery plan. Phase 1 is now the frozen `recap run` core; every
+> later phase's stages have shipped as opt-in CLI verbs (see
+> [ARCHITECTURE.md](ARCHITECTURE.md) §3 for the current list).
 
 * **Phase 1 (Reliable Core):** Build ingest, FFmpeg normalization, transcription, and basic Markdown text output without visual processing.
 * **Phase 2 (Smart Visuals v1):** Integrate PySceneDetect, candidate extraction, hash deduplication, and OCR novelty checks.
