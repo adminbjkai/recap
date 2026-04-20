@@ -9,11 +9,16 @@ system does and produces, read `HANDOFF.md`.
 - Phase 1 of Recap is implemented, audited, hardened, and closed out.
 - Phase 0 of the modern web app is implemented beside the legacy
   stdlib dashboard. `recap/ui.py` now exposes JSON endpoints
-  `GET /api/csrf`, `GET /api/jobs/<id>`,
+  `GET /api/csrf`, `GET /api/jobs`, `GET /api/jobs/<id>`,
   `GET /api/jobs/<id>/transcript`,
   `GET /api/jobs/<id>/speaker-names`, and
   `POST /api/jobs/<id>/speaker-names`; it also serves the built React
   app from `web/dist` under `/app/*` with SPA fallback routing.
+  `GET /api/jobs` returns `{"jobs": [summary, ...]}` sorted by
+  `created_at` descending; malformed `job.json` entries are dropped
+  silently. Each summary's `urls` block now includes `detail_html`,
+  `legacy_transcript`, `react_transcript`, `report_md`, `report_html`,
+  and `report_docx` alongside the earlier keys.
   `recap/job.py` adds only `JobPaths.speaker_names_json`; `job.STAGES`
   remains unchanged. The speaker-name API writes an atomic
   `speaker_names.json` overlay with numeric-string keys and trimmed
@@ -21,12 +26,14 @@ system does and produces, read `HANDOFF.md`.
   `X-Recap-Token`, body-size caps, and the existing per-job lock.
   The overlay never mutates `transcript.json`, and exporters do not
   read it yet. The new `web/` package is React 18 + Vite +
-  TypeScript + Vitest with one route,
-  `/app/job/<id>/transcript`: native video, active-row transcript
-  sync, speaker-colored rows, speaker legend, and inline speaker
-  rename. `scripts/verify_api.py` adds 12 API checks; the React test
-  suite currently has 3 `SpeakerRenameForm` specs. Old HTML routes
-  remain live.
+  TypeScript + Vitest with two routes: `/app/` (jobs index with
+  search + status filter + artifact chips + quick actions) and
+  `/app/job/<id>/transcript` (native video, active-row transcript
+  sync, speaker-colored rows, speaker legend, inline speaker
+  rename). `AppShell` provides a sticky top bar linking to `/` and
+  `/new`. `scripts/verify_api.py` covers 14 API checks; the React
+  test suite currently has 7 specs covering `SpeakerRenameForm`,
+  `JobCard`, and `JobsIndexPage`. Old HTML routes remain live.
 - Diarized transcripts now render speaker-colored rows plus a
   compact speakers legend. A new module-level constant
   `_SPEAKER_PALETTE_SIZE = 8` caps the palette; eight `.speaker-0`..

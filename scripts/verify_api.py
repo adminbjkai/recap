@@ -188,6 +188,52 @@ def main() -> int:
             fail(case, f"bad csrf token shape: {token!r}")
         passed()
 
+        case = "api-jobs-list-returns-jobs"
+        listing = get_json(case, port, "/api/jobs")
+        jobs = listing.get("jobs")
+        if not isinstance(jobs, list):
+            fail(case, f"jobs not a list: {listing!r}")
+        if not jobs:
+            fail(case, "jobs list unexpectedly empty")
+        entry = next(
+            (j for j in jobs if j.get("job_id") == "minimal_job"), None,
+        )
+        if entry is None:
+            fail(case, f"minimal_job not in listing: {jobs!r}")
+        for key in ("job_id", "status", "artifacts", "urls"):
+            if key not in entry:
+                fail(case, f"entry missing key {key!r}: {entry!r}")
+        urls = entry.get("urls", {})
+        for url_key in (
+            "detail_html",
+            "legacy_transcript",
+            "react_transcript",
+            "report_md",
+            "report_html",
+            "report_docx",
+        ):
+            if url_key not in urls:
+                fail(case, f"urls missing {url_key!r}: {urls!r}")
+        if urls["react_transcript"] != "/app/job/minimal_job/transcript":
+            fail(case, f"react_transcript url wrong: {urls!r}")
+        passed()
+
+        case = "api-jobs-list-skips-malformed-job"
+        bad_dir = jobs_root / "not_a_real_job"
+        bad_dir.mkdir()
+        try:
+            (bad_dir / "job.json").write_text("{not json", encoding="utf-8")
+            listing = get_json(case, port, "/api/jobs")
+            jobs = listing.get("jobs") or []
+            if any(j.get("job_id") == "not_a_real_job" for j in jobs):
+                fail(case, "malformed job.json leaked into listing")
+            # the good entry must still be present
+            if not any(j.get("job_id") == "minimal_job" for j in jobs):
+                fail(case, "malformed entry dropped the good one too")
+        finally:
+            shutil.rmtree(bad_dir, ignore_errors=True)
+        passed()
+
         case = "api-job-returns-summary"
         summary = get_json(case, port, "/api/jobs/minimal_job")
         for key in (

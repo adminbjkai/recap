@@ -2058,6 +2058,12 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                 "transcript_json": f"/api/jobs/{job_id}/transcript",
                 "transcript": f"/api/jobs/{job_id}/transcript",
                 "speaker_names": f"/api/jobs/{job_id}/speaker-names",
+                "detail_html": f"/job/{job_id}/",
+                "legacy_transcript": f"/job/{job_id}/transcript",
+                "react_transcript": f"/app/job/{job_id}/transcript",
+                "report_md": f"/job/{job_id}/report.md",
+                "report_html": f"/job/{job_id}/report.html",
+                "report_docx": f"/job/{job_id}/report.docx",
             }
             return {
                 "job_id": data.get("job_id") or job_id,
@@ -2072,11 +2078,31 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                 "urls": urls,
             }
 
+        def _api_list_jobs(self) -> list[dict]:
+            """Return a sorted list of job summaries.
+
+            Malformed `job.json` entries are already dropped by
+            `_list_jobs`, so the frontend always receives parseable
+            summaries and doesn't have to guard each card.
+            """
+            entries = _list_jobs(root_resolved)
+            return [
+                self._api_job_summary(entry["job_id"], entry["dir"])
+                for entry in entries
+            ]
+
         def _api_get(self, segments: list[str]) -> None:
             # GET /api/csrf
             if segments == ["api", "csrf"]:
                 token = getattr(self.server, "csrf_token", "") or ""
                 self._send_json(HTTPStatus.OK, {"token": token})
+                return
+
+            # GET /api/jobs
+            if segments == ["api", "jobs"]:
+                self._send_json(
+                    HTTPStatus.OK, {"jobs": self._api_list_jobs()},
+                )
                 return
 
             # GET /api/jobs/<id>

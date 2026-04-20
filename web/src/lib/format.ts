@@ -19,6 +19,22 @@ export type TranscriptRow = {
   speakerClassName?: string;
 };
 
+export function formatJobDateTime(value: unknown): string {
+  if (typeof value !== "string" || !value.trim()) {
+    return "—";
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  const yyyy = parsed.getFullYear();
+  const mm = String(parsed.getMonth() + 1).padStart(2, "0");
+  const dd = String(parsed.getDate()).padStart(2, "0");
+  const hh = String(parsed.getHours()).padStart(2, "0");
+  const min = String(parsed.getMinutes()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
+}
+
 export function formatTimestamp(seconds: number): string {
   const safe = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
   const whole = Math.floor(safe);

@@ -97,6 +97,10 @@ export function getJob(id: string): Promise<JobSummary> {
   return requestJson<JobSummary>(`/api/jobs/${encodeURIComponent(id)}`);
 }
 
+export function getJobs(): Promise<{ jobs: JobSummary[] }> {
+  return requestJson<{ jobs: JobSummary[] }>("/api/jobs");
+}
+
 export function getTranscript(id: string): Promise<TranscriptPayload> {
   return requestJson<TranscriptPayload>(
     `/api/jobs/${encodeURIComponent(id)}/transcript`,

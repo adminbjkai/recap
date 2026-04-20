@@ -565,16 +565,26 @@ and any URL containing a `..` segment or resolving outside
 
 ### Modern web app
 
-The first React/Vite surface lives beside the legacy dashboard at:
+The React/Vite surface lives beside the legacy dashboard. Current
+routes:
 
 ```text
-/app/job/<job_id>/transcript
+/app/                            (jobs index)
+/app/job/<job_id>/transcript     (transcript workspace)
 ```
 
-It is a modern transcript workspace: native video playback, active-row
-sync, speaker-colored rows, a speaker legend, and inline speaker-name
-renaming. The rename feature writes a small per-job
-`speaker_names.json` overlay:
+The jobs index calls `GET /api/jobs` and renders one `JobCard` per job
+with a status badge, artifact chips, formatted created/updated times,
+and quick links into the transcript workspace, the legacy detail page,
+and the HTML report (when present). A search input filters by filename
+or job id, and a status pill row filters by completed / running /
+failed / pending. Malformed `job.json` entries are skipped by the
+backend so the frontend never has to guard each card.
+
+The transcript workspace is a modern video + transcript surface:
+native video playback, active-row sync, speaker-colored rows, a
+speaker legend, and inline speaker-name renaming. The rename feature
+writes a small per-job `speaker_names.json` overlay:
 
 ```json
 {
@@ -617,10 +627,22 @@ cd ..
 ```
 
 The Python server then serves `web/dist/` from `/app/*` with SPA
-fallback routing. This slice does not port `/`, `/new`, job detail, or
-rich-report progress to React yet; the old HTML routes stay live.
+fallback routing. The React slices so far port the jobs index (`/`)
+and the transcript workspace (`/job/<id>/transcript`); job detail,
+`/new`, and rich-report progress still use the legacy HTML routes.
 No Tailwind, Zustand, Playwright, auth, remote binding, or exporter
-integration is included in this first React slice.
+integration is included yet.
+
+The JSON API surface is:
+
+```text
+GET  /api/csrf                       token for state-changing POSTs
+GET  /api/jobs                       jobs index listing
+GET  /api/jobs/<id>                  single-job summary
+GET  /api/jobs/<id>/transcript       raw transcript.json
+GET  /api/jobs/<id>/speaker-names    current speaker-names overlay
+POST /api/jobs/<id>/speaker-names    update overlay (CSRF, Host-pinned)
+```
 
 ### Start a new job from the browser
 
@@ -892,7 +914,8 @@ The JSON API has its own stdlib verifier:
 ```
 
 It starts `recap ui` against a scratch copy of the fixture and checks
-`/api/csrf`, `/api/jobs/<id>`, `/api/jobs/<id>/transcript`, and
+`/api/csrf`, `/api/jobs` (listing + malformed-entry skip),
+`/api/jobs/<id>`, `/api/jobs/<id>/transcript`, and
 `/api/jobs/<id>/speaker-names`, including CSRF rejection, forged-host
 rejection, malformed overlay fallback, key-shape validation, length
 validation, successful atomic writes, and clearing a speaker-name
@@ -908,9 +931,12 @@ npm test -- --run
 ```
 
 `npm run build` type-checks the TypeScript app and emits `web/dist/`
-for Python to serve under `/app/*`. The Vitest suite currently covers
-the speaker rename form. `npm audit --audit-level=moderate` should
-remain clean; runtime dependencies are intentionally small.
+for Python to serve under `/app/*`. The React routes currently are
+`/app/` (jobs index) and `/app/job/<id>/transcript` (transcript
+workspace). The Vitest suite covers the speaker rename form, the
+jobs-index page (search + status filter), and the job card.
+`npm audit --audit-level=moderate` should remain clean; runtime
+dependencies are intentionally small.
 
 ### Cloud transcription (Deepgram)
 

@@ -815,17 +815,22 @@ Primary `GET` routes:
   attempt returns 404.
 - `GET /api/csrf` — returns the server CSRF token as JSON for the
   React app.
-- `GET /api/jobs/<job_id>` — returns a job summary, artifact flags,
-  and canonical URLs for `analysis.mp4`, transcript JSON, and
-  speaker names.
+- `GET /api/jobs` — returns the jobs index listing as
+  `{"jobs": [summary, ...]}`, sorted by `created_at` descending.
+  Malformed `job.json` entries are silently dropped so the frontend
+  always receives parseable summaries.
+- `GET /api/jobs/<job_id>` — returns a single job summary. Summaries
+  include artifact flags and canonical URLs for `analysis.mp4`,
+  transcript JSON, speaker names, the legacy detail/transcript pages,
+  the React transcript workspace, and the three report formats.
 - `GET /api/jobs/<job_id>/transcript` — returns the raw
   `transcript.json` payload as JSON.
 - `GET /api/jobs/<job_id>/speaker-names` — returns
   `speaker_names.json` or the empty default document when absent or
   malformed.
 - `GET /app/*` — serves `web/dist` assets when present, otherwise
-  falls back to `web/dist/index.html` so React Router owns
-  `/app/job/<id>/transcript`.
+  falls back to `web/dist/index.html` so React Router owns `/` (jobs
+  index) and `/job/<id>/transcript` (transcript workspace).
 - Anything else returns 404 with a tiny HTML error body.
 
 Path safety: the jobs root is resolved once at startup; URLs with
@@ -858,17 +863,25 @@ integration in this slice. Cache-Control is `no-store` on dynamic
 responses so reloads always reflect current disk state. `Ctrl-C`
 calls `server.server_close()` and exits 0 cleanly.
 
-The first React page is `/app/job/<id>/transcript`. It fetches the
-job summary, transcript payload, and speaker-name overlay from
-`/api/*`; renders native video from `/job/<id>/analysis.mp4`; mirrors
-the legacy active-row sync in `useActiveRow`; renders speaker-colored
-rows and a legend; and lets the user rename speakers inline. The
-frontend fetch layer lazily calls `GET /api/csrf`, sends the token in
-`X-Recap-Token` on save, and refreshes once on a 403 before surfacing
-an error. The component test suite currently covers
-`SpeakerRenameForm`; `scripts/verify_api.py` covers the API contract
-against a scratch fixture and must remain green alongside
-`scripts/verify_ui.py`.
+The React surface currently has two pages. `/app/` is a jobs index
+page that fetches `GET /api/jobs`, renders one `JobCard` per job with
+a status badge, artifact chips, formatted created/updated times, and
+links into the transcript workspace, the legacy detail page, and the
+HTML report when present. It supports a client-side search (filename
+or job id) and a status pill row (all / completed / running / failed /
+pending). `AppShell` wraps both routes with a sticky top bar that
+links to the legacy dashboard and `/new`. The transcript workspace
+lives at `/app/job/<id>/transcript`: it fetches the job summary,
+transcript payload, and speaker-name overlay from `/api/*`; renders
+native video from `/job/<id>/analysis.mp4`; mirrors the legacy
+active-row sync in `useActiveRow`; renders speaker-colored rows and a
+legend; and lets the user rename speakers inline. The frontend fetch
+layer lazily calls `GET /api/csrf`, sends the token in `X-Recap-Token`
+on save, and refreshes once on a 403 before surfacing an error. The
+component test suite covers `SpeakerRenameForm`, `JobCard`, and
+`JobsIndexPage` (including search and status filtering);
+`scripts/verify_api.py` covers the API contract against a scratch
+fixture and must remain green alongside `scripts/verify_ui.py`.
 
 The per-job detail page additionally renders two read-only sections
 introduced in a follow-up slice. **Errors**, hoisted to the top of
