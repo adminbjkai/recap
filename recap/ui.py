@@ -574,6 +574,17 @@ _API_SPEAKER_KEY_RE = re.compile(r"^\d+$")
 _API_SPEAKER_NAME_MAX_LEN = 80
 _API_POST_BODY_MAX = 8192
 
+# Keys in chapter_titles.json are 1-based integer strings matching
+# chapter_candidates.json's `index` field. Values are user-editable
+# display titles, bounded at 120 chars so exporters don't overflow
+# report layouts and the React sidebar stays tidy.
+_API_CHAPTER_TITLE_KEY_RE = re.compile(r"^\d+$")
+_API_CHAPTER_TITLE_MAX_LEN = 120
+# Soft cap on how many generated summary characters we expose in the
+# chapter-list API. Covers both chapter_candidates.text excerpts and
+# insights chapter summaries.
+_API_CHAPTER_SUMMARY_PREVIEW_CHARS = 800
+
 # Maximum bytes accepted by POST /api/recordings. 2 GiB matches the
 # upper bound for a reasonable one-sitting browser screen recording and
 # keeps resource usage bounded per request. The value is streamed to
@@ -692,6 +703,271 @@ def _write_speaker_names(paths: JobPaths, speakers: dict[str, str]) -> dict:
     return doc
 
 
+def _load_chapter_titles(
+    paths: JobPaths, logger_stream: IO | None = None,
+) -> dict:
+    """Read the chapter_titles.json overlay, or return the empty default.
+
+    Malformed files are logged once and reported as the empty default
+    so the transcript workspace and exporters never break on a bad
+    overlay. Mirrors the ``speaker_names.json`` read-side policy.
+    """
+    default = {"version": 1, "updated_at": None, "titles": {}}
+    path = paths.chapter_titles_json
+    if not path.is_file():
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as e:
+        if logger_stream is not None:
+            logger_stream.write(
+                f"[recap-ui] chapter-titles skipped: {e}\n"
+            )
+            logger_stream.flush()
+        return default
+    if not isinstance(data, dict):
+        if logger_stream is not None:
+            logger_stream.write(
+                "[recap-ui] chapter-titles skipped: "
+                "top-level not an object\n"
+            )
+            logger_stream.flush()
+        return default
+    titles_raw = data.get("titles") or {}
+    if not isinstance(titles_raw, dict):
+        if logger_stream is not None:
+            logger_stream.write(
+                "[recap-ui] chapter-titles skipped: "
+                "'titles' not an object\n"
+            )
+            logger_stream.flush()
+        return default
+    clean: dict[str, str] = {}
+    for k, v in titles_raw.items():
+        if not isinstance(k, str) or not _API_CHAPTER_TITLE_KEY_RE.match(k):
+            continue
+        if not isinstance(v, str):
+            continue
+        label = v.strip()
+        if not label:
+            continue
+        if len(label) > _API_CHAPTER_TITLE_MAX_LEN:
+            continue
+        if _speaker_name_contains_control(label):
+            continue
+        clean[k] = label
+    updated_at = data.get("updated_at")
+    if not isinstance(updated_at, (str, type(None))):
+        updated_at = None
+    return {"version": 1, "updated_at": updated_at, "titles": clean}
+
+
+def _write_chapter_titles(
+    paths: JobPaths, titles: dict[str, str],
+) -> dict:
+    """Atomic write of chapter_titles.json and return the stored doc."""
+    doc = {
+        "version": 1,
+        "updated_at": _now_iso(),
+        "titles": dict(titles),
+    }
+    tmp = paths.chapter_titles_json.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(doc, f, indent=2, sort_keys=True)
+        f.write("\n")
+    tmp.replace(paths.chapter_titles_json)
+    return doc
+
+
+def _fallback_title_from_text(text: str, chapter_index: int) -> str:
+    """Derive a short human-ish title from a chapter's transcript text.
+
+    Takes the first sentence (up to ~60 chars) of the collapsed text;
+    falls back to ``"Chapter N"`` when the text is empty.
+    """
+    cleaned = collapse_whitespace(text or "")
+    if not cleaned:
+        return f"Chapter {chapter_index}"
+    # Split on sentence terminators, keep the first non-empty piece.
+    snippet = re.split(r"(?<=[.!?])\s+", cleaned, maxsplit=1)[0]
+    if len(snippet) > 60:
+        snippet = snippet[:59].rstrip() + "…"
+    return snippet or f"Chapter {chapter_index}"
+
+
+def _build_chapter_list(
+    job_dir: Path,
+    logger_stream: IO | None = None,
+) -> dict:
+    """Merge chapter_candidates.json / insights.json / chapter_titles.json.
+
+    Preference order for per-chapter data:
+    - Timing (``start_seconds`` / ``end_seconds``) and ``index`` come
+      from ``chapter_candidates.json`` when it exists and validates;
+      otherwise they come from ``insights.json``.
+    - ``fallback_title`` uses the insights-provided chapter title when
+      present, otherwise the first sentence of the transcript text, and
+      finally ``"Chapter N"``.
+    - ``custom_title`` is the value in ``chapter_titles.json`` for that
+      ``index`` (string) when non-empty; absent otherwise.
+    - ``display_title`` is ``custom_title or fallback_title``.
+    - ``summary`` / ``bullets`` / ``action_items`` / ``speaker_focus``
+      come from ``insights.json`` when it exposes that chapter.
+
+    Malformed upstream artifacts degrade to an empty chapter list — the
+    transcript workspace still renders, it just has no sidebar.
+    """
+    cand_path = job_dir / "chapter_candidates.json"
+    insights_path = job_dir / "insights.json"
+
+    cand_by_index: dict[int, dict] = {}
+    if cand_path.is_file():
+        try:
+            with open(cand_path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            # validate_chapter_candidates enforces shape; we still want
+            # the full entry (with start/end) so we index ourselves
+            # after validation.
+            validate_chapter_candidates(raw)
+            for ch in (raw.get("chapters") or []):
+                idx = ch.get("index")
+                if isinstance(idx, int) and not isinstance(idx, bool):
+                    cand_by_index[idx] = ch
+        except (OSError, ValueError, RuntimeError) as e:
+            if logger_stream is not None:
+                logger_stream.write(
+                    f"[recap-ui] chapters list: "
+                    f"chapter_candidates.json skipped: {e}\n"
+                )
+                logger_stream.flush()
+            cand_by_index = {}
+
+    insights_by_index: dict[int, dict] = {}
+    insights_sources: dict[str, object] | None = None
+    if insights_path.is_file():
+        try:
+            with open(insights_path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            if isinstance(raw, dict):
+                if isinstance(raw.get("sources"), dict):
+                    insights_sources = raw["sources"]
+                for ch in (raw.get("chapters") or []):
+                    if not isinstance(ch, dict):
+                        continue
+                    idx = ch.get("index")
+                    if isinstance(idx, int) and not isinstance(idx, bool):
+                        insights_by_index[idx] = ch
+        except (OSError, ValueError) as e:
+            if logger_stream is not None:
+                logger_stream.write(
+                    f"[recap-ui] chapters list: "
+                    f"insights.json skipped: {e}\n"
+                )
+                logger_stream.flush()
+            insights_by_index = {}
+            insights_sources = None
+
+    # Merge indices from whichever source(s) we have. No duplicates.
+    all_indices = sorted(
+        set(cand_by_index.keys()) | set(insights_by_index.keys())
+    )
+
+    overlay = _load_chapter_titles(
+        JobPaths(root=job_dir), logger_stream=logger_stream,
+    )
+    overlay_titles: dict[str, str] = overlay.get("titles") or {}
+
+    chapters: list[dict] = []
+    for idx in all_indices:
+        cand = cand_by_index.get(idx) or {}
+        ins = insights_by_index.get(idx) or {}
+
+        start = cand.get("start_seconds")
+        end = cand.get("end_seconds")
+        # Insights chapters carry timing too; fall back when candidates
+        # is missing.
+        if not isinstance(start, (int, float)):
+            maybe = ins.get("start_seconds")
+            if isinstance(maybe, (int, float)):
+                start = float(maybe)
+        if not isinstance(end, (int, float)):
+            maybe = ins.get("end_seconds")
+            if isinstance(maybe, (int, float)):
+                end = float(maybe)
+
+        ins_title = ins.get("title") if isinstance(ins.get("title"), str) else None
+        text_raw = cand.get("text") if isinstance(cand.get("text"), str) else ""
+        fallback_title = (
+            ins_title.strip()
+            if isinstance(ins_title, str) and ins_title.strip()
+            else _fallback_title_from_text(text_raw, idx)
+        )
+
+        custom_raw = overlay_titles.get(str(idx))
+        custom_title = (
+            custom_raw.strip()
+            if isinstance(custom_raw, str) and custom_raw.strip()
+            else None
+        )
+        display_title = custom_title or fallback_title
+
+        summary = None
+        maybe_summary = ins.get("summary")
+        if isinstance(maybe_summary, str) and maybe_summary.strip():
+            summary = maybe_summary.strip()
+            if len(summary) > _API_CHAPTER_SUMMARY_PREVIEW_CHARS:
+                summary = summary[:_API_CHAPTER_SUMMARY_PREVIEW_CHARS - 1] + "…"
+
+        bullets: list[str] = []
+        for b in ins.get("bullets") or []:
+            if isinstance(b, str) and b.strip():
+                bullets.append(b.strip())
+
+        action_items: list[str] = []
+        for a in ins.get("action_items") or []:
+            if isinstance(a, str) and a.strip():
+                action_items.append(a.strip())
+
+        speaker_focus: list[str] = []
+        for s in ins.get("speaker_focus") or []:
+            if isinstance(s, str) and s.strip():
+                speaker_focus.append(s.strip())
+
+        entry: dict[str, object] = {
+            "index": idx,
+            "start_seconds": (
+                float(start) if isinstance(start, (int, float)) else None
+            ),
+            "end_seconds": (
+                float(end) if isinstance(end, (int, float)) else None
+            ),
+            "fallback_title": fallback_title,
+            "custom_title": custom_title,
+            "display_title": display_title,
+        }
+        if summary is not None:
+            entry["summary"] = summary
+        if bullets:
+            entry["bullets"] = bullets
+        if action_items:
+            entry["action_items"] = action_items
+        if speaker_focus:
+            entry["speaker_focus"] = speaker_focus
+        chapters.append(entry)
+
+    return {
+        "chapters": chapters,
+        "sources": {
+            "chapter_candidates": cand_path.is_file(),
+            "insights": insights_path.is_file(),
+            "chapter_titles_overlay": bool(overlay_titles),
+            "insights_sources": insights_sources,
+        },
+        "overlay": overlay,
+    }
+
+
 def _any_stage_running(job_data: dict) -> bool:
     if (job_data.get("status") or "") == "running":
         return True
@@ -770,6 +1046,7 @@ _JOB_ROOT_FILES: frozenset[str] = frozenset({
     "analysis.mp4",
     "speaker_names.json",
     "insights.json",
+    "chapter_titles.json",
 })
 
 _CANDIDATE_FRAME_EXTS: frozenset[str] = frozenset({".jpg", ".jpeg", ".png"})
@@ -835,6 +1112,7 @@ _ARTIFACT_LABELS: dict[str, str] = {
     "scenes.json": "Scene boundaries",
     "speaker_names.json": "Speaker names",
     "insights.json": "Structured insights",
+    "chapter_titles.json": "Chapter titles (overlay)",
 }
 
 
@@ -2204,6 +2482,9 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                     job_dir / "speaker_names.json"
                 ).is_file(),
                 "insights_json": (job_dir / "insights.json").is_file(),
+                "chapter_titles_json": (
+                    job_dir / "chapter_titles.json"
+                ).is_file(),
             }
             urls = {
                 "analysis_mp4": f"/job/{job_id}/analysis.mp4",
@@ -2220,6 +2501,11 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                 "report_docx": f"/job/{job_id}/report.docx",
                 "insights_json": f"/job/{job_id}/insights.json",
                 "insights": f"/api/jobs/{job_id}/insights",
+                "chapters": f"/api/jobs/{job_id}/chapters",
+                "chapter_titles": f"/api/jobs/{job_id}/chapter-titles",
+                "chapter_titles_json": (
+                    f"/job/{job_id}/chapter_titles.json"
+                ),
             }
             return {
                 "job_id": data.get("job_id") or job_id,
@@ -2428,6 +2714,56 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                     return
                 paths = JobPaths(root=job_dir)
                 doc = _load_speaker_names(
+                    paths,
+                    logger_stream=getattr(
+                        self.server, "logger_stream", None,
+                    ),
+                )
+                self._send_json(HTTPStatus.OK, doc)
+                return
+
+            # GET /api/jobs/<id>/chapters — merged view (candidates +
+            # insights + chapter-titles overlay). Never generates.
+            if (
+                len(segments) == 4
+                and segments[0] == "api"
+                and segments[1] == "jobs"
+                and segments[3] == "chapters"
+            ):
+                job_id = segments[2]
+                job_dir = _safe_job_dir(root_resolved, job_id)
+                if job_dir is None:
+                    self._send_json(
+                        HTTPStatus.NOT_FOUND,
+                        {"error": "job not found", "reason": "no-such-job"},
+                    )
+                    return
+                payload = _build_chapter_list(
+                    job_dir,
+                    logger_stream=getattr(
+                        self.server, "logger_stream", None,
+                    ),
+                )
+                self._send_json(HTTPStatus.OK, payload)
+                return
+
+            # GET /api/jobs/<id>/chapter-titles — overlay read.
+            if (
+                len(segments) == 4
+                and segments[0] == "api"
+                and segments[1] == "jobs"
+                and segments[3] == "chapter-titles"
+            ):
+                job_id = segments[2]
+                job_dir = _safe_job_dir(root_resolved, job_id)
+                if job_dir is None:
+                    self._send_json(
+                        HTTPStatus.NOT_FOUND,
+                        {"error": "job not found", "reason": "no-such-job"},
+                    )
+                    return
+                paths = JobPaths(root=job_dir)
+                doc = _load_chapter_titles(
                     paths,
                     logger_stream=getattr(
                         self.server, "logger_stream", None,
@@ -3190,6 +3526,181 @@ def _make_handler(jobs_root: Path, sources_root: Path):
             try:
                 self.server.logger_stream.write(
                     f"[recap-ui] saved speaker-names job={job_id}\n"
+                )
+                self.server.logger_stream.flush()
+            except Exception:
+                pass
+            self._send_json(HTTPStatus.OK, doc)
+
+        def _handle_api_chapter_titles_post(self, job_id: str) -> None:
+            """POST /api/jobs/<id>/chapter-titles — JSON body.
+
+            Body: ``{"titles": {"1": "Intro", "2": ""}}``. Keys must be
+            non-negative integer strings matching a
+            ``chapter_candidates.json`` ``index`` (the handler is
+            strict about shape; it does **not** try to resolve a key
+            to an actual chapter — that's a UI-side concern). Empty /
+            whitespace-only values remove that mapping.
+
+            Reuses the speaker-names safety primitives: Host pinning,
+            ``X-Recap-Token`` CSRF, ``_API_POST_BODY_MAX`` body cap,
+            per-job lock, and atomic ``<file>.tmp`` → ``os.replace``
+            write. The request body, token, and Deepgram/Groq keys are
+            never logged. Never mutates ``chapter_candidates.json`` or
+            ``insights.json``.
+            """
+            allowed_hosts = getattr(self.server, "allowed_hosts", frozenset())
+            got_host = self.headers.get("Host") or ""
+            if not allowed_hosts or not any(
+                secrets.compare_digest(got_host, allowed)
+                for allowed in allowed_hosts
+            ):
+                self._reject_api(
+                    HTTPStatus.FORBIDDEN, "host",
+                    "Host header mismatch.",
+                )
+                return
+
+            ct = (self.headers.get("Content-Type") or "").split(";")[0].strip()
+            if ct.lower() != "application/json":
+                self._reject_api(
+                    HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "content-type",
+                    "Content-Type must be application/json.",
+                )
+                return
+
+            raw_len = self.headers.get("Content-Length")
+            try:
+                content_length = int(raw_len) if raw_len is not None else -1
+            except ValueError:
+                content_length = -1
+            if content_length < 0:
+                self._reject_api(
+                    HTTPStatus.LENGTH_REQUIRED, "content-length-missing",
+                    "Content-Length is required.",
+                )
+                return
+            if content_length > _API_POST_BODY_MAX:
+                self._reject_api(
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "body-too-large",
+                    f"Request body exceeds {_API_POST_BODY_MAX} bytes.",
+                )
+                return
+
+            expected_token = getattr(self.server, "csrf_token", "") or ""
+            got_token = self.headers.get("X-Recap-Token") or ""
+            if not expected_token or not secrets.compare_digest(
+                got_token, expected_token,
+            ):
+                self._reject_api(
+                    HTTPStatus.FORBIDDEN, "csrf",
+                    "CSRF token missing or invalid.",
+                )
+                return
+
+            job_dir = _safe_job_dir(root_resolved, job_id)
+            if job_dir is None:
+                self._reject_api(
+                    HTTPStatus.NOT_FOUND, "no-such-job",
+                    "Job not found.",
+                )
+                return
+
+            raw = (
+                self.rfile.read(content_length) if content_length > 0
+                else b""
+            )
+            try:
+                parsed = json.loads(raw.decode("utf-8", "replace"))
+            except ValueError:
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "bad-json",
+                    "Body is not valid JSON.",
+                )
+                return
+            if not isinstance(parsed, dict):
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "bad-json",
+                    "Top-level JSON must be an object.",
+                )
+                return
+            titles_in = parsed.get("titles")
+            if not isinstance(titles_in, dict):
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "bad-schema",
+                    "Body must contain a 'titles' object.",
+                )
+                return
+
+            sanitized: dict[str, str] = {}
+            for k, v in titles_in.items():
+                if (
+                    not isinstance(k, str)
+                    or not _API_CHAPTER_TITLE_KEY_RE.match(k)
+                ):
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "bad-key-shape",
+                        "Chapter keys must be non-negative integer "
+                        "strings.",
+                    )
+                    return
+                if not isinstance(v, str):
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "bad-value",
+                        "Chapter titles must be strings.",
+                    )
+                    return
+                title = v.strip()
+                if not title:
+                    # Empty means "delete this mapping" — just skip it.
+                    continue
+                if len(title) > _API_CHAPTER_TITLE_MAX_LEN:
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "too-long",
+                        f"Chapter title exceeds "
+                        f"{_API_CHAPTER_TITLE_MAX_LEN} characters.",
+                    )
+                    return
+                if _speaker_name_contains_control(title):
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "bad-value",
+                        "Chapter titles must not contain control "
+                        "characters.",
+                    )
+                    return
+                sanitized[k] = title
+
+            lock = _get_job_lock(job_id)
+            if not lock.acquire(timeout=_LOCK_ACQUIRE_TIMEOUT):
+                self._reject_api(
+                    HTTPStatus.TOO_MANY_REQUESTS, "lock",
+                    "Another action is in progress for this job. "
+                    "Try again shortly.",
+                    extra_headers={"Retry-After": "2"},
+                )
+                return
+
+            try:
+                paths = JobPaths(root=job_dir)
+                try:
+                    doc = _write_chapter_titles(paths, sanitized)
+                except OSError as e:
+                    self._reject_api(
+                        HTTPStatus.INTERNAL_SERVER_ERROR, "write-failed",
+                        f"Failed to write chapter_titles.json: "
+                        f"{type(e).__name__}",
+                    )
+                    return
+            finally:
+                try:
+                    lock.release()
+                except RuntimeError:
+                    pass
+
+            try:
+                self.server.logger_stream.write(
+                    f"[recap-ui] saved chapter-titles job={job_id} "
+                    f"count={len(sanitized)}\n"
                 )
                 self.server.logger_stream.flush()
             except Exception:
@@ -4278,6 +4789,15 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                 and early_segments[3] == "speaker-names"
             ):
                 self._handle_api_speaker_names_post(early_segments[2])
+                return
+
+            if (
+                len(early_segments) == 4
+                and early_segments[0] == "api"
+                and early_segments[1] == "jobs"
+                and early_segments[3] == "chapter-titles"
+            ):
+                self._handle_api_chapter_titles_post(early_segments[2])
                 return
 
             if early_segments == ["api", "jobs", "start"]:

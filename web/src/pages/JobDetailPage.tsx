@@ -1,16 +1,24 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
+  getChapters,
   getInsights,
   getJob,
+  type ChapterListPayload,
   type InsightsLoadState,
   type JobSummary,
 } from "../lib/api";
 import { formatJobDateTime } from "../lib/format";
 import ArtifactGrid from "../components/ArtifactGrid";
+import ChaptersCard from "../components/ChaptersCard";
 import InsightsPreview from "../components/InsightsPreview";
 import RunActionsPanel from "../components/RunActionsPanel";
 import StageTimeline from "../components/StageTimeline";
+
+type ChaptersCardState =
+  | { status: "loading" }
+  | { status: "loaded"; payload: ChapterListPayload }
+  | { status: "error"; message: string };
 
 type LoadState =
   | { status: "loading" }
@@ -50,6 +58,9 @@ export default function JobDetailPage() {
   const [insightsState, setInsightsState] = useState<InsightsLoadState>({
     status: "loading",
   });
+  const [chaptersState, setChaptersState] = useState<ChaptersCardState>({
+    status: "loading",
+  });
 
   const loadJob = useCallback((jobId: string) => {
     return getJob(jobId)
@@ -61,6 +72,23 @@ export default function JobDetailPage() {
           status: "error",
           message:
             err instanceof Error ? err.message : "Could not load job.",
+        });
+      });
+  }, []);
+
+  const loadChapters = useCallback((jobId: string) => {
+    setChaptersState({ status: "loading" });
+    return getChapters(jobId)
+      .then((payload) => {
+        setChaptersState({ status: "loaded", payload });
+      })
+      .catch((err) => {
+        setChaptersState({
+          status: "error",
+          message:
+            err instanceof Error
+              ? err.message
+              : "Could not load chapters.",
         });
       });
   }, []);
@@ -103,7 +131,8 @@ export default function JobDetailPage() {
     setState({ status: "loading" });
     loadJob(id);
     loadInsights(id);
-  }, [id, loadJob, loadInsights]);
+    loadChapters(id);
+  }, [id, loadJob, loadInsights, loadChapters]);
 
   const handleRunCompleted = useCallback(
     (runType: "insights" | "rich-report") => {
@@ -114,8 +143,12 @@ export default function JobDetailPage() {
       if (runType === "insights") {
         loadInsights(id);
       }
+      // Rich-report can produce both chapter_candidates.json and
+      // (via the chain's assemble step) leave insights.json in
+      // place, both of which feed the chapter list.
+      loadChapters(id);
     },
-    [id, loadJob, loadInsights],
+    [id, loadJob, loadInsights, loadChapters],
   );
 
   const metaChips = useMemo(() => {
@@ -270,6 +303,7 @@ export default function JobDetailPage() {
             state={insightsState}
             insightsJsonUrl={insightsJsonUrl ?? undefined}
           />
+          <ChaptersCard jobId={job.job_id} state={chaptersState} />
           <RunActionsPanel
             jobId={job.job_id}
             insightsPresent={!!job.artifacts?.insights_json}

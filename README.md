@@ -689,7 +689,54 @@ POST /api/jobs/<id>/runs/insights    dispatch `recap insights` (CSRF, Host-pinne
 GET  /api/jobs/<id>/runs/insights/last      latest insights run status (JSON)
 POST /api/jobs/<id>/runs/rich-report dispatch the 11-stage chain (CSRF, Host-pinned)
 GET  /api/jobs/<id>/runs/rich-report/last   latest rich-report status (JSON)
+GET  /api/jobs/<id>/chapters         merged chapters view (candidates + insights + overlay)
+GET  /api/jobs/<id>/chapter-titles   chapter-titles overlay
+POST /api/jobs/<id>/chapter-titles   update overlay (CSRF, Host-pinned)
 ```
+
+### Chapter sidebar + editable chapter titles (slice 7)
+
+The React transcript workspace at `/app/job/<id>/transcript` renders a
+**chapter sidebar** in the left rail when chapter data is available.
+Each row shows the chapter's index, display title, and timestamp
+range, plus (when insights are present) a short summary, bullets, and
+any chapter-scoped action items. Clicking a row seeks
+`analysis.mp4` to the chapter's `start_seconds` and resumes playback.
+The active chapter highlights as the video plays using the same
+`timeupdate` / `seeking` / `play` listeners that drive active-row
+sync, and the active state uses both a left accent border and an
+`aria-current` attribute so nothing is color-only.
+
+Users rename chapters inline: clicking **Rename** on a row opens a
+text field pre-populated with the current title; pressing Enter (or
+clicking Save) writes to a new `chapter_titles.json` overlay via
+`POST /api/jobs/<id>/chapter-titles`. Clearing the field and saving
+removes the custom mapping. Escape cancels. A **custom** pill appears
+next to any chapter whose title comes from the overlay rather than
+the fallback.
+
+`GET /api/jobs/<id>/chapters` returns a merged view:
+
+- Timing (`start_seconds` / `end_seconds`) and `index` come from
+  `chapter_candidates.json` when it exists and validates, otherwise
+  from `insights.json`.
+- `fallback_title` prefers the insights-provided chapter title, then
+  the first sentence of the transcript text, then `"Chapter N"`.
+- `custom_title` is the value in `chapter_titles.json` for that
+  `index` (empty / whitespace-only values are ignored).
+- `display_title = custom_title || fallback_title`.
+- `summary` / `bullets` / `action_items` / `speaker_focus` come from
+  `insights.json` when available.
+
+The overlay follows the `speaker_names.json` policy: atomic
+`<file>.tmp` → `os.replace` write; keys are integer-string indices
+(max 120-char values, no control chars); malformed / missing overlays
+degrade silently to an empty set; and the overlay never mutates
+`chapter_candidates.json` or `insights.json`. Exporter integration
+(`recap assemble` / `export-html` / `export-docx`) is tracked as a
+follow-up — today the overlay affects the React surface only. The
+job dashboard (`/app/job/<id>`) also renders a compact chapters card
+with the first few titles and a link to the transcript workspace.
 
 ### React run actions + progress (slice 4b)
 

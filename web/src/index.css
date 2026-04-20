@@ -2263,6 +2263,290 @@ p {
 }
 
 /* ==========================================================
+ * Chapter sidebar (transcript workspace) + chapters card
+ * (dashboard)
+ * ========================================================== */
+
+.chapters-card {
+  display: grid;
+  gap: 0.7rem;
+  padding: 1rem 1.15rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-1);
+}
+
+.chapters-empty {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--ink-muted);
+}
+
+.chapters-empty-cmd {
+  margin: 0;
+  padding: 0.55rem 0.75rem;
+  background: #0e1113;
+  color: #e5e7eb;
+  font-size: var(--fs-2xs);
+  border-radius: var(--radius-sm, 6px);
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+.chapters-provenance {
+  font-size: var(--fs-2xs);
+  color: var(--ink-muted);
+  font-weight: 600;
+  padding: 0.15rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.chapter-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.chapter-row {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.55rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.6);
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.chapter-row--active {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 1px var(--brand) inset;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.chapter-row-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: baseline;
+}
+
+.chapter-seek {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.chapter-seek:disabled {
+  cursor: not-allowed;
+  color: var(--ink-muted);
+}
+
+.chapter-index {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  color: var(--ink-muted);
+  min-width: 2.2rem;
+}
+
+.chapter-row--active .chapter-index {
+  color: var(--brand);
+}
+
+.chapter-title {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.chapter-title-badge {
+  margin-left: 0.5rem;
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--brand);
+  color: var(--brand);
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.65);
+}
+
+.chapter-title-edit input {
+  font: inherit;
+  padding: 0.3rem 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 6px);
+  background: #fff;
+  min-width: 16rem;
+  max-width: 100%;
+}
+
+.chapter-range {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: var(--fs-2xs);
+  color: var(--ink-muted);
+  margin-left: auto;
+}
+
+.chapter-meta {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.chapter-rename {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  color: var(--brand);
+  cursor: pointer;
+  align-self: flex-start;
+  padding: 0;
+  text-align: left;
+}
+
+.chapter-summary {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+
+.chapter-bullets,
+.chapter-actions {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: var(--fs-2xs);
+  color: var(--ink);
+  display: grid;
+  gap: 0.15rem;
+}
+
+.chapter-actions li::before {
+  content: "→ ";
+  color: var(--brand);
+  font-weight: 700;
+}
+
+.chapter-edit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.chapter-edit-hint {
+  font-size: var(--fs-2xs);
+  color: var(--ink-muted);
+}
+
+.primary-button--sm,
+.ghost-button--sm {
+  padding: 0.3rem 0.65rem;
+  font-size: var(--fs-2xs);
+  border-radius: var(--radius-pill);
+}
+
+.chapters-hint {
+  margin: 0;
+  font-size: var(--fs-2xs);
+  color: var(--ink-muted);
+}
+
+/* Dashboard-side compact chapters card -- shares tokens but lays
+   out horizontally for the /app/job/:id layout. */
+
+.chapters-dashboard-card {
+  display: grid;
+  gap: 0.65rem;
+  padding: 1.1rem 1.2rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-1);
+}
+
+.chapters-dashboard-card .section-heading h2 {
+  margin: 0.1rem 0 0;
+  font-size: var(--fs-lg);
+}
+
+.chapters-dashboard-count {
+  margin-left: 0.5rem;
+  font-size: var(--fs-sm);
+  color: var(--ink-muted);
+  font-weight: 600;
+}
+
+.chapters-dashboard-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.2rem;
+}
+
+.chapters-dashboard-item {
+  display: flex;
+  gap: 0.75rem;
+  align-items: baseline;
+  padding: 0.25rem 0;
+}
+
+.chapters-dashboard-ts {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: var(--fs-2xs);
+  color: var(--ink-muted);
+  min-width: 3.2rem;
+}
+
+.chapters-dashboard-title {
+  flex: 1;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.chapters-dashboard-more {
+  margin: 0;
+  font-size: var(--fs-2xs);
+  color: var(--ink-muted);
+}
+
+.chapters-dashboard-actions {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.chapters-dashboard-empty p {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: var(--fs-sm);
+}
+
+.chapters-dashboard-error p {
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--fs-sm);
+}
+
+/* ==========================================================
  * Responsive layout
  * ========================================================== */
 

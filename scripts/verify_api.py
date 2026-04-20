@@ -950,6 +950,308 @@ def main() -> int:
             fail(case, f"empty value did not clear mapping: {got!r}")
         passed()
 
+        # -----------------------------------------------------------
+        # /api/jobs/<id>/chapters + /api/jobs/<id>/chapter-titles.
+        # The minimal fixture ships with transcript.json and a
+        # single-chapter chapter_candidates.json, so we temporarily
+        # move that file aside to exercise the empty baseline, then
+        # seed a richer two-chapter artifact for the main flow, and
+        # restore the original bytes at the end of the block so
+        # later tests see the fixture scratch copy unchanged.
+        # -----------------------------------------------------------
+        cand_path = job_dir / "chapter_candidates.json"
+        i_path = job_dir / "insights.json"
+        titles_path = job_dir / "chapter_titles.json"
+        fixture_cand_bytes = cand_path.read_bytes() if cand_path.exists() else None
+        if cand_path.exists():
+            cand_path.unlink()
+
+        case = "api-chapters-empty-when-no-artifacts"
+        got = get_json(case, port, "/api/jobs/minimal_job/chapters")
+        if got.get("chapters") != []:
+            fail(case, f"expected empty chapters, got: {got!r}")
+        srcs = got.get("sources") or {}
+        if srcs.get("chapter_candidates") is not False:
+            fail(case, f"chapter_candidates flag should be False: {got!r}")
+        if srcs.get("insights") is not False:
+            fail(case, f"insights flag should be False: {got!r}")
+        passed()
+
+        case = "api-chapter-titles-empty-when-absent"
+        got = get_json(
+            case, port, "/api/jobs/minimal_job/chapter-titles",
+        )
+        if got != {"version": 1, "updated_at": None, "titles": {}}:
+            fail(case, f"expected empty chapter-titles doc: {got!r}")
+        passed()
+
+        # Seed chapter_candidates.json; chapters list should reflect it.
+        cand_path.write_text(
+            json.dumps({
+                "chapter_count": 2,
+                "min_chapter_seconds": 1.0,
+                "pause_seconds": 0.5,
+                "source_signal": "pauses",
+                "transcript_source": "segments",
+                "video": {"path": "analysis.mp4"},
+                "chapters": [
+                    {
+                        "index": 1,
+                        "start_seconds": 0.0,
+                        "end_seconds": 60.0,
+                        "first_segment_id": 0,
+                        "last_segment_id": 5,
+                        "segment_ids": [0, 1, 2, 3, 4, 5],
+                        "text": (
+                            "Welcome to the call. We'll cover three "
+                            "topics today: onboarding, pricing, and "
+                            "next steps."
+                        ),
+                        "trigger": "start",
+                    },
+                    {
+                        "index": 2,
+                        "start_seconds": 60.0,
+                        "end_seconds": 120.0,
+                        "first_segment_id": 6,
+                        "last_segment_id": 12,
+                        "segment_ids": [6, 7, 8, 9, 10, 11, 12],
+                        "text": "Let's dig into onboarding first.",
+                        "trigger": "pause",
+                    },
+                ],
+            }),
+            encoding="utf-8",
+        )
+
+        case = "api-chapters-uses-candidates"
+        got = get_json(case, port, "/api/jobs/minimal_job/chapters")
+        chs = got.get("chapters") or []
+        if len(chs) != 2:
+            fail(case, f"expected 2 chapters, got {len(chs)}: {got!r}")
+        if [c.get("index") for c in chs] != [1, 2]:
+            fail(case, f"chapter order wrong: {chs!r}")
+        if chs[0].get("start_seconds") != 0.0:
+            fail(case, f"start_seconds wrong: {chs[0]!r}")
+        if chs[0].get("end_seconds") != 60.0:
+            fail(case, f"end_seconds wrong: {chs[0]!r}")
+        if not isinstance(chs[0].get("fallback_title"), str):
+            fail(case, f"fallback_title missing: {chs[0]!r}")
+        if chs[0].get("fallback_title") == "" or chs[0].get(
+            "fallback_title"
+        ) == "Chapter 1":
+            # The text starts with "Welcome to the call." — the
+            # first-sentence derivation should pick that up, not the
+            # generic fallback.
+            fail(case, f"fallback_title not derived: {chs[0]!r}")
+        if chs[0].get("custom_title") is not None:
+            fail(case, f"custom_title should be None: {chs[0]!r}")
+        if chs[0].get("display_title") != chs[0].get("fallback_title"):
+            fail(case, f"display_title should equal fallback: {chs[0]!r}")
+        passed()
+
+        # Seed insights.json — chapters should pick up summaries and
+        # when candidates are absent the chapters still render from
+        # insights alone.
+        insights_doc = {
+            "version": 1,
+            "provider": "mock",
+            "model": "mock-v1",
+            "generated_at": "2026-04-20T00:00:00Z",
+            "sources": {
+                "transcript": "transcript.json",
+                "chapters": "chapter_candidates.json",
+                "speaker_names": None,
+                "selected_frames": None,
+            },
+            "overview": {
+                "title": "Cue test",
+                "short_summary": "s",
+                "detailed_summary": "s",
+                "quick_bullets": [],
+            },
+            "chapters": [
+                {
+                    "index": 1,
+                    "start_seconds": 0.0,
+                    "end_seconds": 60.0,
+                    "title": "Intro and agenda",
+                    "summary": "Three topics were introduced.",
+                    "bullets": ["Onboarding", "Pricing"],
+                    "action_items": [],
+                    "speaker_focus": [],
+                },
+                {
+                    "index": 2,
+                    "start_seconds": 60.0,
+                    "end_seconds": 120.0,
+                    "title": "Onboarding deep-dive",
+                    "summary": "Walkthrough of onboarding steps.",
+                    "bullets": [],
+                    "action_items": ["Ship migration guide"],
+                    "speaker_focus": [],
+                },
+            ],
+            "action_items": [
+                {"text": "Ship migration guide", "chapter_index": 2},
+            ],
+        }
+        i_path.write_text(
+            json.dumps(insights_doc), encoding="utf-8",
+        )
+
+        case = "api-chapters-uses-insights-when-present"
+        got = get_json(case, port, "/api/jobs/minimal_job/chapters")
+        chs = got.get("chapters") or []
+        if chs[0].get("fallback_title") != "Intro and agenda":
+            fail(case, f"should prefer insights title: {chs[0]!r}")
+        if chs[0].get("summary") != "Three topics were introduced.":
+            fail(case, f"summary missing: {chs[0]!r}")
+        if chs[0].get("bullets") != ["Onboarding", "Pricing"]:
+            fail(case, f"bullets missing: {chs[0]!r}")
+        if chs[1].get("action_items") != ["Ship migration guide"]:
+            fail(case, f"action_items missing: {chs[1]!r}")
+        passed()
+
+        case = "api-chapters-insights-only"
+        cand_path.unlink()
+        got = get_json(case, port, "/api/jobs/minimal_job/chapters")
+        chs = got.get("chapters") or []
+        if len(chs) != 2 or chs[0].get("start_seconds") != 0.0:
+            fail(case, f"insights-only chapters wrong: {got!r}")
+        if got.get("sources", {}).get("chapter_candidates") is not False:
+            fail(case, f"chapter_candidates flag should be False: {got!r}")
+        if got.get("sources", {}).get("insights") is not True:
+            fail(case, f"insights flag should be True: {got!r}")
+        passed()
+
+        case = "api-chapter-titles-missing-csrf"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/chapter-titles",
+            {"titles": {"1": "Kickoff"}},
+        )
+        if status != 403:
+            fail(case, f"expected 403, got {status}: {got!r}")
+        expect_reason(case, got, "csrf")
+        passed()
+
+        case = "api-chapter-titles-forged-host"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/chapter-titles",
+            {"titles": {"1": "Kickoff"}},
+            token=token,
+            host_override="bogus.example:8765",
+        )
+        if status != 403:
+            fail(case, f"expected 403, got {status}: {got!r}")
+        expect_reason(case, got, "host")
+        passed()
+
+        case = "api-chapter-titles-bad-key-shape"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/chapter-titles",
+            {"titles": {"notint": "Kickoff"}},
+            token=token,
+        )
+        if status != 400:
+            fail(case, f"expected 400, got {status}: {got!r}")
+        expect_reason(case, got, "bad-key-shape")
+        passed()
+
+        case = "api-chapter-titles-too-long"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/chapter-titles",
+            {"titles": {"1": "x" * 121}},
+            token=token,
+        )
+        if status != 400:
+            fail(case, f"expected 400, got {status}: {got!r}")
+        expect_reason(case, got, "too-long")
+        passed()
+
+        case = "api-chapter-titles-control-chars"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/chapter-titles",
+            {"titles": {"1": "Kickoff\x01"}},
+            token=token,
+        )
+        if status != 400:
+            fail(case, f"expected 400, got {status}: {got!r}")
+        expect_reason(case, got, "bad-value")
+        passed()
+
+        case = "api-chapter-titles-success"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/chapter-titles",
+            {"titles": {"1": "  Kickoff  ", "2": "Onboarding"}},
+            token=token,
+        )
+        if status != 200:
+            fail(case, f"expected 200, got {status}: {got!r}")
+        if got.get("titles") != {"1": "Kickoff", "2": "Onboarding"}:
+            fail(case, f"titles round-trip wrong: {got!r}")
+        disk = json.loads(titles_path.read_text(encoding="utf-8"))
+        if disk.get("titles") != got.get("titles"):
+            fail(case, f"disk mismatch: {disk!r}")
+        passed()
+
+        case = "api-chapters-uses-custom-title"
+        got = get_json(case, port, "/api/jobs/minimal_job/chapters")
+        chs = got.get("chapters") or []
+        if chs[0].get("custom_title") != "Kickoff":
+            fail(case, f"custom_title missing: {chs[0]!r}")
+        if chs[0].get("display_title") != "Kickoff":
+            fail(case, f"display_title not custom: {chs[0]!r}")
+        if chs[0].get("fallback_title") != "Intro and agenda":
+            fail(case, f"fallback_title lost: {chs[0]!r}")
+        if got.get("sources", {}).get("chapter_titles_overlay") is not True:
+            fail(case, f"overlay flag should be True: {got!r}")
+        passed()
+
+        case = "api-chapter-titles-empty-clears"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/chapter-titles",
+            {"titles": {"1": "", "2": "Onboarding"}},
+            token=token,
+        )
+        if status != 200:
+            fail(case, f"expected 200, got {status}: {got!r}")
+        if got.get("titles") != {"2": "Onboarding"}:
+            fail(case, f"empty value did not clear: {got!r}")
+        passed()
+
+        case = "api-chapter-titles-malformed-graceful"
+        titles_path.write_text("{not json", encoding="utf-8")
+        got = get_json(
+            case, port, "/api/jobs/minimal_job/chapter-titles",
+        )
+        if got.get("titles") != {}:
+            fail(case, f"malformed overlay should degrade: {got!r}")
+        got2 = get_json(case, port, "/api/jobs/minimal_job/chapters")
+        if got2.get("chapters") and got2["chapters"][0].get(
+            "custom_title"
+        ) is not None:
+            fail(case, "malformed overlay leaked into chapters view")
+        passed()
+
+        # Teardown: remove seeded artifacts and restore the fixture's
+        # original chapter_candidates.json bytes so later tests start
+        # from the clean fixture copy.
+        i_path.unlink()
+        if titles_path.exists():
+            titles_path.unlink()
+        if cand_path.exists():
+            cand_path.unlink()
+        if fixture_cand_bytes is not None:
+            cand_path.write_bytes(fixture_cand_bytes)
+
         case = "api-insights-endpoint-404-when-absent"
         i_path = job_dir / "insights.json"
         if i_path.exists():

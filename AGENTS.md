@@ -190,26 +190,23 @@ The authoritative, versioned list lives in
 [docs/product_roadmap.md](docs/product_roadmap.md). At the time of
 this writing the next slices — in order — are:
 
-1. **Chapter sidebar + editable chapter titles** (slice 7). Sidebar
-   on `/app/job/<id>/transcript` with an active-chapter highlight;
-   inline chapter-title editing persisted as an overlay next to
-   `speaker_names.json`.
-2. **Screenshot / frame review UI** (slice 8). Inline review of
+1. **Screenshot / frame review UI** (slice 8). Inline review of
    `selected_frames.json` hero/supporting choices with keep/reject
    overrides written as an overlay.
-3. **Exporters honor overlays fully** (slice 9). `recap assemble` /
+2. **Exporters honor overlays fully** (slice 9). `recap assemble` /
    `export-html` / `export-docx` render `speaker_names.json` labels
-   and any chapter-title overlay, not fallback `Speaker N`.
-4. **Folders / projects / archive** (slice 12). Rename / move /
+   and any `chapter_titles.json` overlay titles, not the fallback
+   `Speaker N` / upstream chapter title.
+3. **Folders / projects / archive** (slice 12). Rename / move /
    archive jobs via a sidecar index file; `jobs/<id>/` layout stays
    stable.
-5. **Live progress (SSE / polling) + webhooks** (slice 13). Upgrade
+4. **Live progress (SSE / polling) + webhooks** (slice 13). Upgrade
    the 4b polling loop to a push transport when run budgets grow
    past a few minutes.
-6. **Linux self-host / deploy hardening** (slice 14). End-to-end
+5. **Linux self-host / deploy hardening** (slice 14). End-to-end
    host docs, a `systemd` unit, reverse-proxy notes covering Host
    pinning + CSRF, TLS guidance.
-7. **Single-user / reverse-proxy auth** (slice 15). Minimal auth
+6. **Single-user / reverse-proxy auth** (slice 15). Minimal auth
    surface so Recap can safely bind beyond `127.0.0.1`. Gated on
    slice 14.
 

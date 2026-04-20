@@ -28,7 +28,18 @@ does and produces, read `HANDOFF.md`.
   `GET /api/jobs/<id>/runs/rich-report/last` (dispatch the 11-stage
   chain via the shared `_background_rich_report` worker so React
   and legacy HTML share the same `(job_id, "rich-report")`
-  `_last_run` entry), and
+  `_last_run` entry),
+  `GET /api/jobs/<id>/chapters` (merged view of
+  `chapter_candidates.json` + `insights.json` + the new
+  `chapter_titles.json` overlay; `display_title = custom_title ||
+  fallback_title`; fallback_title prefers insights title, then
+  first sentence of candidate text, then `"Chapter N"`),
+  `GET /api/jobs/<id>/chapter-titles` /
+  `POST /api/jobs/<id>/chapter-titles` (overlay read + atomic write
+  — same safety primitives as `speaker_names.json`; keys are
+  integer-string indices, values trimmed and capped at 120 chars,
+  control chars rejected, empty values clear the mapping, overlay
+  never mutates `chapter_candidates.json` or `insights.json`), and
   `POST /api/recordings` (accept a browser-recorded screen clip
   streamed to `<sources-root>/recording-<UTC>-<hex>.<ext>` under a
   server-picked filename, Host-pinned, CSRF-guarded, 2 GiB cap,
@@ -96,6 +107,15 @@ does and produces, read `HANDOFF.md`.
   disk and appears in `/api/sources`, a Content-Disposition
   traversal attempt that's ignored by the server-picked filename,
   and a short-body case → 400),
+  `/api/jobs/<id>/chapters` (empty baseline, candidates-only,
+  insights-only, merged candidates + insights + custom-title
+  overlay, malformed overlay graceful-fallback) and
+  `/api/jobs/<id>/chapter-titles` (missing CSRF → 403, forged
+  Host → 403, bad-key-shape → 400, too-long → 400, control chars
+  → 400, success with trim + round-trip + `/api/jobs/:id/chapters`
+  uses the stored custom_title, empty-value → removes mapping,
+  malformed overlay graceful-fallback) —
+  13 new checks total,
   `/api/jobs/<id>/runs/insights` (missing CSRF → 403, invalid
   provider → 400, Groq-without-key → 400, no-such-job → 404, mock
   dispatch → 202 + status→success via the `RECAP_API_STUB_RUN=1`
@@ -126,7 +146,12 @@ does and produces, read `HANDOFF.md`.
   insights CTA label, insights dispatch + CSRF header assertion +
   onRunCompleted callback, insights error render, failed-insights
   bounded stderr panel, rich-report ordered stage list, failed
-  rich-report stage panel), and `RecordingPanel` (unsupported browser, ready →
+  rich-report stage panel), `ChapterSidebar` (empty state, active-
+  state aria-current and custom pill, onSeek callback, rename flow
+  posting trimmed title via `saveChapterTitles`, save-error inline
+  render, Escape-to-cancel), plus a `saveChapterTitles` unit test
+  that asserts the `X-Recap-Token` header is attached, and
+  `RecordingPanel` (unsupported browser, ready →
   recording → preview transitions with a fake MediaRecorder +
   getDisplayMedia, upload-success → saved state with CSRF header
   assertions, error state on API failure, permission-denied error

@@ -217,6 +217,36 @@ export type TranscriptPayload = {
   [key: string]: unknown;
 };
 
+export type ChapterEntry = {
+  index: number;
+  start_seconds: number | null;
+  end_seconds: number | null;
+  fallback_title: string;
+  custom_title: string | null;
+  display_title: string;
+  summary?: string;
+  bullets?: string[];
+  action_items?: string[];
+  speaker_focus?: string[];
+};
+
+export type ChapterListPayload = {
+  chapters: ChapterEntry[];
+  sources: {
+    chapter_candidates: boolean;
+    insights: boolean;
+    chapter_titles_overlay: boolean;
+    insights_sources?: Record<string, unknown> | null;
+  };
+  overlay: ChapterTitlesDoc;
+};
+
+export type ChapterTitlesDoc = {
+  version: 1;
+  updated_at: string | null;
+  titles: Record<string, string>;
+};
+
 export type SpeakerNamesDoc = {
   version: 1;
   updated_at: string | null;
@@ -506,6 +536,62 @@ export async function startRichReportRun(
     kind: "accepted",
     response: parsed as StartRichReportResponse,
   };
+}
+
+export function getChapters(id: string): Promise<ChapterListPayload> {
+  return requestJson<ChapterListPayload>(
+    `/api/jobs/${encodeURIComponent(id)}/chapters`,
+  );
+}
+
+export function getChapterTitles(
+  id: string,
+): Promise<ChapterTitlesDoc> {
+  return requestJson<ChapterTitlesDoc>(
+    `/api/jobs/${encodeURIComponent(id)}/chapter-titles`,
+  );
+}
+
+async function postChapterTitles(
+  id: string,
+  titles: Record<string, string>,
+  token: string,
+): Promise<Response> {
+  return fetch(
+    `/api/jobs/${encodeURIComponent(id)}/chapter-titles`,
+    {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-Recap-Token": token,
+      },
+      body: JSON.stringify({ titles }),
+    },
+  );
+}
+
+export async function saveChapterTitles(
+  id: string,
+  titles: Record<string, string>,
+): Promise<ChapterTitlesDoc> {
+  let token = await getCsrf();
+  let response = await postChapterTitles(id, titles, token);
+  if (response.status === 403) {
+    token = await getCsrf(true);
+    response = await postChapterTitles(id, titles, token);
+  }
+  const body = await parseJson<ChapterTitlesDoc | ApiErrorBody>(
+    response,
+  );
+  if (!response.ok) {
+    const apiBody = body as ApiErrorBody;
+    throw new Error(
+      apiBody.error || `${response.status} ${response.statusText}`,
+    );
+  }
+  return body as ChapterTitlesDoc;
 }
 
 export function getSpeakerNames(id: string): Promise<SpeakerNamesDoc> {

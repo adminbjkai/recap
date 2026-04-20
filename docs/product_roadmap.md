@@ -220,17 +220,39 @@ a handful of minutes.
 - Streaming / polling progress UI while `recap run` executes (still
   tracked as slice 4b).
 
-## 7. Chapter sidebar + editable chapter titles
+## 7. Chapter sidebar + editable chapter titles — **done**
 
-- Sidebar on `/app/job/<id>/transcript` that lists chapters with an
-  active-chapter highlight tied to playback time.
-- Inline chapter-title editing; edits persist as an overlay alongside
-  `speaker_names.json` so `chapter_candidates.json` and
-  `insights.json` stay immutable.
-- Jump-to-chapter in the player.
-- API: extend the existing `speaker-names`-style overlay pattern.
-  Host-pinned + CSRF-guarded POST; read endpoint falls back to the
-  empty overlay when absent/malformed.
+**Shipped in:**
+- `Add editable chapter navigation`
+
+**What it gives users:**
+- A chapter sidebar on `/app/job/<id>/transcript` (left rail) that
+  lists chapters with index, display title, timestamp range, and
+  (when insights are present) summary / bullets / action items.
+  Clicking a row seeks `analysis.mp4` to `start_seconds` and
+  resumes playback. Active chapter highlights as the video plays
+  via the existing `timeupdate` / `seeking` / `play` listeners, with
+  both an accent border and `aria-current="true"` so the cue is not
+  color-only.
+- Inline chapter-title editing with Enter-saves, Escape-cancels,
+  empty-clears. Custom titles persist to a new
+  `chapter_titles.json` overlay next to `speaker_names.json`.
+- Compact chapters card on `/app/job/<id>` showing the first few
+  titles, a custom-title count, and a link to the workspace.
+- New `GET /api/jobs/<id>/chapters` merged view (candidates +
+  insights + overlay), `GET /api/jobs/<id>/chapter-titles`, and
+  `POST /api/jobs/<id>/chapter-titles`. POST reuses Host pinning +
+  CSRF + body cap + per-job lock + atomic write from the speaker-
+  names overlay pattern.
+- `display_title = custom_title || fallback_title`; `fallback_title`
+  prefers the insights-provided chapter title, then the first
+  sentence of `chapter_candidates.text`, then `"Chapter N"`.
+
+**Deferred to slice 9 (already tracked):** exporters
+(`recap assemble` / `export-html` / `export-docx`) reading
+`chapter_titles.json`. Today the overlay only affects the React
+surface; exports still render the upstream / fallback title. This
+is kept separate to avoid report byte-compat regressions.
 
 ## 8. Screenshot / frame review UI
 

@@ -832,6 +832,27 @@ Primary `GET` routes:
   section and enrich the existing `## Chapters` rendering with titles,
   summaries, bullets, action items, and speaker focus. When absent,
   exports stay byte-compatible with prior behavior.
+- The React transcript workspace at `/app/job/<id>/transcript`
+  renders a **chapter sidebar** (`ChapterSidebar`) in the left rail
+  when the merged chapter list from `GET /api/jobs/<id>/chapters`
+  is non-empty. Each row shows the index, display title (with a
+  `custom` pill when the title comes from the overlay), timestamp
+  range, and (when insights are present) a short summary, bullets,
+  and action items. Clicking a row calls `video.currentTime =
+  chapter.start_seconds` and issues `video.play()`. Active-chapter
+  highlight mirrors the existing active-row sync: a `timeupdate` /
+  `seeking` / `play` listener walks the chapter list to find the
+  chapter containing the current time, and the active row carries
+  both an accent border and `aria-current="true"` so the cue is not
+  color-only. Renaming a chapter opens an inline input
+  pre-populated with the current title; Enter / Save writes to
+  `POST /api/jobs/<id>/chapter-titles`; clearing the field removes
+  the custom mapping; Escape cancels. A compact `ChaptersCard`
+  preview on the React dashboard (`/app/job/<id>`) shows the first
+  five titles, a "custom title" count, and a link to the transcript
+  workspace. `RunActionsPanel`'s completion callback now also
+  refreshes the chapter list so a freshly-run rich-report or
+  insights run is reflected in the sidebar without a page reload.
 - The React `/app/job/<id>` dashboard now hosts a **Generate &
   enrich** panel (`RunActionsPanel`) that drives the two new run-
   dispatch endpoints. It renders the latest insights / rich-report
@@ -914,6 +935,42 @@ Primary `GET` routes:
   every validation step but skips the real `recap ingest` +
   `recap run` dispatch so CI can prove routing without running heavy
   transcription. The legacy `POST /run` form remains unchanged.
+- `GET /api/jobs/<id>/chapters` — merged chapter-list view. Combines
+  `chapter_candidates.json` (timing + transcript text), `insights.json`
+  (title + summary + bullets + action_items + speaker_focus), and the
+  new `chapter_titles.json` overlay (custom_title override). Response
+  shape:
+  `{chapters: [{index, start_seconds, end_seconds, fallback_title,
+  custom_title, display_title, summary?, bullets?, action_items?,
+  speaker_focus?}, ...], sources: {chapter_candidates, insights,
+  chapter_titles_overlay, insights_sources}, overlay: {...}}`. Never
+  generates; purely a read-merge. When neither `chapter_candidates.json`
+  nor `insights.json` is present, `chapters` is an empty list. Malformed
+  upstream artifacts log a single `[recap-ui] chapters list: <file>
+  skipped: ...` line and degrade to an empty list rather than erroring.
+  `fallback_title` prefers the insights-provided chapter title, then
+  the first sentence of `chapter_candidates.text` (truncated to ~60
+  chars), then the generic `"Chapter N"`.
+- `GET /api/jobs/<id>/chapter-titles` — returns
+  `{version: 1, updated_at: string|null, titles: {index-string:
+  title, ...}}`. Returns the empty default when the file is absent
+  or malformed; mirrors the `speaker_names.json` read-side policy.
+- `POST /api/jobs/<id>/chapter-titles` — update the overlay. Reuses
+  the speaker-names safety primitives: Host pinning, `X-Recap-Token`
+  CSRF, `_API_POST_BODY_MAX` body cap, per-job lock, and atomic
+  `<file>.tmp` → `os.replace` write. Body shape
+  `{"titles": {"1": "Intro", "2": ""}}`. Keys must be non-negative
+  integer strings; empty / whitespace-only values remove the mapping;
+  values are trimmed, bounded at 120 chars
+  (`_API_CHAPTER_TITLE_MAX_LEN`), and rejected when they contain
+  control chars except tab. Reasons drawn from
+  `{host, content-type, content-length-missing, body-too-large,
+  csrf, no-such-job, bad-json, bad-schema, bad-key-shape, bad-value,
+  too-long, write-failed, lock}`. The overlay **never** mutates
+  `chapter_candidates.json` or `insights.json`. Exporter integration
+  (`recap assemble` / `export-html` / `export-docx` reading the
+  overlay) is a deferred follow-up — today the overlay only affects
+  the React surface.
 - `POST /api/jobs/<id>/runs/insights` — dispatch `recap insights`.
   Body: `{"provider": "mock" | "groq", "force": true | false}` (both
   keys optional; provider defaults to `mock`, force to `false`).

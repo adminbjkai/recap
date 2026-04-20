@@ -1,16 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
+  getChapters,
   getJob,
   getSpeakerNames,
   getTranscript,
+  saveChapterTitles,
   saveSpeakerNames,
+  type ChapterEntry,
+  type ChapterListPayload,
   type JobSummary,
   type SpeakerNamesDoc,
   type TranscriptPayload,
 } from "../lib/api";
 import { attachSpeakers, buildTranscriptRows } from "../lib/format";
 import { computeTranscriptMatches } from "../lib/search";
+import ChapterSidebar from "../components/ChapterSidebar";
 import SpeakerLegend from "../components/SpeakerLegend";
 import TranscriptSearchBar from "../components/TranscriptSearchBar";
 import TranscriptTable from "../components/TranscriptTable";
@@ -23,8 +28,26 @@ type LoadState =
       job: JobSummary;
       transcript: TranscriptPayload;
       names: SpeakerNamesDoc;
+      chapters: ChapterListPayload;
     }
   | { status: "error"; message: string };
+
+function findActiveChapterIndex(
+  chapters: ChapterEntry[],
+  t: number,
+): number | null {
+  if (!Number.isFinite(t) || chapters.length === 0) return null;
+  let active: number | null = null;
+  for (const ch of chapters) {
+    if (typeof ch.start_seconds !== "number") continue;
+    if (t + 0.0001 < ch.start_seconds) break;
+    active = ch.index;
+    if (typeof ch.end_seconds === "number" && t < ch.end_seconds) {
+      break;
+    }
+  }
+  return active;
+}
 
 export default function TranscriptWorkspacePage() {
   const { id } = useParams();
@@ -38,6 +61,12 @@ export default function TranscriptWorkspacePage() {
   const [hiddenSpeakers, setHiddenSpeakers] = useState<Set<string>>(
     () => new Set(),
   );
+  const [activeChapterIndex, setActiveChapterIndex] = useState<
+    number | null
+  >(null);
+  const [chapterSaveError, setChapterSaveError] = useState<string | null>(
+    null,
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -47,10 +76,21 @@ export default function TranscriptWorkspacePage() {
     }
 
     setState({ status: "loading" });
-    Promise.all([getJob(id), getTranscript(id), getSpeakerNames(id)])
-      .then(([job, transcript, names]) => {
+    Promise.all([
+      getJob(id),
+      getTranscript(id),
+      getSpeakerNames(id),
+      getChapters(id),
+    ])
+      .then(([job, transcript, names, chapters]) => {
         if (!cancelled) {
-          setState({ status: "loaded", job, transcript, names });
+          setState({
+            status: "loaded",
+            job,
+            transcript,
+            names,
+            chapters,
+          });
         }
       })
       .catch((err) => {
@@ -112,6 +152,83 @@ export default function TranscriptWorkspacePage() {
     setSavedPulse(true);
     window.setTimeout(() => setSavedPulse(false), 2200);
   };
+
+  const handleSeekChapter = useCallback((chapter: ChapterEntry) => {
+    const v = videoRef.current;
+    if (!v || typeof chapter.start_seconds !== "number") return;
+    try {
+      v.currentTime = chapter.start_seconds;
+      const playPromise = v.play();
+      if (playPromise && typeof playPromise.then === "function") {
+        playPromise.catch(() => {
+          // Autoplay may be blocked until the user interacts with the
+          // page. Seeking still worked — leave the player paused.
+        });
+      }
+    } catch (_err) {
+      /* ignore — some browsers throw when not loaded yet */
+    }
+    setActiveChapterIndex(chapter.index);
+  }, []);
+
+  const handleSaveChapterTitle = useCallback(
+    async (index: number, title: string) => {
+      if (!id) return;
+      if (state.status !== "loaded") return;
+      const next: Record<string, string> = {
+        ...state.chapters.overlay.titles,
+      };
+      if (title.trim()) {
+        next[String(index)] = title.trim();
+      } else {
+        delete next[String(index)];
+      }
+      try {
+        setChapterSaveError(null);
+        await saveChapterTitles(id, next);
+        // Refresh the chapter list so custom_title/display_title
+        // reflect the new overlay without a page reload.
+        const fresh = await getChapters(id);
+        setState((curr) =>
+          curr.status === "loaded" ? { ...curr, chapters: fresh } : curr,
+        );
+      } catch (err) {
+        const msg =
+          err instanceof Error
+            ? err.message
+            : "Could not save chapter title.";
+        setChapterSaveError(msg);
+        throw err;
+      }
+    },
+    [id, state],
+  );
+
+  // Track active chapter based on video playback so the sidebar can
+  // mirror the legacy transcript active-row highlight pattern.
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (state.status !== "loaded") return;
+    const chapters = state.chapters.chapters;
+    if (chapters.length === 0) return;
+    const update = () => {
+      const t = v.currentTime;
+      setActiveChapterIndex((prev) => {
+        const next = findActiveChapterIndex(chapters, t);
+        return next === prev ? prev : next;
+      });
+    };
+    update();
+    v.addEventListener("timeupdate", update);
+    v.addEventListener("seeking", update);
+    v.addEventListener("play", update);
+    return () => {
+      v.removeEventListener("timeupdate", update);
+      v.removeEventListener("seeking", update);
+      v.removeEventListener("play", update);
+    };
+  }, [state]);
 
   const toggleSpeaker = useCallback((key: string) => {
     setHiddenSpeakers((prev) => {
@@ -179,7 +296,7 @@ export default function TranscriptWorkspacePage() {
     );
   }
 
-  const { job, transcript, names } = state;
+  const { job, transcript, names, chapters } = state;
   const title = job.original_filename || job.job_id;
   const hasVideo = Boolean(job.artifacts.analysis_mp4);
   const status = job.status || "unknown";
@@ -260,6 +377,17 @@ export default function TranscriptWorkspacePage() {
               Speaker names saved.
             </p>
           ) : null}
+          <ChapterSidebar
+            chapters={chapters.chapters}
+            videoRef={videoRef}
+            activeIndex={activeChapterIndex}
+            onSeek={handleSeekChapter}
+            onSaveTitle={handleSaveChapterTitle}
+            saveError={chapterSaveError}
+            onDismissError={() => setChapterSaveError(null)}
+            hasCandidateArtifact={chapters.sources.chapter_candidates}
+            hasInsightsArtifact={chapters.sources.insights}
+          />
           <section className="summary-card" aria-label="Artifacts summary">
             <p className="eyebrow">Artifacts</p>
             <dl>
