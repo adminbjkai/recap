@@ -36,8 +36,11 @@ Host-pinned:
    `_last_run[(job_id, "run")]`. On success the handler 303
    redirects to the new job's detail page.
 
-Every POST is validated in this order: Host header equal to the
-bound `host:port` via `secrets.compare_digest`, Content-Length
+Every POST is validated in this order: Host header matches one of
+the server's `allowed_hosts` via `secrets.compare_digest` (the
+bound `host:port` plus its loopback aliases — `127.0.0.1`,
+`localhost`, `[::1]` — when the server is bound to a loopback
+address; arbitrary `Host` headers are rejected), Content-Length
 required and ≤ 4096 bytes, CSRF token matched with
 `secrets.compare_digest`, then path- and semantic-specific
 validation. Rejected POSTs log one short reason to the server's
@@ -120,6 +123,14 @@ _RANGE_CHUNK_BYTES = 64 * 1024
 # through. When a transcript has more than this many speakers, the
 # `speaker-N` classes wrap modulo this size.
 _SPEAKER_PALETTE_SIZE = 8
+
+# Transcription engines selectable on the `/new` form. Mirrors the
+# CLI's `ENGINE_CHOICES` and is the single source of truth for
+# `POST /run` server-side validation.
+_ENGINE_CHOICES: frozenset[str] = frozenset({
+    "faster-whisper",
+    "deepgram",
+})
 
 
 def _parse_range(header: str | None, size: int) -> tuple[int, int] | None:
@@ -237,18 +248,24 @@ def _get_last(job_id: str, stage: str) -> dict | None:
         return _last_run.get((job_id, stage))
 
 
-def _background_run(job_id: str, job_dir: Path) -> None:
-    """Run `python -m recap run --job <job_dir>` and store the result.
+def _background_run(job_id: str, job_dir: Path, engine: str) -> None:
+    """Run `python -m recap run --job <job_dir> --engine <engine>` and
+    store the result.
 
     Always releases the global `_run_slot` in the finally block.
-    stdout/stderr are truncated to `_OUTPUT_TRUNCATE_BYTES`.
+    stdout/stderr are truncated to `_OUTPUT_TRUNCATE_BYTES`. The
+    subprocess inherits the server's environment (no `env=` override)
+    so e.g. `DEEPGRAM_API_KEY` flows through to the child when the
+    chosen engine needs it.
     """
     started_at = _now_iso()
     t0 = time.monotonic()
     try:
         try:
             proc = subprocess.Popen(
-                [sys.executable, "-m", "recap", "run", "--job", str(job_dir)],
+                [sys.executable, "-m", "recap", "run",
+                 "--job", str(job_dir),
+                 "--engine", engine],
                 cwd=str(REPO_ROOT),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -1034,6 +1051,35 @@ def render_new(
         '<input type="text" name="source_path" size="70" '
         'placeholder="/absolute/path/to/video.mp4"></label></p>'
     )
+    deepgram_key_present = bool(os.environ.get("DEEPGRAM_API_KEY"))
+    deepgram_attrs = "" if deepgram_key_present else " disabled"
+    body.append("<p><label>Transcription engine: ")
+    body.append('<select name="engine">')
+    body.append(
+        '<option value="faster-whisper" selected>'
+        "faster-whisper (default, local)"
+        "</option>"
+    )
+    body.append(
+        f'<option value="deepgram"{deepgram_attrs}>'
+        "deepgram (cloud; diarized speakers)"
+        "</option>"
+    )
+    body.append("</select></label></p>")
+    if deepgram_key_present:
+        body.append(
+            '<p class="secondary">'
+            "Deepgram available — <code>DEEPGRAM_API_KEY</code> "
+            "detected in the server's environment."
+            "</p>"
+        )
+    else:
+        body.append(
+            '<p class="secondary">'
+            "Deepgram requires <code>DEEPGRAM_API_KEY</code> in "
+            "the server's environment. Not detected."
+            "</p>"
+        )
     body.append('<p><button type="submit">Start</button></p>')
     body.append("</form>")
     body.append('<p><a href="/">← Back to jobs</a></p>')
@@ -1779,6 +1825,29 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                     )
                     return
 
+                # Engine allowlist + Deepgram env check. Runs before
+                # any subprocess is spawned so an invalid choice or a
+                # missing key is caught cheaply.
+                engine = (form.get("engine") or [""])[0].strip()
+                if not engine:
+                    engine = "faster-whisper"
+                if engine not in _ENGINE_CHOICES:
+                    self._respond_new_error(
+                        HTTPStatus.BAD_REQUEST, "engine-invalid",
+                        f"Unsupported transcription engine: {engine}.",
+                    )
+                    return
+                if (
+                    engine == "deepgram"
+                    and not os.environ.get("DEEPGRAM_API_KEY")
+                ):
+                    self._respond_new_error(
+                        HTTPStatus.BAD_REQUEST, "deepgram-unavailable",
+                        "Deepgram requires DEEPGRAM_API_KEY in the "
+                        "server's environment.",
+                    )
+                    return
+
                 # Synchronous ingest.
                 try:
                     ingest = subprocess.run(
@@ -1852,14 +1921,15 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                 _set_in_progress(job_id, "run", _now_iso())
                 thread = threading.Thread(
                     target=_background_run,
-                    args=(job_id, safe_job_dir),
+                    args=(job_id, safe_job_dir, engine),
                     daemon=True,
                 )
                 thread.start()
                 slot_transferred = True
 
                 self.server.logger_stream.write(
-                    f"[recap-ui] started recap run job={job_id}\n"
+                    f"[recap-ui] started recap run job={job_id} "
+                    f"engine={engine}\n"
                 )
                 self.server.logger_stream.flush()
 
@@ -1875,10 +1945,11 @@ def _make_handler(jobs_root: Path, sources_root: Path):
 
         def do_POST(self) -> None:  # noqa: N802
             # 1. Host pinning.
-            expected_host = getattr(self.server, "expected_host", "")
+            allowed_hosts = getattr(self.server, "allowed_hosts", frozenset())
             got_host = self.headers.get("Host") or ""
-            if not expected_host or not secrets.compare_digest(
-                got_host, expected_host
+            if not allowed_hosts or not any(
+                secrets.compare_digest(got_host, allowed)
+                for allowed in allowed_hosts
             ):
                 self._reject_post(
                     HTTPStatus.FORBIDDEN, "host",
@@ -2014,7 +2085,22 @@ def serve(
     # Attach server-wide state used by the handler.
     server.logger_stream = sys.stderr
     server.csrf_token = secrets.token_urlsafe(32)
-    server.expected_host = f"{host}:{port}"
+    # Host pinning: accept only the bound `host:port`, with loopback
+    # aliases when the server is bound to a loopback address. Blocks
+    # forged `Host` headers (DNS-rebinding) without forcing browsers
+    # that type `localhost` to get a 403 when the server bound to
+    # `127.0.0.1`. Do NOT widen beyond these loopback aliases.
+    allowed: set[str] = {f"{host}:{port}"}
+    if host == "127.0.0.1":
+        allowed.add(f"localhost:{port}")
+        allowed.add(f"[::1]:{port}")
+    elif host == "localhost":
+        allowed.add(f"127.0.0.1:{port}")
+        allowed.add(f"[::1]:{port}")
+    elif host in ("::1", "[::1]"):
+        allowed.add(f"127.0.0.1:{port}")
+        allowed.add(f"localhost:{port}")
+    server.allowed_hosts = frozenset(allowed)
     print(
         f"Recap UI running at http://{host}:{port} (Ctrl-C to stop)",
         flush=True,

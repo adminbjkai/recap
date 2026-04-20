@@ -592,6 +592,24 @@ Browser **file upload** is not part of this slice; users place videos
 under the sources root using whatever tool they prefer (Finder,
 `cp`, `scp`, etc.) and pick them from the `/new` dropdown.
 
+The `/new` form also exposes a transcription-engine selector. The
+default is `faster-whisper (local)`. A second option, `deepgram
+(cloud; diarized speakers)`, is enabled only when the shell that
+launched `recap ui` exported `DEEPGRAM_API_KEY` — the UI reads the
+variable's presence via `os.environ` and renders a small note
+("Deepgram available" or "Not detected"). The key value itself is
+never accepted from the browser, never stored in a file, never shown
+on any page, never logged. To enable Deepgram, stop the server,
+export `DEEPGRAM_API_KEY=<your-key>` in the shell, and restart
+`recap ui`. Picking `engine=deepgram` without the key in the server
+environment returns a 400 with a clear inline error. The selected
+engine is forwarded to the background `recap run` as
+`--engine <value>`; the subprocess inherits the server's environment
+so the key flows through to the transcribe stage automatically.
+Diarized transcripts emit `utterances[]` with integer speaker ids,
+which the transcript viewer then renders as colored rows + a
+speakers legend.
+
 ### Transcript viewer
 
 Each job detail page includes a **View transcript** link (shown only

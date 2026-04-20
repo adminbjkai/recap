@@ -102,6 +102,33 @@ system does and produces, read `HANDOFF.md`.
   no diarization controls. Local WhisperX/pyannote and an inline
   `<video>` player with transcript-row jump links both remain
   deferred.
+- The `/new` form now lets the user pick the transcription engine.
+  A new module-level allowlist `_ENGINE_CHOICES = {"faster-whisper",
+  "deepgram"}` and a `<select name="engine">` with two options are
+  rendered on `GET /new`. The `deepgram` option carries the HTML
+  `disabled` attribute iff `os.environ.get("DEEPGRAM_API_KEY")` is
+  falsy at render time; a secondary-text note below the select
+  reflects the boolean availability as "Deepgram available" or
+  "Not detected". The key value is never rendered, stored, or
+  logged. `POST /run` reads `engine` from the form after source
+  validation, defaults to `faster-whisper` when blank, validates
+  against `_ENGINE_CHOICES` (400 + log reason `engine-invalid`), and
+  additionally rejects `engine=deepgram` without the env var (400 +
+  log reason `deepgram-unavailable`) — both paths release
+  `_run_slot` and never spawn a subprocess. The selected engine is
+  forwarded to `_background_run(job_id, job_dir, engine)` which
+  appends `["--engine", engine]` to the `recap run` argv;
+  `subprocess.Popen` inherits the server environment so
+  `DEEPGRAM_API_KEY` reaches the child automatically. Log line on
+  successful spawn now includes `engine={engine}`.
+  `scripts/verify_ui.py` gained an `env=` kwarg on `start_ui` and a
+  deterministic `ui_env = os.environ.copy(); ui_env.pop(
+  "DEEPGRAM_API_KEY", None)` passed into the test server so engine
+  validation runs against a known "key absent" state. Three new
+  cases (63 total): select + disabled-option rendering, invalid
+  engine rejection, deepgram-without-key rejection. No happy-path
+  Deepgram case — that would require a real key and network call.
+  `recap run` composition and `job.STAGES` unchanged.
 - Browser-started video processing is implemented. `recap ui` takes
   a new `--sources-root` flag (default `sample_videos`) and serves
   `GET /new` that lists the directory's video files (extension

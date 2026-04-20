@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import re
 import shutil
 import signal
@@ -142,7 +143,9 @@ def wait_for_server(port: int, timeout: float = 10.0) -> None:
 
 
 def start_ui(
-    jobs_root: Path, port: int, sources_root: Path | None = None,
+    jobs_root: Path, port: int,
+    sources_root: Path | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.Popen:
     args = [
         sys.executable, "-m", "recap", "ui",
@@ -155,6 +158,7 @@ def start_ui(
     proc = subprocess.Popen(
         args, cwd=REPO_ROOT,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        env=env if env is not None else None,
     )
     return proc
 
@@ -215,7 +219,13 @@ def main() -> int:
     bad_ext.write_bytes(b"")
 
     port = free_port()
-    proc = start_ui(jobs_root, port, sources_root=sources_root)
+    # Strip DEEPGRAM_API_KEY from the UI's environment so engine
+    # validation tests run against a deterministic "key absent" state
+    # regardless of the developer's shell. os.environ itself is not
+    # mutated.
+    ui_env = os.environ.copy()
+    ui_env.pop("DEEPGRAM_API_KEY", None)
+    proc = start_ui(jobs_root, port, sources_root=sources_root, env=ui_env)
     try:
         wait_for_server(port)
         passed()
@@ -255,6 +265,21 @@ def main() -> int:
             fail(case, f"expected 403, got {status}")
         passed()
 
+        # Browsers typing `localhost:<port>` against a server bound to
+        # `127.0.0.1:<port>` should pass the Host check and fail for
+        # the intended reason — here, source-missing → 400.
+        case = "post-run-localhost-host-alias-allowed"
+        status, _, body = http_post(
+            port, "/run", {"_token": new_token},
+            host_override=f"localhost:{port}",
+        )
+        if status == 403:
+            fail(case, "localhost:<port> Host rejected as mismatch")
+        if status != 400:
+            fail(case, f"expected 400, got {status}")
+        expect_contains(case, body, b"Select a video or enter a path.")
+        passed()
+
         case = "post-run-body-too-large"
         big = "x" * 5000
         status, _, _ = http_post(
@@ -286,6 +311,48 @@ def main() -> int:
         )
         if status != 400:
             fail(case, f"expected 400, got {status}")
+        passed()
+
+        # /new form renders the engine select with deepgram disabled
+        # because this UI was launched without DEEPGRAM_API_KEY.
+        case = "new-page-has-engine-select-disabled-deepgram"
+        _, body = expect_status(case, port, "/new", 200)
+        expect_contains(case, body, b'<select name="engine">')
+        expect_contains(case, body, b'value="faster-whisper"')
+        expect_contains(case, body, b'value="deepgram"')
+        expect_contains(case, body, b'<option value="deepgram" disabled')
+        expect_contains(case, body, b"Not detected")
+        passed()
+
+        # Unsupported engine name is rejected before ingest is spawned.
+        case = "post-run-invalid-engine"
+        status, _, body = http_post(
+            port, "/run",
+            {
+                "_token": new_token,
+                "source": str(fake_video.resolve()),
+                "engine": "whisperx",
+            },
+        )
+        if status != 400:
+            fail(case, f"expected 400, got {status}")
+        expect_contains(case, body, b"Unsupported transcription engine")
+        passed()
+
+        # engine=deepgram without DEEPGRAM_API_KEY in the server env
+        # is rejected before ingest is spawned.
+        case = "post-run-deepgram-without-key"
+        status, _, body = http_post(
+            port, "/run",
+            {
+                "_token": new_token,
+                "source": str(fake_video.resolve()),
+                "engine": "deepgram",
+            },
+        )
+        if status != 400:
+            fail(case, f"expected 400, got {status}")
+        expect_contains(case, body, b"DEEPGRAM_API_KEY")
         passed()
 
         case = "job-detail"

@@ -877,9 +877,13 @@ which invokes `python -m recap <stage> --job <job_dir> --force` via
 set is the frozenset `_RUNNABLE_STAGES = {"assemble", "export-html",
 "export-docx"}`; any other stage in a `/job/<id>/run/<stage>` path
 returns 404 without spawning a subprocess. Every POST is validated in
-order: `Host` header must exactly match the bound `host:port` via
-`secrets.compare_digest` (blocks DNS-rebinding and forged Origin
-attacks), `Content-Length` must be present and within the 4096-byte
+order: `Host` header must match one of the server's
+`allowed_hosts` via `secrets.compare_digest` (blocks DNS-rebinding
+and forged `Origin` attacks; the allowed set is the bound
+`host:port` plus its loopback aliases — so a browser typing
+`localhost:8765` still reaches a server bound to `127.0.0.1:8765`
+— but arbitrary hostnames are still rejected),
+`Content-Length` must be present and within the 4096-byte
 cap (returns 411 / 413), the form body's `_token` field must match a
 `secrets.token_urlsafe(32)` token generated at server startup and
 embedded in every rendered form (returns 403), the job directory must
@@ -1033,6 +1037,40 @@ out-of-bounds `bytes=200-300` → 416, and a malformed `Range:
 floop` → 200 fallback. All mutations live in the scratch job; a
 pre-test assertion confirms `analysis.mp4` is absent before the
 scratch bytes are written.
+
+The `/new` form carries an engine selector. `_ENGINE_CHOICES =
+{"faster-whisper", "deepgram"}` is the server-side allowlist; the
+`<select name="engine">` renders both options, with the `deepgram`
+option HTML-`disabled` when `os.environ.get("DEEPGRAM_API_KEY")` is
+falsy at render time. A `<p class="secondary">` below the select
+flags the availability state as text ("Deepgram available — …
+detected" / "… Not detected"). The key value is never emitted, never
+stored, never logged. On `POST /run`, after the existing source
+validation and before `recap ingest` is spawned, the handler reads
+`engine` from the form, defaults to `faster-whisper` when blank,
+validates against `_ENGINE_CHOICES` (400 + `engine-invalid` log
+reason on miss), and additionally requires `DEEPGRAM_API_KEY` in the
+process environment when `engine == "deepgram"` (400 +
+`deepgram-unavailable`). Both rejection paths release the global
+`_run_slot` before returning and never spawn a subprocess. On the
+happy path the engine is forwarded to `_background_run(job_id,
+job_dir, engine)`, which appends `["--engine", engine]` to the
+`recap run` argv. `subprocess.Popen` inherits the server's
+environment (no `env=` override), so `DEEPGRAM_API_KEY` reaches the
+transcribe stage without the UI touching its value. The successful
+spawn log line widens to `[recap-ui] started recap run
+job={id} engine={engine}`. Explicit non-goals: no API-key entry UI,
+no env editor, no key storage in files, no per-engine model picker,
+no WhisperX / pyannote / Groq, no network call from the verifier.
+`scripts/verify_ui.py` extends `start_ui` with an optional `env=`
+kwarg and in `main()` launches the test server with `DEEPGRAM_API_KEY`
+stripped from a copy of `os.environ`, so the engine-validation tests
+always run against a deterministic "key absent" state. Three new
+cases cover the select + disabled-option rendering, the
+`engine=whisperx` rejection, and the `engine=deepgram` rejection when
+the key is absent; the UI check count is now 63. No happy-path
+Deepgram case exists in the verifier — exercising the real engine
+would need a live key and a network call.
 
 Diarized transcripts additionally render speaker-colored rows and a
 compact legend. When the data source is `utterances[]` and the
