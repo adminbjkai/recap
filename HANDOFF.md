@@ -832,6 +832,23 @@ Primary `GET` routes:
   section and enrich the existing `## Chapters` rendering with titles,
   summaries, bullets, action items, and speaker focus. When absent,
   exports stay byte-compatible with prior behavior.
+- The React dashboard at `/app/job/<id>` links to a new frame-review
+  workspace at `/app/job/<id>/frames`. `FrameReviewPage` fetches the
+  merged view from `GET /api/jobs/<id>/frames`, lays out a
+  `FrameCard` grid (one card per on-disk candidate frame) with
+  image + timestamp + chapter context + algorithm-output pills
+  (hero / supporting / VLM-rejected, shortlist decision, rank) and a
+  **Review** fieldset with `keep` / `reject` / `unset` radios and a
+  300-char note textarea. Changes batch locally and an explicit
+  **Save review** writes the whole batch via
+  `POST /api/jobs/<id>/frame-review`; **Discard changes** reverts.
+  Filter tabs (All / Shortlist / Selected / Reviewed) narrow the
+  grid. The page has an empty state when no visual artifacts exist,
+  pointing at `Generate rich report`. The hero action bar on the
+  dashboard carries a **Review screenshots** link that renders
+  `Review screenshots (empty)` when `selected_frames.json` is
+  missing so the CTA still targets the right surface and the empty
+  state educates the user.
 - The React transcript workspace at `/app/job/<id>/transcript`
   renders a **chapter sidebar** (`ChapterSidebar`) in the left rail
   when the merged chapter list from `GET /api/jobs/<id>/chapters`
@@ -971,6 +988,43 @@ Primary `GET` routes:
   (`recap assemble` / `export-html` / `export-docx` reading the
   overlay) is a deferred follow-up — today the overlay only affects
   the React surface.
+- `GET /api/jobs/<id>/frames` — merged visual-artifact view.
+  Enumerates every image in `candidate_frames/` (the ground truth for
+  what's reviewable) and enriches each with `frame_scores.json`
+  (pHash / SSIM / OCR / text_novelty / duplicate_of),
+  `scenes.json` (scene index + start/end timestamps),
+  `selected_frames.json` (per-chapter `decision` /
+  `shortlist_decision` / rank / composite_score / clip_similarity /
+  reasons / verification / window_text / chapter_index), and the
+  `frame_review.json` overlay (`review.decision` / `review.note`).
+  Returns `{frames, chapters, sources, overlay}`. Always 200 with
+  empty arrays when no upstream artifact is present. Malformed
+  upstream artifacts log a single short reason and are skipped.
+  Chapter context comes from the existing `_build_chapter_list`
+  merger so `frame.chapter_index` can be resolved to a display title
+  without a second round-trip.
+- `GET /api/jobs/<id>/frame-review` — returns the overlay or the
+  empty default. Mirrors the `speaker_names.json` /
+  `chapter_titles.json` read policy.
+- `POST /api/jobs/<id>/frame-review` — update the overlay. Reuses
+  the speaker-names safety primitives (Host pinning,
+  `X-Recap-Token` CSRF, `_API_POST_BODY_MAX` body cap, per-job lock,
+  atomic `<file>.tmp` → `os.replace`). Body:
+  `{"frames": {"scene-001.jpg": {"decision": "keep"|"reject"|"unset",
+  "note": "..."}}}`. Keys must pass `is_safe_frame_file` **and**
+  carry a whitelisted image extension (`.jpg` / `.jpeg` / `.png`).
+  `decision="unset"` removes that mapping. Notes are trimmed and
+  bounded at `_API_FRAME_REVIEW_NOTE_MAX_LEN = 300` chars; control
+  chars (except tab) are rejected. Reasons drawn from
+  `{host, content-type, content-length-missing, body-too-large,
+  csrf, no-such-job, bad-json, bad-schema, bad-key-shape,
+  bad-decision, bad-value, too-long, write-failed, lock}`. The
+  overlay **never** mutates `selected_frames.json` or
+  `frame_scores.json`; the files under `recap/stages/*` are not
+  touched by this slice. Exporter integration (`recap assemble` /
+  `export-html` / `export-docx` reading the review overlay) is a
+  deferred follow-up — today the overlay only affects the React
+  frame-review surface.
 - `POST /api/jobs/<id>/runs/insights` — dispatch `recap insights`.
   Body: `{"provider": "mock" | "groq", "force": true | false}` (both
   keys optional; provider defaults to `mock`, force to `false`).

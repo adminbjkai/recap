@@ -266,6 +266,14 @@ export default function JobDetailPage() {
           <Link className="primary-button" to={transcriptUrl}>
             Open transcript workspace
           </Link>
+          <Link
+            className="ghost-button"
+            to={`/job/${encodeURIComponent(job.job_id)}/frames`}
+          >
+            {job.artifacts?.selected_frames_json
+              ? "Review screenshots"
+              : "Review screenshots (empty)"}
+          </Link>
           <a className="ghost-button" href={legacyDetail}>
             Legacy detail page
           </a>

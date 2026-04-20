@@ -692,7 +692,48 @@ GET  /api/jobs/<id>/runs/rich-report/last   latest rich-report status (JSON)
 GET  /api/jobs/<id>/chapters         merged chapters view (candidates + insights + overlay)
 GET  /api/jobs/<id>/chapter-titles   chapter-titles overlay
 POST /api/jobs/<id>/chapter-titles   update overlay (CSRF, Host-pinned)
+GET  /api/jobs/<id>/frames           merged visual-artifact view (scenes + scores + selected + overlay)
+GET  /api/jobs/<id>/frame-review     frame-review overlay
+POST /api/jobs/<id>/frame-review     update overlay (CSRF, Host-pinned)
 ```
+
+### Screenshot / frame review (slice 8)
+
+The React dashboard links to a **frame review workspace** at
+`/app/job/<id>/frames`. The page merges every available visual
+artifact into a grid of frame cards — one per image in
+`candidate_frames/` — with:
+
+- The image itself (served from
+  `/job/<id>/candidate_frames/<name>`), a timestamp derived from
+  `selected_frames.midpoint_seconds` or the scene's `start_seconds`,
+  and the candidate filename.
+- Algorithm-output badges (hero / supporting / VLM-rejected / shortlist
+  decision / rank) so users can see what the pipeline chose — the
+  badges come from `selected_frames.json` and `frame_scores.json`;
+  the review overlay never mutates those files.
+- Scoring metadata (composite score, CLIP similarity, text novelty,
+  VLM relevance + confidence) and any VLM caption.
+- Collapsible OCR text pulled from `frame_scores.json`.
+- A **Review** fieldset with `keep` / `reject` / `unset` radios and a
+  300-char note. Changes batch locally; a toolbar shows the unsaved
+  count and a single **Save review** button writes the whole batch
+  via `POST /api/jobs/<id>/frame-review`. **Discard changes** reverts.
+  Filter tabs (All / Shortlist / Selected / Reviewed) help focus the
+  grid on a subset.
+
+The `frame_review.json` overlay is keyed by the frame's basename
+(`scene-001.jpg`) and stores `{decision: "keep"|"reject", note}`.
+Empty / `unset` decisions remove the mapping. Keys must pass
+`is_safe_frame_file` + carry a whitelisted image extension
+(`.jpg` / `.jpeg` / `.png`); notes are trimmed and bounded at 300
+chars, control chars rejected (tab allowed). The overlay file uses
+the same atomic `<file>.tmp` → `os.replace` write and the same
+per-job lock as the other overlays, and malformed overlays degrade
+silently to the empty default on read. Exporters still render the
+algorithm's output — honoring the review overlay in
+`recap assemble` / `export-html` / `export-docx` is deferred to the
+exporter-overlays slice.
 
 ### Chapter sidebar + editable chapter titles (slice 7)
 

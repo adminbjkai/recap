@@ -585,6 +585,14 @@ _API_CHAPTER_TITLE_MAX_LEN = 120
 # insights chapter summaries.
 _API_CHAPTER_SUMMARY_PREVIEW_CHARS = 800
 
+# Accepted per-frame review decisions on ``frame_review.json``.
+# ``unset`` is treated as "remove this mapping" — never persisted.
+_API_FRAME_REVIEW_DECISIONS: frozenset[str] = frozenset({
+    "keep", "reject", "unset",
+})
+# Per-frame review note cap — a sentence or two, not a journal entry.
+_API_FRAME_REVIEW_NOTE_MAX_LEN = 300
+
 # Maximum bytes accepted by POST /api/recordings. 2 GiB matches the
 # upper bound for a reasonable one-sitting browser screen recording and
 # keeps resource usage bounded per request. The value is streamed to
@@ -968,6 +976,406 @@ def _build_chapter_list(
     }
 
 
+def _load_frame_review(
+    paths: JobPaths, logger_stream: IO | None = None,
+) -> dict:
+    """Read the frame_review.json overlay, or return the empty default.
+
+    Mirrors the ``speaker_names.json`` / ``chapter_titles.json`` read
+    policy: malformed JSON, wrong-shape top-level, or individual bad
+    entries degrade to the empty default without raising, and one
+    short reason line is written to the server log.
+    """
+    default = {"version": 1, "updated_at": None, "frames": {}}
+    path = paths.frame_review_json
+    if not path.is_file():
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as e:
+        if logger_stream is not None:
+            logger_stream.write(
+                f"[recap-ui] frame-review skipped: {e}\n"
+            )
+            logger_stream.flush()
+        return default
+    if not isinstance(data, dict):
+        if logger_stream is not None:
+            logger_stream.write(
+                "[recap-ui] frame-review skipped: "
+                "top-level not an object\n"
+            )
+            logger_stream.flush()
+        return default
+    frames_raw = data.get("frames") or {}
+    if not isinstance(frames_raw, dict):
+        if logger_stream is not None:
+            logger_stream.write(
+                "[recap-ui] frame-review skipped: "
+                "'frames' not an object\n"
+            )
+            logger_stream.flush()
+        return default
+    clean: dict[str, dict] = {}
+    for fname, entry in frames_raw.items():
+        if not isinstance(fname, str) or not is_safe_frame_file(fname):
+            continue
+        if Path(fname).suffix.lower() not in _CANDIDATE_FRAME_EXTS:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        decision = entry.get("decision")
+        if decision not in {"keep", "reject"}:
+            continue
+        note_raw = entry.get("note", "")
+        if not isinstance(note_raw, str):
+            note_raw = ""
+        note = note_raw.strip()
+        if len(note) > _API_FRAME_REVIEW_NOTE_MAX_LEN:
+            note = note[:_API_FRAME_REVIEW_NOTE_MAX_LEN]
+        if _speaker_name_contains_control(note):
+            # Drop the note but keep the decision.
+            note = ""
+        clean[fname] = {"decision": decision, "note": note}
+    updated_at = data.get("updated_at")
+    if not isinstance(updated_at, (str, type(None))):
+        updated_at = None
+    return {"version": 1, "updated_at": updated_at, "frames": clean}
+
+
+def _write_frame_review(
+    paths: JobPaths, frames: dict[str, dict],
+) -> dict:
+    """Atomic write of frame_review.json; returns the stored doc."""
+    doc = {
+        "version": 1,
+        "updated_at": _now_iso(),
+        "frames": dict(frames),
+    }
+    tmp = paths.frame_review_json.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(doc, f, indent=2, sort_keys=True)
+        f.write("\n")
+    tmp.replace(paths.frame_review_json)
+    return doc
+
+
+def _build_frame_list(
+    job_dir: Path,
+    logger_stream: IO | None = None,
+) -> dict:
+    """Merge visual-artifact JSON into a normalized frame list.
+
+    Preference order for per-frame metadata:
+    - Every candidate frame in ``candidate_frames/`` is enumerated (the
+      directory is the ground truth — a frame that exists on disk is
+      reviewable even if scoring hasn't run yet).
+    - Enriched with ``frame_scores.json`` (pHash / SSIM / OCR /
+      duplicate_of) when present.
+    - Enriched with ``scenes.json`` per-scene metadata (start/end
+      timestamp, frame_file) when present.
+    - Enriched with ``selected_frames.json`` per-chapter frame entries
+      (shortlist_decision / decision / rank / verification / reasons /
+      window_text / clip_similarity / composite_score) when present.
+    - Enriched with the ``frame_review.json`` overlay
+      (user decision + note) when present.
+
+    Chapter context comes from the existing ``_build_chapter_list``
+    merger so chapter titles / summaries / custom_title are shared
+    between the transcript sidebar and the frame review surface.
+
+    Malformed upstream artifacts log a single short reason and are
+    skipped — a frame still surfaces with whatever data remains
+    readable.
+    """
+    job_id = job_dir.name
+
+    scenes_path = job_dir / "scenes.json"
+    scores_path = job_dir / "frame_scores.json"
+    selected_path = job_dir / "selected_frames.json"
+    candidate_frames_dir = job_dir / "candidate_frames"
+
+    # scenes.json → frame_file → {scene_index, start, end, duration}
+    scene_by_file: dict[str, dict] = {}
+    if scenes_path.is_file():
+        try:
+            with open(scenes_path, "r", encoding="utf-8") as f:
+                sdata = json.load(f)
+            if isinstance(sdata, dict):
+                for scene in (sdata.get("scenes") or []):
+                    if not isinstance(scene, dict):
+                        continue
+                    fname = scene.get("frame_file")
+                    if not isinstance(fname, str) or not is_safe_frame_file(fname):
+                        continue
+                    scene_by_file[fname] = {
+                        "scene_index": scene.get("scene_index"),
+                        "start_seconds": scene.get("start_seconds"),
+                        "end_seconds": scene.get("end_seconds"),
+                        "duration_seconds": scene.get("duration_seconds"),
+                    }
+        except (OSError, ValueError) as e:
+            if logger_stream is not None:
+                logger_stream.write(
+                    f"[recap-ui] frames list: scenes.json skipped: {e}\n"
+                )
+                logger_stream.flush()
+
+    # frame_scores.json → frame_file → {phash, ocr_text, ...}
+    scores_by_file: dict[str, dict] = {}
+    if scores_path.is_file():
+        try:
+            with open(scores_path, "r", encoding="utf-8") as f:
+                fdata = json.load(f)
+            if isinstance(fdata, dict):
+                for fr in (fdata.get("frames") or []):
+                    if not isinstance(fr, dict):
+                        continue
+                    fname = fr.get("frame_file")
+                    if not isinstance(fname, str) or not is_safe_frame_file(fname):
+                        continue
+                    scores_by_file[fname] = {
+                        k: fr.get(k)
+                        for k in (
+                            "scene_index",
+                            "phash",
+                            "ocr_text",
+                            "text_novelty",
+                            "ssim",
+                            "hamming_distance",
+                            "duplicate_of",
+                        )
+                        if k in fr
+                    }
+        except (OSError, ValueError) as e:
+            if logger_stream is not None:
+                logger_stream.write(
+                    f"[recap-ui] frames list: "
+                    f"frame_scores.json skipped: {e}\n"
+                )
+                logger_stream.flush()
+
+    # selected_frames.json → frame_file → per-frame rich metadata plus
+    # chapter_index.
+    selected_by_file: dict[str, dict] = {}
+    if selected_path.is_file():
+        try:
+            with open(selected_path, "r", encoding="utf-8") as f:
+                sel = json.load(f)
+            if isinstance(sel, dict):
+                for ch in (sel.get("chapters") or []):
+                    if not isinstance(ch, dict):
+                        continue
+                    ch_idx = ch.get("chapter_index")
+                    for fr in (ch.get("frames") or []):
+                        if not isinstance(fr, dict):
+                            continue
+                        fname = fr.get("frame_file")
+                        if (
+                            not isinstance(fname, str)
+                            or not is_safe_frame_file(fname)
+                        ):
+                            continue
+                        selected_by_file[fname] = {
+                            "chapter_index": ch_idx,
+                            "decision": fr.get("decision"),
+                            "shortlist_decision": fr.get(
+                                "shortlist_decision",
+                            ),
+                            "rank": fr.get("rank"),
+                            "composite_score": fr.get(
+                                "composite_score",
+                            ),
+                            "clip_similarity": fr.get(
+                                "clip_similarity",
+                            ),
+                            "midpoint_seconds": fr.get(
+                                "midpoint_seconds",
+                            ),
+                            "reasons": fr.get("reasons"),
+                            "verification": fr.get("verification"),
+                            "window_text": fr.get("window_text"),
+                            "scene_index": fr.get("scene_index"),
+                        }
+        except (OSError, ValueError) as e:
+            if logger_stream is not None:
+                logger_stream.write(
+                    f"[recap-ui] frames list: "
+                    f"selected_frames.json skipped: {e}\n"
+                )
+                logger_stream.flush()
+
+    # Enumerate candidate_frames/ on disk. This is the ground truth
+    # for what the review UI should show.
+    on_disk: list[str] = []
+    if candidate_frames_dir.is_dir():
+        try:
+            for entry in sorted(candidate_frames_dir.iterdir()):
+                if not entry.is_file():
+                    continue
+                if not is_safe_frame_file(entry.name):
+                    continue
+                if entry.suffix.lower() not in _CANDIDATE_FRAME_EXTS:
+                    continue
+                on_disk.append(entry.name)
+        except OSError as e:
+            if logger_stream is not None:
+                logger_stream.write(
+                    f"[recap-ui] frames list: "
+                    f"candidate_frames listing failed: {e}\n"
+                )
+                logger_stream.flush()
+            on_disk = []
+
+    # If candidate_frames is empty but JSON artifacts mention frames,
+    # still surface them so the UI can render placeholders / broken
+    # state explicitly.
+    json_referenced = (
+        set(scores_by_file.keys())
+        | set(selected_by_file.keys())
+        | set(scene_by_file.keys())
+    )
+    all_files = sorted(set(on_disk) | json_referenced)
+
+    overlay = _load_frame_review(
+        JobPaths(root=job_dir), logger_stream=logger_stream,
+    )
+    overlay_frames = overlay.get("frames") or {}
+
+    frames_out: list[dict] = []
+    for fname in all_files:
+        sc = scene_by_file.get(fname) or {}
+        fs = scores_by_file.get(fname) or {}
+        sel = selected_by_file.get(fname) or {}
+        on_disk_flag = fname in on_disk
+
+        # Prefer the selected-frame midpoint for timestamp; fall back
+        # to the scene's start; fall back to None.
+        ts = sel.get("midpoint_seconds")
+        if not isinstance(ts, (int, float)):
+            ts = sc.get("start_seconds")
+        if not isinstance(ts, (int, float)):
+            ts = None
+        else:
+            ts = float(ts)
+
+        scene_index = (
+            sel.get("scene_index")
+            or fs.get("scene_index")
+            or sc.get("scene_index")
+        )
+
+        overlay_entry = overlay_frames.get(fname) or {}
+        overlay_decision = overlay_entry.get("decision") if isinstance(
+            overlay_entry, dict,
+        ) else None
+        overlay_note = overlay_entry.get("note", "") if isinstance(
+            overlay_entry, dict,
+        ) else ""
+
+        item: dict[str, object] = {
+            "frame_file": fname,
+            "image_url": (
+                f"/job/{job_id}/candidate_frames/{fname}"
+                if on_disk_flag
+                else None
+            ),
+            "on_disk": on_disk_flag,
+            "scene_index": (
+                int(scene_index)
+                if isinstance(scene_index, int) and not isinstance(scene_index, bool)
+                else None
+            ),
+            "timestamp_seconds": ts,
+            "chapter_index": sel.get("chapter_index") if isinstance(
+                sel.get("chapter_index"), int,
+            ) else None,
+            "decision": sel.get("decision"),
+            "shortlist_decision": sel.get("shortlist_decision"),
+            "rank": sel.get("rank") if isinstance(sel.get("rank"), int) else None,
+            "composite_score": (
+                float(sel["composite_score"])
+                if isinstance(sel.get("composite_score"), (int, float))
+                else None
+            ),
+            "clip_similarity": (
+                float(sel["clip_similarity"])
+                if isinstance(sel.get("clip_similarity"), (int, float))
+                else None
+            ),
+            "text_novelty": (
+                float(fs["text_novelty"])
+                if isinstance(fs.get("text_novelty"), (int, float))
+                else None
+            ),
+            "phash": fs.get("phash") if isinstance(fs.get("phash"), str) else None,
+            "ocr_text": (
+                fs["ocr_text"].strip()
+                if isinstance(fs.get("ocr_text"), str)
+                else None
+            ),
+            "duplicate_of": (
+                fs["duplicate_of"]
+                if isinstance(fs.get("duplicate_of"), str)
+                else None
+            ),
+            "reasons": (
+                [r for r in sel["reasons"] if isinstance(r, str)]
+                if isinstance(sel.get("reasons"), list)
+                else None
+            ),
+            "verification": (
+                dict(sel["verification"])
+                if isinstance(sel.get("verification"), dict)
+                else None
+            ),
+            "window_text": (
+                sel["window_text"]
+                if isinstance(sel.get("window_text"), str)
+                else None
+            ),
+            "review": {
+                "decision": overlay_decision,
+                "note": (
+                    overlay_note
+                    if isinstance(overlay_note, str)
+                    else ""
+                ),
+            },
+        }
+        frames_out.append(item)
+
+    # Expose the chapter list already built for the transcript sidebar
+    # so the review card can show chapter context without a second
+    # round-trip.
+    chapter_list = _build_chapter_list(
+        job_dir, logger_stream=logger_stream,
+    )
+    chapter_context = [
+        {
+            "index": ch.get("index"),
+            "start_seconds": ch.get("start_seconds"),
+            "end_seconds": ch.get("end_seconds"),
+            "display_title": ch.get("display_title"),
+        }
+        for ch in (chapter_list.get("chapters") or [])
+    ]
+
+    return {
+        "frames": frames_out,
+        "chapters": chapter_context,
+        "sources": {
+            "selected_frames": selected_path.is_file(),
+            "frame_scores": scores_path.is_file(),
+            "scenes": scenes_path.is_file(),
+            "candidate_frames_dir": candidate_frames_dir.is_dir(),
+            "frame_review_overlay": bool(overlay_frames),
+        },
+        "overlay": overlay,
+    }
+
+
 def _any_stage_running(job_data: dict) -> bool:
     if (job_data.get("status") or "") == "running":
         return True
@@ -1047,6 +1455,7 @@ _JOB_ROOT_FILES: frozenset[str] = frozenset({
     "speaker_names.json",
     "insights.json",
     "chapter_titles.json",
+    "frame_review.json",
 })
 
 _CANDIDATE_FRAME_EXTS: frozenset[str] = frozenset({".jpg", ".jpeg", ".png"})
@@ -1113,6 +1522,7 @@ _ARTIFACT_LABELS: dict[str, str] = {
     "speaker_names.json": "Speaker names",
     "insights.json": "Structured insights",
     "chapter_titles.json": "Chapter titles (overlay)",
+    "frame_review.json": "Frame review (overlay)",
 }
 
 
@@ -2485,6 +2895,9 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                 "chapter_titles_json": (
                     job_dir / "chapter_titles.json"
                 ).is_file(),
+                "frame_review_json": (
+                    job_dir / "frame_review.json"
+                ).is_file(),
             }
             urls = {
                 "analysis_mp4": f"/job/{job_id}/analysis.mp4",
@@ -2506,6 +2919,12 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                 "chapter_titles_json": (
                     f"/job/{job_id}/chapter_titles.json"
                 ),
+                "frames": f"/api/jobs/{job_id}/frames",
+                "frame_review": f"/api/jobs/{job_id}/frame-review",
+                "frame_review_json": (
+                    f"/job/{job_id}/frame_review.json"
+                ),
+                "react_frames": f"/app/job/{job_id}/frames",
             }
             return {
                 "job_id": data.get("job_id") or job_id,
@@ -2764,6 +3183,58 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                     return
                 paths = JobPaths(root=job_dir)
                 doc = _load_chapter_titles(
+                    paths,
+                    logger_stream=getattr(
+                        self.server, "logger_stream", None,
+                    ),
+                )
+                self._send_json(HTTPStatus.OK, doc)
+                return
+
+            # GET /api/jobs/<id>/frames — merged visual-artifact view
+            # (scenes + frame_scores + selected_frames + review
+            # overlay). Always 200 — empty arrays when no upstream
+            # artifact is present.
+            if (
+                len(segments) == 4
+                and segments[0] == "api"
+                and segments[1] == "jobs"
+                and segments[3] == "frames"
+            ):
+                job_id = segments[2]
+                job_dir = _safe_job_dir(root_resolved, job_id)
+                if job_dir is None:
+                    self._send_json(
+                        HTTPStatus.NOT_FOUND,
+                        {"error": "job not found", "reason": "no-such-job"},
+                    )
+                    return
+                payload = _build_frame_list(
+                    job_dir,
+                    logger_stream=getattr(
+                        self.server, "logger_stream", None,
+                    ),
+                )
+                self._send_json(HTTPStatus.OK, payload)
+                return
+
+            # GET /api/jobs/<id>/frame-review — overlay read.
+            if (
+                len(segments) == 4
+                and segments[0] == "api"
+                and segments[1] == "jobs"
+                and segments[3] == "frame-review"
+            ):
+                job_id = segments[2]
+                job_dir = _safe_job_dir(root_resolved, job_id)
+                if job_dir is None:
+                    self._send_json(
+                        HTTPStatus.NOT_FOUND,
+                        {"error": "job not found", "reason": "no-such-job"},
+                    )
+                    return
+                paths = JobPaths(root=job_dir)
+                doc = _load_frame_review(
                     paths,
                     logger_stream=getattr(
                         self.server, "logger_stream", None,
@@ -3700,6 +4171,211 @@ def _make_handler(jobs_root: Path, sources_root: Path):
             try:
                 self.server.logger_stream.write(
                     f"[recap-ui] saved chapter-titles job={job_id} "
+                    f"count={len(sanitized)}\n"
+                )
+                self.server.logger_stream.flush()
+            except Exception:
+                pass
+            self._send_json(HTTPStatus.OK, doc)
+
+        def _handle_api_frame_review_post(self, job_id: str) -> None:
+            """POST /api/jobs/<id>/frame-review — JSON body.
+
+            Body shape:
+
+                {
+                  "frames": {
+                    "scene-001.jpg": {
+                      "decision": "keep"|"reject"|"unset",
+                      "note": "..."
+                    }
+                  }
+                }
+
+            Reuses the ``speaker_names.json`` / ``chapter_titles.json``
+            safety primitives: Host pinning, ``X-Recap-Token`` CSRF,
+            ``_API_POST_BODY_MAX`` body cap, per-job lock, atomic
+            ``<file>.tmp`` → ``os.replace`` write. Keys must pass
+            ``is_safe_frame_file`` (basename, whitelisted extension,
+            no traversal). ``decision="unset"`` removes the mapping.
+            Notes are trimmed, bounded at 300 chars, rejected when
+            they contain control characters except tab. Never mutates
+            ``selected_frames.json`` / ``frame_scores.json``.
+            """
+            allowed_hosts = getattr(self.server, "allowed_hosts", frozenset())
+            got_host = self.headers.get("Host") or ""
+            if not allowed_hosts or not any(
+                secrets.compare_digest(got_host, allowed)
+                for allowed in allowed_hosts
+            ):
+                self._reject_api(
+                    HTTPStatus.FORBIDDEN, "host",
+                    "Host header mismatch.",
+                )
+                return
+
+            ct = (self.headers.get("Content-Type") or "").split(";")[0].strip()
+            if ct.lower() != "application/json":
+                self._reject_api(
+                    HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "content-type",
+                    "Content-Type must be application/json.",
+                )
+                return
+
+            raw_len = self.headers.get("Content-Length")
+            try:
+                content_length = int(raw_len) if raw_len is not None else -1
+            except ValueError:
+                content_length = -1
+            if content_length < 0:
+                self._reject_api(
+                    HTTPStatus.LENGTH_REQUIRED, "content-length-missing",
+                    "Content-Length is required.",
+                )
+                return
+            if content_length > _API_POST_BODY_MAX:
+                self._reject_api(
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "body-too-large",
+                    f"Request body exceeds {_API_POST_BODY_MAX} bytes.",
+                )
+                return
+
+            expected_token = getattr(self.server, "csrf_token", "") or ""
+            got_token = self.headers.get("X-Recap-Token") or ""
+            if not expected_token or not secrets.compare_digest(
+                got_token, expected_token,
+            ):
+                self._reject_api(
+                    HTTPStatus.FORBIDDEN, "csrf",
+                    "CSRF token missing or invalid.",
+                )
+                return
+
+            job_dir = _safe_job_dir(root_resolved, job_id)
+            if job_dir is None:
+                self._reject_api(
+                    HTTPStatus.NOT_FOUND, "no-such-job",
+                    "Job not found.",
+                )
+                return
+
+            raw = (
+                self.rfile.read(content_length) if content_length > 0
+                else b""
+            )
+            try:
+                parsed = json.loads(raw.decode("utf-8", "replace"))
+            except ValueError:
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "bad-json",
+                    "Body is not valid JSON.",
+                )
+                return
+            if not isinstance(parsed, dict):
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "bad-json",
+                    "Top-level JSON must be an object.",
+                )
+                return
+            frames_in = parsed.get("frames")
+            if not isinstance(frames_in, dict):
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "bad-schema",
+                    "Body must contain a 'frames' object.",
+                )
+                return
+
+            # Start from the existing on-disk overlay so a partial
+            # POST (e.g. the UI only edited one card) doesn't drop
+            # other reviewers' mappings. Read via the safe loader to
+            # get already-sanitized values.
+            existing = _load_frame_review(JobPaths(root=job_dir))
+            sanitized: dict[str, dict] = dict(existing.get("frames") or {})
+
+            for key, entry in frames_in.items():
+                if not isinstance(key, str) or not is_safe_frame_file(key):
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "bad-key-shape",
+                        "Frame keys must be safe candidate_frames/ "
+                        "basenames.",
+                    )
+                    return
+                if Path(key).suffix.lower() not in _CANDIDATE_FRAME_EXTS:
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "bad-key-shape",
+                        "Frame keys must carry a whitelisted image "
+                        "extension.",
+                    )
+                    return
+                if not isinstance(entry, dict):
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "bad-value",
+                        "Frame entries must be objects.",
+                    )
+                    return
+                decision = entry.get("decision")
+                if decision not in _API_FRAME_REVIEW_DECISIONS:
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "bad-decision",
+                        "decision must be one of: keep, reject, unset.",
+                    )
+                    return
+                note_raw = entry.get("note", "")
+                if not isinstance(note_raw, str):
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "bad-value",
+                        "'note' must be a string.",
+                    )
+                    return
+                note = note_raw.strip()
+                if len(note) > _API_FRAME_REVIEW_NOTE_MAX_LEN:
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "too-long",
+                        f"Note exceeds "
+                        f"{_API_FRAME_REVIEW_NOTE_MAX_LEN} characters.",
+                    )
+                    return
+                if _speaker_name_contains_control(note):
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "bad-value",
+                        "Note must not contain control characters.",
+                    )
+                    return
+                if decision == "unset":
+                    sanitized.pop(key, None)
+                else:
+                    sanitized[key] = {"decision": decision, "note": note}
+
+            lock = _get_job_lock(job_id)
+            if not lock.acquire(timeout=_LOCK_ACQUIRE_TIMEOUT):
+                self._reject_api(
+                    HTTPStatus.TOO_MANY_REQUESTS, "lock",
+                    "Another action is in progress for this job. "
+                    "Try again shortly.",
+                    extra_headers={"Retry-After": "2"},
+                )
+                return
+
+            try:
+                paths = JobPaths(root=job_dir)
+                try:
+                    doc = _write_frame_review(paths, sanitized)
+                except OSError as e:
+                    self._reject_api(
+                        HTTPStatus.INTERNAL_SERVER_ERROR, "write-failed",
+                        f"Failed to write frame_review.json: "
+                        f"{type(e).__name__}",
+                    )
+                    return
+            finally:
+                try:
+                    lock.release()
+                except RuntimeError:
+                    pass
+
+            try:
+                self.server.logger_stream.write(
+                    f"[recap-ui] saved frame-review job={job_id} "
                     f"count={len(sanitized)}\n"
                 )
                 self.server.logger_stream.flush()
@@ -4798,6 +5474,15 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                 and early_segments[3] == "chapter-titles"
             ):
                 self._handle_api_chapter_titles_post(early_segments[2])
+                return
+
+            if (
+                len(early_segments) == 4
+                and early_segments[0] == "api"
+                and early_segments[1] == "jobs"
+                and early_segments[3] == "frame-review"
+            ):
+                self._handle_api_frame_review_post(early_segments[2])
                 return
 
             if early_segments == ["api", "jobs", "start"]:

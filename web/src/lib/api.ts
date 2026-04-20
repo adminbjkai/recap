@@ -247,6 +247,69 @@ export type ChapterTitlesDoc = {
   titles: Record<string, string>;
 };
 
+export type FrameReviewDecision = "keep" | "reject" | null;
+
+export type FrameReviewEntry = {
+  decision: FrameReviewDecision | "unset";
+  note?: string;
+};
+
+export type FrameReviewDoc = {
+  version: 1;
+  updated_at: string | null;
+  frames: Record<string, { decision: "keep" | "reject"; note: string }>;
+};
+
+export type FrameVerification = {
+  provider?: string | null;
+  relevance?: string | null;
+  confidence?: number | null;
+  model?: string | null;
+  caption?: string | null;
+};
+
+export type FrameItem = {
+  frame_file: string;
+  image_url: string | null;
+  on_disk: boolean;
+  scene_index: number | null;
+  timestamp_seconds: number | null;
+  chapter_index: number | null;
+  decision: string | null;
+  shortlist_decision: string | null;
+  rank: number | null;
+  composite_score: number | null;
+  clip_similarity: number | null;
+  text_novelty: number | null;
+  phash: string | null;
+  ocr_text: string | null;
+  duplicate_of: string | null;
+  reasons: string[] | null;
+  verification: FrameVerification | null;
+  window_text: string | null;
+  review: { decision: "keep" | "reject" | null; note: string };
+};
+
+export type FrameChapterContext = {
+  index: number;
+  start_seconds: number | null;
+  end_seconds: number | null;
+  display_title: string;
+};
+
+export type FrameListPayload = {
+  frames: FrameItem[];
+  chapters: FrameChapterContext[];
+  sources: {
+    selected_frames: boolean;
+    frame_scores: boolean;
+    scenes: boolean;
+    candidate_frames_dir: boolean;
+    frame_review_overlay: boolean;
+  };
+  overlay: FrameReviewDoc;
+};
+
 export type SpeakerNamesDoc = {
   version: 1;
   updated_at: string | null;
@@ -592,6 +655,58 @@ export async function saveChapterTitles(
     );
   }
   return body as ChapterTitlesDoc;
+}
+
+export function getFrames(id: string): Promise<FrameListPayload> {
+  return requestJson<FrameListPayload>(
+    `/api/jobs/${encodeURIComponent(id)}/frames`,
+  );
+}
+
+export function getFrameReview(id: string): Promise<FrameReviewDoc> {
+  return requestJson<FrameReviewDoc>(
+    `/api/jobs/${encodeURIComponent(id)}/frame-review`,
+  );
+}
+
+async function postFrameReview(
+  id: string,
+  frames: Record<string, FrameReviewEntry>,
+  token: string,
+): Promise<Response> {
+  return fetch(
+    `/api/jobs/${encodeURIComponent(id)}/frame-review`,
+    {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-Recap-Token": token,
+      },
+      body: JSON.stringify({ frames }),
+    },
+  );
+}
+
+export async function saveFrameReview(
+  id: string,
+  frames: Record<string, FrameReviewEntry>,
+): Promise<FrameReviewDoc> {
+  let token = await getCsrf();
+  let response = await postFrameReview(id, frames, token);
+  if (response.status === 403) {
+    token = await getCsrf(true);
+    response = await postFrameReview(id, frames, token);
+  }
+  const body = await parseJson<FrameReviewDoc | ApiErrorBody>(response);
+  if (!response.ok) {
+    const apiBody = body as ApiErrorBody;
+    throw new Error(
+      apiBody.error || `${response.status} ${response.statusText}`,
+    );
+  }
+  return body as FrameReviewDoc;
 }
 
 export function getSpeakerNames(id: string): Promise<SpeakerNamesDoc> {

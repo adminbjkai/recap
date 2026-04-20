@@ -1252,6 +1252,264 @@ def main() -> int:
         if fixture_cand_bytes is not None:
             cand_path.write_bytes(fixture_cand_bytes)
 
+        # -----------------------------------------------------------
+        # /api/jobs/<id>/frames + /api/jobs/<id>/frame-review. The
+        # minimal fixture ships with scene-001..003.jpg +
+        # selected_frames.json already, so the merged view has real
+        # data without any additional seeding. We move selected_frames
+        # aside first to exercise the "candidates on disk but no
+        # selected_frames.json yet" path, then restore it before the
+        # main flow.
+        # -----------------------------------------------------------
+        fr_path = job_dir / "frame_review.json"
+        sel_path = job_dir / "selected_frames.json"
+        fixture_sel_bytes = (
+            sel_path.read_bytes() if sel_path.exists() else None
+        )
+
+        # Exercise candidates-only view (selected_frames absent).
+        if sel_path.exists():
+            sel_path.unlink()
+        case = "api-frames-candidates-only"
+        got = get_json(case, port, "/api/jobs/minimal_job/frames")
+        frames = got.get("frames") or []
+        if not frames:
+            fail(case, f"expected on-disk candidate frames: {got!r}")
+        names = [f.get("frame_file") for f in frames]
+        if "scene-001.jpg" not in names:
+            fail(case, f"scene-001.jpg missing: {names!r}")
+        first = next(f for f in frames if f.get("frame_file") == "scene-001.jpg")
+        if first.get("image_url") != "/job/minimal_job/candidate_frames/scene-001.jpg":
+            fail(case, f"image_url wrong: {first!r}")
+        if first.get("on_disk") is not True:
+            fail(case, f"on_disk should be True: {first!r}")
+        if got.get("sources", {}).get("selected_frames") is not False:
+            fail(case, f"selected_frames flag should be False: {got!r}")
+        if got.get("sources", {}).get("candidate_frames_dir") is not True:
+            fail(case, f"candidate_frames_dir flag should be True: {got!r}")
+        passed()
+
+        # Restore selected_frames.json and exercise the enriched view.
+        if fixture_sel_bytes is not None:
+            sel_path.write_bytes(fixture_sel_bytes)
+
+        case = "api-frames-enriched-with-selected"
+        got = get_json(case, port, "/api/jobs/minimal_job/frames")
+        frames = got.get("frames") or []
+        s1 = next(
+            (f for f in frames if f.get("frame_file") == "scene-001.jpg"),
+            None,
+        )
+        if s1 is None:
+            fail(case, f"scene-001.jpg missing: {frames!r}")
+        # Fixture's selected_frames.json for scene-001.jpg sets a
+        # hero/supporting decision and chapter_index=1.
+        if s1.get("chapter_index") != 1:
+            fail(case, f"chapter_index wrong: {s1!r}")
+        if not s1.get("decision"):
+            fail(case, f"decision missing: {s1!r}")
+        if got.get("sources", {}).get("selected_frames") is not True:
+            fail(case, f"selected_frames flag should be True: {got!r}")
+        # Frame-review overlay flag should be False (no overlay yet).
+        if got.get("sources", {}).get("frame_review_overlay") is not False:
+            fail(case, f"frame_review_overlay should be False: {got!r}")
+        # Chapter context should be populated too.
+        chs = got.get("chapters") or []
+        if not chs or chs[0].get("index") != 1:
+            fail(case, f"chapter context missing: {got!r}")
+        passed()
+
+        case = "api-frame-review-empty-when-absent"
+        got = get_json(
+            case, port, "/api/jobs/minimal_job/frame-review",
+        )
+        if got != {"version": 1, "updated_at": None, "frames": {}}:
+            fail(case, f"expected empty overlay: {got!r}")
+        passed()
+
+        case = "api-frame-review-missing-csrf"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/frame-review",
+            {"frames": {"scene-001.jpg": {"decision": "keep", "note": "ok"}}},
+        )
+        if status != 403:
+            fail(case, f"expected 403, got {status}: {got!r}")
+        expect_reason(case, got, "csrf")
+        passed()
+
+        case = "api-frame-review-traversal-filename"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/frame-review",
+            {"frames": {"../../etc/passwd": {"decision": "keep"}}},
+            token=token,
+        )
+        if status != 400:
+            fail(case, f"expected 400, got {status}: {got!r}")
+        expect_reason(case, got, "bad-key-shape")
+        passed()
+
+        case = "api-frame-review-disallowed-extension"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/frame-review",
+            {"frames": {"evil.sh": {"decision": "keep"}}},
+            token=token,
+        )
+        if status != 400:
+            fail(case, f"expected 400, got {status}: {got!r}")
+        expect_reason(case, got, "bad-key-shape")
+        passed()
+
+        case = "api-frame-review-bad-decision"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/frame-review",
+            {"frames": {"scene-001.jpg": {"decision": "maybe"}}},
+            token=token,
+        )
+        if status != 400:
+            fail(case, f"expected 400, got {status}: {got!r}")
+        expect_reason(case, got, "bad-decision")
+        passed()
+
+        case = "api-frame-review-note-too-long"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/frame-review",
+            {
+                "frames": {
+                    "scene-001.jpg": {
+                        "decision": "keep",
+                        "note": "x" * 301,
+                    },
+                },
+            },
+            token=token,
+        )
+        if status != 400:
+            fail(case, f"expected 400, got {status}: {got!r}")
+        expect_reason(case, got, "too-long")
+        passed()
+
+        case = "api-frame-review-control-chars"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/frame-review",
+            {
+                "frames": {
+                    "scene-001.jpg": {
+                        "decision": "keep",
+                        "note": "bad\x01note",
+                    },
+                },
+            },
+            token=token,
+        )
+        if status != 400:
+            fail(case, f"expected 400, got {status}: {got!r}")
+        expect_reason(case, got, "bad-value")
+        passed()
+
+        case = "api-frame-review-success"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/frame-review",
+            {
+                "frames": {
+                    "scene-001.jpg": {
+                        "decision": "keep",
+                        "note": "  hero looks right  ",
+                    },
+                    "scene-002.jpg": {
+                        "decision": "reject",
+                        "note": "",
+                    },
+                },
+            },
+            token=token,
+        )
+        if status != 200:
+            fail(case, f"expected 200, got {status}: {got!r}")
+        stored = got.get("frames") or {}
+        if stored.get("scene-001.jpg") != {
+            "decision": "keep",
+            "note": "hero looks right",
+        }:
+            fail(case, f"scene-001 entry wrong: {stored!r}")
+        if stored.get("scene-002.jpg") != {
+            "decision": "reject",
+            "note": "",
+        }:
+            fail(case, f"scene-002 entry wrong: {stored!r}")
+        disk = json.loads(fr_path.read_text(encoding="utf-8"))
+        if disk.get("frames") != stored:
+            fail(case, f"disk mismatch: {disk!r}")
+        passed()
+
+        case = "api-frames-reflects-review-overlay"
+        got = get_json(case, port, "/api/jobs/minimal_job/frames")
+        frames = got.get("frames") or []
+        by_name = {f.get("frame_file"): f for f in frames}
+        if by_name.get("scene-001.jpg", {}).get("review") != {
+            "decision": "keep",
+            "note": "hero looks right",
+        }:
+            fail(
+                case,
+                f"overlay not merged: {by_name.get('scene-001.jpg')!r}",
+            )
+        if by_name.get("scene-002.jpg", {}).get("review") != {
+            "decision": "reject",
+            "note": "",
+        }:
+            fail(
+                case,
+                f"reject overlay not merged: {by_name.get('scene-002.jpg')!r}",
+            )
+        if got.get("sources", {}).get("frame_review_overlay") is not True:
+            fail(case, f"overlay flag should be True: {got!r}")
+        passed()
+
+        case = "api-frame-review-unset-removes"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/frame-review",
+            {
+                "frames": {
+                    "scene-001.jpg": {"decision": "unset"},
+                },
+            },
+            token=token,
+        )
+        if status != 200:
+            fail(case, f"expected 200, got {status}: {got!r}")
+        if "scene-001.jpg" in (got.get("frames") or {}):
+            fail(case, f"unset did not remove entry: {got!r}")
+        # scene-002 mapping should still be there.
+        if "scene-002.jpg" not in (got.get("frames") or {}):
+            fail(case, f"unset dropped unrelated entry: {got!r}")
+        passed()
+
+        case = "api-frame-review-malformed-graceful"
+        fr_path.write_text("{not json", encoding="utf-8")
+        got = get_json(
+            case, port, "/api/jobs/minimal_job/frame-review",
+        )
+        if got.get("frames") != {}:
+            fail(case, f"malformed overlay not graceful: {got!r}")
+        got2 = get_json(case, port, "/api/jobs/minimal_job/frames")
+        for entry in (got2.get("frames") or []):
+            if entry.get("review", {}).get("decision") is not None:
+                fail(case, "malformed overlay leaked into merged view")
+        passed()
+
+        # Teardown: remove the overlay file so later tests see the
+        # fixture scratch copy unchanged.
+        if fr_path.exists():
+            fr_path.unlink()
+
         case = "api-insights-endpoint-404-when-absent"
         i_path = job_dir / "insights.json"
         if i_path.exists():

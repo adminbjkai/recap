@@ -39,7 +39,18 @@ does and produces, read `HANDOFF.md`.
   — same safety primitives as `speaker_names.json`; keys are
   integer-string indices, values trimmed and capped at 120 chars,
   control chars rejected, empty values clear the mapping, overlay
-  never mutates `chapter_candidates.json` or `insights.json`), and
+  never mutates `chapter_candidates.json` or `insights.json`),
+  `GET /api/jobs/<id>/frames` (merged view of `candidate_frames/` +
+  `frame_scores.json` + `scenes.json` + `selected_frames.json` +
+  `frame_review.json`; always 200 even with empty arrays; chapter
+  context via the shared `_build_chapter_list` merger),
+  `GET /api/jobs/<id>/frame-review` /
+  `POST /api/jobs/<id>/frame-review` (overlay read + atomic write;
+  keys must be `is_safe_frame_file` basenames with a whitelisted
+  image extension; `decision` ∈ `{keep, reject, unset}` with `unset`
+  removing the mapping; notes trimmed and capped at 300 chars with
+  control chars rejected; overlay never mutates
+  `selected_frames.json` or `frame_scores.json`), and
   `POST /api/recordings` (accept a browser-recorded screen clip
   streamed to `<sources-root>/recording-<UTC>-<hex>.<ext>` under a
   server-picked filename, Host-pinned, CSRF-guarded, 2 GiB cap,
@@ -116,6 +127,15 @@ does and produces, read `HANDOFF.md`.
   uses the stored custom_title, empty-value → removes mapping,
   malformed overlay graceful-fallback) —
   13 new checks total,
+  `/api/jobs/<id>/frames` (candidates-only baseline, enriched view
+  with selected_frames + chapter context, overlay round-trip merged
+  back into the list, malformed overlay graceful-fallback) and
+  `/api/jobs/<id>/frame-review` (empty default, missing CSRF → 403,
+  traversal filename → 400 bad-key-shape, disallowed extension → 400
+  bad-key-shape, bad decision → 400, too-long note → 400,
+  control-char note → 400, success round-trip + disk persistence,
+  `unset` decision removes the mapping without dropping unrelated
+  entries) — 13 new checks total,
   `/api/jobs/<id>/runs/insights` (missing CSRF → 403, invalid
   provider → 400, Groq-without-key → 400, no-such-job → 404, mock
   dispatch → 202 + status→success via the `RECAP_API_STUB_RUN=1`
@@ -150,7 +170,12 @@ does and produces, read `HANDOFF.md`.
   state aria-current and custom pill, onSeek callback, rename flow
   posting trimmed title via `saveChapterTitles`, save-error inline
   render, Escape-to-cancel), plus a `saveChapterTitles` unit test
-  that asserts the `X-Recap-Token` header is attached, and
+  that asserts the `X-Recap-Token` header is attached,
+  `FrameReviewPage` (empty state when no visual artifacts, grid
+  rendering with image + timestamp + algorithm pills, save enables
+  after a decision change + POST with `X-Recap-Token` header +
+  toolbar dirty count + success toast, bounded inline error when
+  save fails, Reviewed filter narrows the grid), and
   `RecordingPanel` (unsupported browser, ready →
   recording → preview transitions with a fake MediaRecorder +
   getDisplayMedia, upload-success → saved state with CSRF header

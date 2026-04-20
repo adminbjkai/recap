@@ -78,6 +78,10 @@ class JobPaths:
         return self.root / "chapter_titles.json"
 
     @property
+    def frame_review_json(self) -> Path:
+        return self.root / "frame_review.json"
+
+    @property
     def scenes_json(self) -> Path:
         return self.root / "scenes.json"
 

@@ -254,22 +254,44 @@ a handful of minutes.
 surface; exports still render the upstream / fallback title. This
 is kept separate to avoid report byte-compat regressions.
 
-## 8. Screenshot / frame review UI
+## 8. Screenshot / frame review UI — **done**
 
-- React surface on the job dashboard (or transcript workspace) that
-  renders `selected_frames.json` hero/supporting choices side-by-side
-  with their chapter excerpt and any VLM-provided caption.
-- Inline keep/reject overrides written as a small overlay file so
-  `selected_frames.json` itself stays immutable and re-runnable.
-- Respect the existing screenshot policy (1 hero per chapter, up to
-  3 supporting, no fixed-interval capture).
+**Shipped in:**
+- `Add screenshot review workspace`
+
+**What it gives users:**
+- `/app/job/<id>/frames` React route that renders every image in
+  `candidate_frames/` as a card with the algorithm's output
+  (hero / supporting / VLM-rejected, shortlist decision, rank,
+  composite score, CLIP similarity, text novelty, VLM relevance +
+  caption, OCR text) beside the image, plus the chapter context
+  pulled from the existing chapters merger.
+- Inline `keep` / `reject` / `unset` controls with a 300-char note
+  per frame. Changes batch locally; a toolbar shows the unsaved
+  count; a single **Save review** POST persists the whole batch to
+  a new `frame_review.json` overlay via atomic
+  `<file>.tmp` → `os.replace`. **Discard changes** reverts.
+  Filter tabs narrow the grid by shortlist / selected / reviewed.
+- New `GET /api/jobs/<id>/frames` merged view,
+  `GET /api/jobs/<id>/frame-review` overlay read, and
+  `POST /api/jobs/<id>/frame-review` overlay write. Write endpoint
+  reuses Host pinning, `X-Recap-Token` CSRF, 8 KiB body cap,
+  per-job lock, and atomic replace. Keys must pass
+  `is_safe_frame_file` **and** carry a whitelisted image extension.
+- Respects the existing screenshot policy — scoring and selection
+  stages in `recap/stages/*` are untouched. The overlay never
+  mutates `selected_frames.json` or `frame_scores.json`; it captures
+  user intent for a future exporter-overlay slice.
+
+**Deferred to slice 9:** exporters honoring `frame_review.json`
+(kept separate to avoid report byte-compat regressions).
 
 ## 9. Exports honor overlays fully
 
 - `recap assemble` / `export-html` / `export-docx` render
   `speaker_names.json` labels (not fallback `Speaker N`), chapter-
   title overlay titles (not `chapter_candidates.json#title`), and
-  any frame-review overlay from slice 8.
+  filter / annotate frames per `frame_review.json` from slice 8.
 - Static check in `scripts/verify_reports.py` proves exports stay
   byte-compatible when no overlay is present.
 - Exports still run from both the CLI and the legacy rich-report

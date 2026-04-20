@@ -190,23 +190,22 @@ The authoritative, versioned list lives in
 [docs/product_roadmap.md](docs/product_roadmap.md). At the time of
 this writing the next slices — in order — are:
 
-1. **Screenshot / frame review UI** (slice 8). Inline review of
-   `selected_frames.json` hero/supporting choices with keep/reject
-   overrides written as an overlay.
-2. **Exporters honor overlays fully** (slice 9). `recap assemble` /
+1. **Exporters honor overlays fully** (slice 9). `recap assemble` /
    `export-html` / `export-docx` render `speaker_names.json` labels
-   and any `chapter_titles.json` overlay titles, not the fallback
-   `Speaker N` / upstream chapter title.
-3. **Folders / projects / archive** (slice 12). Rename / move /
+   and any `chapter_titles.json` overlay titles, and filter /
+   annotate frames per `frame_review.json`, not the fallback
+   `Speaker N` / upstream chapter title / unfiltered selected-frame
+   list.
+2. **Folders / projects / archive** (slice 12). Rename / move /
    archive jobs via a sidecar index file; `jobs/<id>/` layout stays
    stable.
-4. **Live progress (SSE / polling) + webhooks** (slice 13). Upgrade
+3. **Live progress (SSE / polling) + webhooks** (slice 13). Upgrade
    the 4b polling loop to a push transport when run budgets grow
    past a few minutes.
-5. **Linux self-host / deploy hardening** (slice 14). End-to-end
+4. **Linux self-host / deploy hardening** (slice 14). End-to-end
    host docs, a `systemd` unit, reverse-proxy notes covering Host
    pinning + CSRF, TLS guidance.
-6. **Single-user / reverse-proxy auth** (slice 15). Minimal auth
+5. **Single-user / reverse-proxy auth** (slice 15). Minimal auth
    surface so Recap can safely bind beyond `127.0.0.1`. Gated on
    slice 14.
 

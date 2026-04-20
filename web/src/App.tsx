@@ -1,5 +1,6 @@
 import { Route, Routes } from "react-router-dom";
 import AppShell from "./components/AppShell";
+import FrameReviewPage from "./pages/FrameReviewPage";
 import JobDetailPage from "./pages/JobDetailPage";
 import JobsIndexPage from "./pages/JobsIndexPage";
 import NewJobPage from "./pages/NewJobPage";
@@ -15,6 +16,7 @@ export default function App() {
           path="/job/:id/transcript"
           element={<TranscriptWorkspacePage />}
         />
+        <Route path="/job/:id/frames" element={<FrameReviewPage />} />
         <Route path="/job/:id" element={<JobDetailPage />} />
         <Route path="*" element={<JobsIndexPage />} />
       </Routes>
