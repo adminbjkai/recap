@@ -616,6 +616,63 @@ Diarized transcripts emit `utterances[]` with integer speaker ids,
 which the transcript viewer then renders as colored rows + a
 speakers legend.
 
+### Generate rich report
+
+Each job detail page carries a **Generate rich report** button in
+the Actions section. Clicking it `POST`s to
+`/job/<id>/run/rich-report`, which spawns a daemon thread that runs
+this fixed 11-stage chain against the existing job:
+
+1. `recap scenes`
+2. `recap dedupe`
+3. `recap window`
+4. `recap similarity`
+5. `recap chapters`
+6. `recap rank`
+7. `recap shortlist`
+8. `recap verify --provider mock`
+9. `recap assemble --force`
+10. `recap export-html --force`
+11. `recap export-docx --force`
+
+Only the `mock` VLM provider is wired into this slice; Gemini is
+deliberately not exposed through the dashboard. Skip-aware stages
+short-circuit on reruns, so clicking the button again after a
+partial failure finishes only the missing work. The three exporters
+always run with `--force` so the final artifacts reflect the latest
+inputs.
+
+Expected runtime depends mostly on the `recap similarity` stage.
+On a fresh checkout the first run downloads the OpenCLIP
+`ViT-B-32` OpenAI weights (~350 MB) into the local cache, so the
+first rich-report takes several minutes longer than subsequent
+runs. `recap dedupe` requires the `tesseract` system binary; if it
+is missing the chain stops at that step with a clean failure on
+the results page, and the button can be clicked again after
+installing it.
+
+The chain shares the existing `_run_slot` semaphore with
+`recap run` started from `/new`, so only **one** long-running job
+(either a new `recap run` or a rich-report) is allowed at a time
+across the whole server. A second click during contention returns
+`429` with a `Retry-After` header and a friendly message. A
+rich-report also holds the existing per-job lock for its whole
+duration, so exporter rerun buttons on the same job return `429`
+until the chain finishes.
+
+Progress is visible at `/job/<id>/run/rich-report/last`: while the
+chain is in-progress the page auto-refreshes every five seconds
+and highlights the currently-running stage; on success it shows
+the elapsed time and a link back to the job detail page; on
+failure it shows the failed stage's captured `stderr` (truncated
+to 8 KiB). The in-memory progress cache is not persisted across
+UI server restarts — stop-and-restart loses the progress entry,
+but any artifacts already written to disk (scenes.json,
+candidate_frames/, report.md, etc.) survive and the button can
+simply be re-clicked. `recap run` composition remains Phase-1
+only; the browser-started run at `/new` still only executes
+ingest → normalize → transcribe → assemble.
+
 ### Transcript viewer
 
 Each job detail page includes a **View transcript** link (shown only

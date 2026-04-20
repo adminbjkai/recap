@@ -636,6 +636,52 @@ def main() -> int:
             fail(case, f"expected 404, got {status}")
         passed()
 
+        # ---- rich-report HTTP surface ------------------------------
+
+        case = "detail-has-rich-report-form-and-link"
+        _, body = expect_status(case, port, "/job/minimal_job/", 200)
+        expect_contains(
+            case, body, b'action="/job/minimal_job/run/rich-report"',
+        )
+        expect_contains(case, body, b"Generate rich report")
+        expect_contains(
+            case, body, b'href="/job/minimal_job/run/rich-report/last"',
+        )
+        expect_contains(case, body, b'name="_token"')
+        passed()
+
+        case = "rich-report-last-no-runs-yet"
+        _, body = expect_status(
+            case, port, "/job/minimal_job/run/rich-report/last", 200,
+        )
+        expect_contains(case, body, b"No rich-report runs yet.")
+        passed()
+
+        case = "rich-report-unknown-job"
+        status, _, _ = http_get(
+            port, "/job/does-not-exist/run/rich-report/last",
+        )
+        if status != 404:
+            fail(case, f"expected 404, got {status}")
+        passed()
+
+        case = "post-rich-report-missing-token"
+        status, _, _ = http_post(
+            port, "/job/minimal_job/run/rich-report", {},
+        )
+        if status != 403:
+            fail(case, f"expected 403, got {status}")
+        passed()
+
+        case = "post-rich-report-forged-host"
+        status, _, _ = http_post(
+            port, "/job/minimal_job/run/rich-report", {"_token": token},
+            host_override="bogus.example:8765",
+        )
+        if status != 403:
+            fail(case, f"expected 403, got {status}")
+        passed()
+
         case = "detail-malformed-selected"
         sfp = job_dir / "selected_frames.json"
         original_sf = sfp.read_text(encoding="utf-8")
@@ -954,6 +1000,192 @@ def main() -> int:
     finally:
         stop_ui(proc)
         shutil.rmtree(scratch_root, ignore_errors=True)
+
+    # ---- in-process renderer coverage for rich-report -----------
+    # We can exercise the in-progress / success / failure rendering
+    # branches of `render_rich_report_last` without launching the
+    # heavy chain by importing recap.ui directly and seeding its
+    # in-memory `_last_run` map. Keeps the heavy Tesseract/OpenCLIP
+    # integration path out of CI but still covers the templates.
+    sys.path.insert(0, str(REPO_ROOT))
+    from recap import ui as ui_mod
+
+    render_scratch = Path(tempfile.mkdtemp(prefix="recap_ui_render_"))
+    try:
+        rj = render_scratch / "minimal_job"
+        shutil.copytree(FIXTURE, rj)
+
+        case = "rich-report-render-in-progress"
+        with ui_mod._job_locks_guard:
+            ui_mod._last_run[("minimal_job", "rich-report")] = {
+                "started_at": "2026-04-19T00:00:00Z",
+                "finished_at": None,
+                "status": "in-progress",
+                "current_stage": "similarity",
+                "failed_stage": None,
+                "stages": [
+                    {"name": "scenes", "status": "completed",
+                     "exit_code": 0, "stdout": "", "stderr": "",
+                     "elapsed": 1.5},
+                    {"name": "similarity", "status": "running",
+                     "exit_code": None, "stdout": "", "stderr": "",
+                     "elapsed": None},
+                ],
+                "elapsed": None,
+            }
+        body = ui_mod.render_rich_report_last("minimal_job", rj)
+        if b'meta http-equiv="refresh" content="5"' not in body:
+            fail(case, "missing 5-s meta refresh during in-progress")
+        if b"<code>similarity</code>" not in body:
+            fail(case, "current stage not surfaced")
+        if b'<tr class="active">' not in body:
+            fail(case, "running stage row not marked active")
+        passed()
+
+        case = "rich-report-render-success"
+        with ui_mod._job_locks_guard:
+            ui_mod._last_run[("minimal_job", "rich-report")] = {
+                "started_at": "2026-04-19T00:00:00Z",
+                "finished_at": "2026-04-19T00:05:00Z",
+                "status": "success",
+                "current_stage": None,
+                "failed_stage": None,
+                "stages": [
+                    {"name": "scenes", "status": "completed",
+                     "exit_code": 0, "stdout": "", "stderr": "",
+                     "elapsed": 1.0},
+                    {"name": "export-docx", "status": "completed",
+                     "exit_code": 0, "stdout": "", "stderr": "",
+                     "elapsed": 0.3},
+                ],
+                "elapsed": 300.0,
+            }
+        body = ui_mod.render_rich_report_last("minimal_job", rj)
+        if b'meta http-equiv="refresh"' in body:
+            fail(case, "success page should not auto-refresh")
+        if b"Elapsed" not in body or b"300.00" not in body:
+            fail(case, "missing elapsed summary")
+        if (b'<a href="/job/minimal_job/">job detail page</a>'
+                not in body):
+            fail(case, "missing link back to job detail page")
+        passed()
+
+        case = "rich-report-render-failure"
+        with ui_mod._job_locks_guard:
+            ui_mod._last_run[("minimal_job", "rich-report")] = {
+                "started_at": "2026-04-19T00:00:00Z",
+                "finished_at": "2026-04-19T00:00:42Z",
+                "status": "failure",
+                "current_stage": None,
+                "failed_stage": "dedupe",
+                "stages": [
+                    {"name": "scenes", "status": "completed",
+                     "exit_code": 0, "stdout": "", "stderr": "",
+                     "elapsed": 1.0},
+                    {"name": "dedupe", "status": "failed",
+                     "exit_code": 2, "stdout": "",
+                     "stderr": "tesseract: command not found",
+                     "elapsed": 0.1},
+                ],
+                "elapsed": 42.0,
+            }
+        body = ui_mod.render_rich_report_last("minimal_job", rj)
+        if b'meta http-equiv="refresh"' in body:
+            fail(case, "failure page should not auto-refresh")
+        if b"Failed stage" not in body:
+            fail(case, "missing 'Failed stage' row")
+        if b"<code>dedupe</code>" not in body:
+            fail(case, "missing failed-stage name")
+        if b"tesseract: command not found" not in body:
+            fail(case, "failed-stage stderr not rendered")
+        if b'<pre class="output">' not in body:
+            fail(case, "stderr not wrapped in <pre class=\"output\">")
+        passed()
+
+        with ui_mod._job_locks_guard:
+            ui_mod._last_run.pop(("minimal_job", "rich-report"), None)
+
+        # Hard-budget guard: with `_FULL_RUN_TIMEOUT` set to 0 the
+        # chain deadline is already past on entry; the first stage
+        # must be recorded as failed WITHOUT spawning a subprocess,
+        # the chain stops, and both lock + slot must be released.
+        case = "rich-report-respects-chain-budget"
+        budget_job_id = "budget_guard_job"
+        # Seed _run_slot and a fresh per-job lock the way the
+        # handler would just before calling _background_rich_report.
+        if not ui_mod._run_slot.acquire(blocking=False):
+            fail(case, "_run_slot was already held before guard test")
+        lock = ui_mod._get_job_lock(budget_job_id)
+        if not lock.acquire(timeout=1.0):
+            fail(case, "could not acquire per-job lock for guard test")
+        original_timeout = ui_mod._FULL_RUN_TIMEOUT
+        ui_mod._FULL_RUN_TIMEOUT = 0.0
+        try:
+            ui_mod._background_rich_report(budget_job_id, rj, lock)
+        finally:
+            ui_mod._FULL_RUN_TIMEOUT = original_timeout
+
+        # Lock ownership contract: the worker's finally must have
+        # released both the per-job lock and the global slot.
+        if lock.acquire(blocking=False):
+            lock.release()
+        else:
+            fail(case, "per-job lock not released by _background_rich_report")
+        if ui_mod._run_slot.acquire(blocking=False):
+            ui_mod._run_slot.release()
+        else:
+            fail(case, "_run_slot not released by _background_rich_report")
+
+        with ui_mod._job_locks_guard:
+            guard_entry = ui_mod._last_run.get(
+                (budget_job_id, "rich-report")
+            )
+            ui_mod._last_run.pop((budget_job_id, "rich-report"), None)
+            ui_mod._job_locks.pop(budget_job_id, None)
+        if guard_entry is None:
+            fail(case, "no _last_run entry was written")
+        if guard_entry.get("status") != "failure":
+            fail(
+                case,
+                f"expected status=failure, got {guard_entry.get('status')!r}",
+            )
+        if guard_entry.get("failed_stage") != "scenes":
+            fail(
+                case,
+                f"expected failed_stage=scenes, got "
+                f"{guard_entry.get('failed_stage')!r}",
+            )
+        stages = guard_entry.get("stages") or []
+        if not stages or stages[0].get("name") != "scenes":
+            fail(case, "first stage row missing or not 'scenes'")
+        if stages[0].get("status") != "failed":
+            fail(
+                case,
+                f"first stage status={stages[0].get('status')!r}, "
+                "expected 'failed'",
+            )
+        if stages[0].get("exit_code") is not None:
+            fail(
+                case,
+                "subprocess was spawned despite exhausted chain budget",
+            )
+        if "chain budget" not in (stages[0].get("stderr") or ""):
+            fail(
+                case,
+                f"stderr missing 'chain budget' marker: "
+                f"{stages[0].get('stderr')!r}",
+            )
+        # Later stages must not have been attempted at all.
+        for row in stages[1:]:
+            if row.get("status") != "pending":
+                fail(
+                    case,
+                    f"stage {row.get('name')!r} not pending: "
+                    f"{row.get('status')!r}",
+                )
+        passed()
+    finally:
+        shutil.rmtree(render_scratch, ignore_errors=True)
 
     print(f"OK: {CHECKS_PASSED} UI checks passed")
     return 0

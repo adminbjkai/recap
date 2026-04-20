@@ -132,6 +132,29 @@ _ENGINE_CHOICES: frozenset[str] = frozenset({
     "deepgram",
 })
 
+# Fixed 11-stage pipeline run by the "Generate rich report" dashboard
+# action. Each entry is `(stage_name, extra_argv)` and is invoked
+# against the job directory as
+# `python -m recap <stage_name> --job <dir> *extra_argv`.
+# The ordering is load-bearing: each stage consumes the previous
+# stage's artifacts. `verify` uses the `mock` provider deliberately —
+# no Gemini key entry in the UI for this slice. `assemble` and the
+# two exporters always run with `--force` so the final artifacts
+# reflect the latest inputs.
+_RICH_REPORT_STAGES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("scenes",      ()),
+    ("dedupe",      ()),
+    ("window",      ()),
+    ("similarity",  ()),
+    ("chapters",    ()),
+    ("rank",        ()),
+    ("shortlist",   ()),
+    ("verify",      ("--provider", "mock")),
+    ("assemble",    ("--force",)),
+    ("export-html", ("--force",)),
+    ("export-docx", ("--force",)),
+)
+
 
 def _parse_range(header: str | None, size: int) -> tuple[int, int] | None:
     """Parse a single-range `Range: bytes=<spec>` header.
@@ -306,6 +329,146 @@ def _background_run(job_id: str, job_dir: Path, engine: str) -> None:
             "elapsed": time.monotonic() - t0,
         })
     finally:
+        _run_slot.release()
+
+
+def _background_rich_report(
+    job_id: str, job_dir: Path, job_lock: threading.Lock,
+) -> None:
+    """Run the 11-stage rich-report chain against an existing job.
+
+    Ownership contract: the handler acquires `_run_slot` and the
+    per-job `job_lock` before spawning this thread and transfers both
+    to the thread. The thread is responsible for releasing both in
+    its `finally` block. Never import or call `recap.stages.* run()`
+    functions — every stage runs as its own subprocess.
+    """
+    started_at = _now_iso()
+    t0 = time.monotonic()
+    chain_deadline = t0 + _FULL_RUN_TIMEOUT
+
+    with _job_locks_guard:
+        entry = _last_run.get((job_id, "rich-report")) or {}
+        stages_state = [
+            {
+                "name": name,
+                "status": "pending",
+                "exit_code": None,
+                "stdout": "",
+                "stderr": "",
+                "elapsed": None,
+            }
+            for name, _args in _RICH_REPORT_STAGES
+        ]
+        entry.update({
+            "started_at": started_at,
+            "finished_at": None,
+            "status": "in-progress",
+            "current_stage": None,
+            "failed_stage": None,
+            "stages": stages_state,
+            "elapsed": None,
+        })
+        _last_run[(job_id, "rich-report")] = entry
+
+    try:
+        overall_status = "success"
+        failed_stage: str | None = None
+        for idx, (stage, extra_args) in enumerate(_RICH_REPORT_STAGES):
+            with _job_locks_guard:
+                cur = _last_run[(job_id, "rich-report")]
+                cur["current_stage"] = stage
+                cur["stages"][idx]["status"] = "running"
+
+            stage_t0 = time.monotonic()
+            stage_stdout = ""
+            stage_stderr = ""
+            stage_exit: int | None = None
+
+            # Hard total-chain budget. If we've already exhausted
+            # `_FULL_RUN_TIMEOUT` before this stage even starts, mark
+            # it failed without spawning the subprocess. No per-stage
+            # floor — the advertised budget is a ceiling.
+            remaining = chain_deadline - time.monotonic()
+            if remaining <= 0:
+                stage_stderr = (
+                    f"chain budget of {int(_FULL_RUN_TIMEOUT)}s "
+                    f"exhausted before stage {stage} could start"
+                )
+                overall_status = "failure"
+                failed_stage = stage
+            else:
+                try:
+                    proc = subprocess.Popen(
+                        [
+                            sys.executable, "-m", "recap", stage,
+                            "--job", str(job_dir),
+                            *extra_args,
+                        ],
+                        cwd=str(REPO_ROOT),
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
+                except OSError as e:
+                    stage_stderr = (
+                        f"failed to spawn recap {stage}: "
+                        f"{type(e).__name__}: {e}"
+                    )
+                    overall_status = "failure"
+                    failed_stage = stage
+                else:
+                    try:
+                        stage_stdout, stage_stderr = proc.communicate(
+                            timeout=remaining,
+                        )
+                        stage_exit = proc.returncode
+                        if stage_exit != 0:
+                            overall_status = "failure"
+                            failed_stage = stage
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        stage_stdout, stage_stderr = proc.communicate()
+                        stage_exit = None
+                        stage_stderr = (stage_stderr or "") + (
+                            f"\ntimeout in stage {stage} "
+                            f"(chain budget {int(_FULL_RUN_TIMEOUT)}s "
+                            "exhausted)\n"
+                        )
+                        overall_status = "failure"
+                        failed_stage = stage
+
+            stage_elapsed = time.monotonic() - stage_t0
+            stage_stdout_t = _truncate_output(stage_stdout or "")
+            stage_stderr_t = _truncate_output(stage_stderr or "")
+            with _job_locks_guard:
+                cur = _last_run[(job_id, "rich-report")]
+                row = cur["stages"][idx]
+                row["exit_code"] = stage_exit
+                row["stdout"] = stage_stdout_t
+                row["stderr"] = stage_stderr_t
+                row["elapsed"] = stage_elapsed
+                row["status"] = (
+                    "completed"
+                    if overall_status == "success" and stage_exit == 0
+                    else "failed"
+                )
+
+            if overall_status == "failure":
+                break
+
+        with _job_locks_guard:
+            cur = _last_run[(job_id, "rich-report")]
+            cur["current_stage"] = None
+            cur["failed_stage"] = failed_stage
+            cur["status"] = overall_status
+            cur["finished_at"] = _now_iso()
+            cur["elapsed"] = time.monotonic() - t0
+    finally:
+        try:
+            job_lock.release()
+        except RuntimeError:
+            pass
         _run_slot.release()
 
 
@@ -848,11 +1011,44 @@ def render_index(jobs_root: Path) -> bytes:
 
 def _actions_section(job_id: str, csrf_token: str) -> list[str]:
     out: list[str] = ["<h2>Actions</h2>"]
+
+    # Rich-report composite action — runs the full 11-stage chain.
     out.append(
-        '<p class="secondary">Re-run an exporter against this job. '
+        '<p class="secondary">Generate the full rich report: '
+        "scenes → dedupe → window → similarity → chapters → rank → "
+        "shortlist → verify (mock provider) → assemble → export-html → "
+        "export-docx. Runs as a single background chain with the "
+        "existing per-job lock; only one rich-report or "
+        "<code>recap run</code> is allowed at a time across the server. "
+        "Takes several minutes the first time because "
+        "<code>recap similarity</code> downloads the OpenCLIP weights. "
+        "Uses the mock VLM provider; Gemini is not wired into this "
+        "slice.</p>"
+    )
+    out.append('<ul class="actions">')
+    out.append(
+        "<li>"
+        f'<form method="post" action="/job/{_e(job_id)}/run/rich-report">'
+        f'<input type="hidden" name="_token" value="{_e(csrf_token)}">'
+        "<button>Generate rich report</button>"
+        "</form>"
+        "</li>"
+    )
+    out.append("</ul>")
+    out.append(
+        '<p class="secondary">Last rich-report run: '
+        f'<a href="/job/{_e(job_id)}/run/rich-report/last">rich-report</a></p>'
+    )
+
+    # Exporter reruns — faster, single-stage actions that reuse
+    # whichever pipeline outputs already live on disk.
+    out.append(
+        '<p class="secondary">Re-run a single exporter against this job. '
         "Uses <code>--force</code>; output replaces the existing report "
-        "file on disk. Only these three exporters are runnable from the "
-        "dashboard; every other stage stays CLI-only.</p>"
+        "file on disk. Only these three exporters are runnable as a "
+        "single-stage action from the dashboard; every other pipeline "
+        "stage stays CLI-only or is only reachable through the "
+        "rich-report chain above.</p>"
     )
     out.append('<ul class="actions">')
     for stage in ("assemble", "export-html", "export-docx"):
@@ -872,7 +1068,8 @@ def _actions_section(job_id: str, csrf_token: str) -> list[str]:
             f"{_e(stage)}</a>"
         )
     out.append(
-        '<p class="secondary">Last results: ' + ", ".join(links) + "</p>"
+        '<p class="secondary">Last exporter results: '
+        + ", ".join(links) + "</p>"
     )
     return out
 
@@ -1414,6 +1611,112 @@ def render_transcript(
     return _page(f"Recap · {title} · transcript", "\n".join(lines))
 
 
+def render_rich_report_last(job_id: str, job_dir: Path) -> bytes:
+    """Render the `/job/<id>/run/rich-report/last` page.
+
+    States:
+      - missing entry → "No rich-report runs yet." (200)
+      - in-progress → progress table + 5-s meta refresh
+      - success → progress table + elapsed summary + back link
+      - failure → progress table + failed-stage stderr block
+    """
+    entry = _get_last(job_id, "rich-report")
+    back = f'<p><a href="/job/{_e(job_id)}/">← Back to job</a></p>'
+    if entry is None:
+        body = (
+            f"<h1>Recap · {_e(job_id)} · rich-report</h1>"
+            '<p class="empty">No rich-report runs yet.</p>'
+            f"{back}"
+        )
+        return _page(
+            f"Recap · {job_id} · rich-report", body,
+        )
+
+    status = entry.get("status", "unknown")
+    refresh_seconds = 5 if status == "in-progress" else None
+
+    lines: list[str] = [
+        f"<h1>Recap · {_e(job_id)} · rich-report</h1>",
+    ]
+    lines.append("<ul>")
+    lines.append(f"<li>Status: {_status_badge(status)}</li>")
+    if entry.get("started_at"):
+        lines.append(f"<li>Started: {_e(entry['started_at'])}</li>")
+    if entry.get("finished_at"):
+        lines.append(f"<li>Finished: {_e(entry['finished_at'])}</li>")
+    elapsed = entry.get("elapsed")
+    if isinstance(elapsed, (int, float)):
+        lines.append(
+            f"<li>Elapsed: <code>{_e(f'{elapsed:.2f}')}s</code></li>"
+        )
+    if status == "in-progress" and entry.get("current_stage"):
+        lines.append(
+            "<li>Current stage: "
+            f"<code>{_e(entry['current_stage'])}</code></li>"
+        )
+    if status == "failure" and entry.get("failed_stage"):
+        lines.append(
+            "<li>Failed stage: "
+            f"<code>{_e(entry['failed_stage'])}</code></li>"
+        )
+    lines.append("</ul>")
+
+    stages = entry.get("stages") or []
+    if stages:
+        lines.append("<h2>Stages</h2>")
+        lines.append("<table>")
+        lines.append(
+            "<thead><tr><th>Stage</th><th>Status</th>"
+            "<th>Elapsed</th></tr></thead>"
+        )
+        lines.append("<tbody>")
+        for stg in stages:
+            if not isinstance(stg, dict):
+                continue
+            stg_status = stg.get("status", "")
+            row_attrs = ' class="active"' if stg_status == "running" else ""
+            stg_elapsed = stg.get("elapsed")
+            elapsed_cell = (
+                f"{stg_elapsed:.2f}s"
+                if isinstance(stg_elapsed, (int, float))
+                else ""
+            )
+            lines.append(
+                f"<tr{row_attrs}>"
+                f"<td><code>{_e(stg.get('name', ''))}</code></td>"
+                f"<td>{_status_badge(stg_status)}</td>"
+                f"<td>{_e(elapsed_cell)}</td>"
+                "</tr>"
+            )
+        lines.append("</tbody></table>")
+
+    if status == "failure":
+        fs = entry.get("failed_stage")
+        if fs:
+            for stg in stages:
+                if isinstance(stg, dict) and stg.get("name") == fs:
+                    err = stg.get("stderr") or ""
+                    if err:
+                        lines.append(f"<h2>stderr — <code>{_e(fs)}</code></h2>")
+                        lines.append(
+                            f'<pre class="output">{_e(err)}</pre>'
+                        )
+                    break
+
+    if status == "success":
+        lines.append(
+            '<p>Open the generated artifacts from the '
+            f'<a href="/job/{_e(job_id)}/">job detail page</a>.</p>'
+        )
+
+    lines.append(back)
+    return _page(
+        f"Recap · {job_id} · rich-report",
+        "\n".join(lines),
+        refresh_seconds=refresh_seconds,
+    )
+
+
 def render_404(path: str) -> bytes:
     body = (
         "<h1>Recap · 404</h1>"
@@ -1687,6 +1990,16 @@ def _make_handler(jobs_root: Path, sources_root: Path):
             if (
                 len(segments) == 5
                 and segments[2] == "run"
+                and segments[3] == "rich-report"
+                and segments[4] == "last"
+            ):
+                body = render_rich_report_last(job_id, job_dir)
+                self._send_html(HTTPStatus.OK, body)
+                return
+
+            if (
+                len(segments) == 5
+                and segments[2] == "run"
                 and segments[3] in _LAST_RESULT_STAGES
                 and segments[4] == "last"
             ):
@@ -1943,6 +2256,90 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                 if not slot_transferred:
                     _run_slot.release()
 
+        def _handle_rich_report(self, job_id: str) -> None:
+            """Kick off the 11-stage rich-report chain against an
+            existing job.
+
+            Ownership of `_run_slot` and the per-job lock is
+            transferred to the background thread on the happy path;
+            on any pre-spawn failure path we release them before
+            returning.
+            """
+            job_dir = _safe_job_dir(root_resolved, job_id)
+            if job_dir is None:
+                self._not_found()
+                return
+
+            # Global one-at-a-time cap across the server.
+            if not _run_slot.acquire(blocking=False):
+                self._reject_post(
+                    HTTPStatus.TOO_MANY_REQUESTS, "slot",
+                    "Another long-running job is already in progress. "
+                    "Please wait and try again.",
+                    extra_headers={"Retry-After": "30"},
+                )
+                return
+
+            slot_transferred = False
+            lock: threading.Lock | None = None
+            lock_acquired = False
+            try:
+                # Per-job serialization against exporter reruns and
+                # concurrent rich-report clicks on the same job.
+                lock = _get_job_lock(job_id)
+                lock_acquired = lock.acquire(
+                    timeout=_LOCK_ACQUIRE_TIMEOUT,
+                )
+                if not lock_acquired:
+                    self._reject_post(
+                        HTTPStatus.TOO_MANY_REQUESTS, "lock",
+                        "Another action is already in progress for "
+                        "this job. Try again shortly.",
+                        extra_headers={"Retry-After": "2"},
+                    )
+                    return
+
+                # Seed the in-progress entry before spawning so the
+                # /last page immediately reflects an active chain.
+                with _job_locks_guard:
+                    _last_run[(job_id, "rich-report")] = {
+                        "started_at": _now_iso(),
+                        "finished_at": None,
+                        "status": "in-progress",
+                        "current_stage": None,
+                        "failed_stage": None,
+                        "stages": [],
+                        "elapsed": None,
+                    }
+
+                thread = threading.Thread(
+                    target=_background_rich_report,
+                    args=(job_id, job_dir, lock),
+                    daemon=True,
+                )
+                thread.start()
+                slot_transferred = True  # lock ownership is now the thread's
+
+                self.server.logger_stream.write(
+                    f"[recap-ui] started rich-report job={job_id}\n"
+                )
+                self.server.logger_stream.flush()
+
+                location = f"/job/{job_id}/run/rich-report/last"
+                self.send_response(HTTPStatus.SEE_OTHER.value)
+                self.send_header("Location", location)
+                self.send_header("Content-Length", "0")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+            finally:
+                if not slot_transferred:
+                    if lock is not None and lock_acquired:
+                        try:
+                            lock.release()
+                        except RuntimeError:
+                            pass
+                    _run_slot.release()
+
         def do_POST(self) -> None:  # noqa: N802
             # 1. Host pinning.
             allowed_hosts = getattr(self.server, "allowed_hosts", frozenset())
@@ -2017,7 +2414,17 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                 self._handle_new_run(form)
                 return
 
-            # 4b. POST /job/<id>/run/<stage> — rerun an exporter.
+            # 4b. POST /job/<id>/run/rich-report — run the full chain.
+            if (
+                len(segments) == 4
+                and segments[0] == "job"
+                and segments[2] == "run"
+                and segments[3] == "rich-report"
+            ):
+                self._handle_rich_report(segments[1])
+                return
+
+            # 4c. POST /job/<id>/run/<stage> — rerun an exporter.
             if (
                 len(segments) != 4
                 or segments[0] != "job"

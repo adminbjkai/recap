@@ -126,6 +126,50 @@ system does and produces, read `HANDOFF.md`.
   (`dedupe`, `similarity`, `rank`, `shortlist`, `verify`) may share
   the same bug and are left unchanged in this slice; a broader
   reliability pass is a follow-up.
+- A "Generate rich report" composite action now sits at the top
+  of the job detail page's Actions block. `POST
+  /job/<id>/run/rich-report` kicks off a daemon thread that runs
+  the 11-stage chain (`scenes → dedupe → window → similarity →
+  chapters → rank → shortlist → verify --provider mock →
+  assemble --force → export-html --force → export-docx --force`)
+  against the existing job via `subprocess.Popen` — the UI never
+  imports or calls any `recap.stages.* run()` function. The
+  handler acquires the shared `_run_slot` semaphore (so
+  rich-report and `recap run` serialize across the whole server,
+  429 + `Retry-After: 30` on contention) and the existing per-job
+  lock (429 + `Retry-After: 2` on contention with an exporter
+  rerun), then explicitly passes the lock into
+  `_background_rich_report(job_id, job_dir, job_lock)` which
+  releases both the lock and the slot in its `finally`.
+  `_FULL_RUN_TIMEOUT` (1 hour) is a hard total-chain ceiling, not
+  a per-stage floor: before each stage the worker checks
+  `remaining = chain_deadline - time.monotonic()`, fails the
+  stage without spawning a subprocess when `remaining <= 0`, and
+  otherwise passes `timeout=remaining` to `communicate()`.
+  Per-stage stdout/stderr truncated to 8 KiB. On failure the
+  chain stops at the failing stage. `assemble` /
+  `export-html` / `export-docx` always run with `--force`; other
+  stages rely on their own on-disk skip contracts so reruns
+  short-circuit. `GET /job/<id>/run/rich-report/last` renders
+  four states (no runs yet, in-progress with 5 s meta-refresh,
+  success, failure with captured stderr). `rich-report` is NOT
+  added to `_RUNNABLE_STAGES` or `_LAST_RESULT_STAGES`; both
+  routes are special-cased before the generic per-stage
+  dispatch. `recap run` composition and `job.STAGES` unchanged.
+  `scripts/verify_ui.py` grew to 73 checks (five HTTP-surface
+  cases, three in-process renderer cases that seed `_last_run`
+  directly to exercise in-progress/success/failure rendering
+  without launching the heavy chain, and one in-process
+  `rich-report-respects-chain-budget` case that monkeypatches
+  `_FULL_RUN_TIMEOUT = 0.0`, invokes `_background_rich_report`
+  directly, and asserts the first stage is recorded as failed
+  without spawning a subprocess while later stages stay
+  `pending` — proving `_FULL_RUN_TIMEOUT` is enforced as a
+  hard total-chain ceiling). Actually running the 11-stage
+  pipeline end-to-end remains a manual integration test —
+  Tesseract and the OpenCLIP weight download aren't available
+  in CI. Non-goals: no Gemini (mock VLM only), no stage-rerun
+  allowlist expansion, no cancel button, no JS.
 - The `/new` form now lets the user pick the transcription engine.
   A new module-level allowlist `_ENGINE_CHOICES = {"faster-whisper",
   "deepgram"}` and a `<select name="engine">` with two options are

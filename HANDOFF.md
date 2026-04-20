@@ -1038,6 +1038,91 @@ floop` → 200 fallback. All mutations live in the scratch job; a
 pre-test assertion confirms `analysis.mp4` is absent before the
 scratch bytes are written.
 
+The dashboard also exposes a "Generate rich report" composite
+action. `_RICH_REPORT_STAGES` is a tuple of 11
+`(stage_name, extra_argv)` pairs covering the full chain
+(`scenes`, `dedupe`, `window`, `similarity`, `chapters`, `rank`,
+`shortlist`, `verify --provider mock`, `assemble --force`,
+`export-html --force`, `export-docx --force`). `rich-report` is
+deliberately **not** added to `_RUNNABLE_STAGES` or
+`_LAST_RESULT_STAGES` — both the POST and the
+`/last` GET are special-cased in `do_POST` and `do_GET` before
+the single-stage per-stage routes so the semantics of the
+frozensets stay "single-stage exporters" only.
+
+`_handle_rich_report` runs the standard Host / Content-Length /
+CSRF prelude, resolves `_safe_job_dir`, acquires the global
+`_run_slot = threading.Semaphore(1)` (429 + `Retry-After: 30` on
+contention with a `/run` or another rich-report), acquires the
+per-job lock with the existing 2 s timeout (429 +
+`Retry-After: 2` on contention with an exporter rerun), seeds an
+in-progress entry under `_last_run[(job_id, "rich-report")]`,
+spawns a daemon `_background_rich_report(job_id, job_dir,
+job_lock)`, transfers both the slot and the lock to that thread,
+and responds `303 See Other` with `Location:
+/job/<id>/run/rich-report/last`. Ownership is explicit: the lock
+is passed as an argument into the worker so there is no hidden
+variable or lock leak; on the happy path the worker's `finally`
+releases `job_lock` then `_run_slot`, and on any pre-spawn
+failure the handler releases the lock and the slot before
+returning. A single log line `[recap-ui] started rich-report
+job=<id>` is emitted on spawn; argv, env, stdout and stderr are
+never logged.
+
+`_background_rich_report` invokes every stage via
+`python -m recap <stage> --job <dir> [extra_args]` under
+`subprocess.Popen`; it never imports or calls any
+`recap.stages.* run()` function. `_FULL_RUN_TIMEOUT` (1 hour) is
+a **hard total-chain ceiling**, not a per-stage floor. Before
+each stage the worker computes `remaining = chain_deadline -
+time.monotonic()`; if `remaining <= 0` the stage is recorded as
+failed with a clear "chain budget … exhausted" stderr **without
+spawning the subprocess**, the chain stops, and the remaining
+stages stay `pending`. Otherwise `communicate(timeout=remaining)`
+is passed to the subprocess so no single stage can run past the
+deadline. Per-stage stdout / stderr are truncated to 8 KiB UTF-8 via
+the existing `_truncate_output` helper and stored in the per-run
+`stages[]` list, along with each stage's `status` / `exit_code` /
+`elapsed`. On any non-zero exit or timeout the chain records the
+`failed_stage`, sets overall `status = "failure"`, and breaks.
+`assemble` / `export-html` / `export-docx` always run with
+`--force`; the analytic stages rely on their own on-disk skip
+contracts so re-clicking the button after a partial failure
+short-circuits already-completed work.
+
+`render_rich_report_last` emits four page states: no runs yet
+(`No rich-report runs yet.` 200), in-progress (progress table
+highlighting the running stage via `tr.active`, plus
+`<meta http-equiv="refresh" content="5">`), success (elapsed
+summary + link back to the job), and failure (progress table +
+the failed stage's captured stderr in `<pre class="output">`).
+Known limitation: the `_last_run` cache is in-memory only, so a
+`recap ui` restart mid-chain loses the progress entry — on-disk
+artifacts are unaffected and the button can be re-clicked.
+
+`scripts/verify_ui.py` grew to 73 checks with five HTTP-surface
+cases (`detail-has-rich-report-form-and-link`,
+`rich-report-last-no-runs-yet`, `rich-report-unknown-job`,
+`post-rich-report-missing-token`, `post-rich-report-forged-host`)
+plus three in-process renderer cases that import `recap.ui`
+directly and seed synthetic `_last_run` state to exercise
+in-progress, success, and failure rendering without launching
+the heavy chain (`rich-report-render-in-progress`,
+`rich-report-render-success`, `rich-report-render-failure`),
+plus one in-process budget-guard case
+(`rich-report-respects-chain-budget`) that monkeypatches
+`_FULL_RUN_TIMEOUT = 0.0`, invokes `_background_rich_report`
+directly, and asserts the first stage is recorded as failed
+without spawning a subprocess, later stages stay `pending`, and
+both `_run_slot` and the per-job lock are released — proving
+`_FULL_RUN_TIMEOUT` is enforced as a hard total-chain ceiling.
+Actually running the 11-stage chain end-to-end remains a manual
+integration test because it requires Tesseract and the OpenCLIP
+weight download. Non-goals for this slice: no Gemini provider
+(mock only), no stage-rerun expansion beyond the existing three
+exporter buttons, no subprocess shim for CI, no cancel button,
+no JS.
+
 The `/new` form carries an engine selector. `_ENGINE_CHOICES =
 {"faster-whisper", "deepgram"}` is the server-side allowlist; the
 `<select name="engine">` renders both options, with the `deepgram`
