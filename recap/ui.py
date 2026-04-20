@@ -620,6 +620,7 @@ _JOB_ROOT_FILES: frozenset[str] = frozenset({
     "scenes.json",
     "analysis.mp4",
     "speaker_names.json",
+    "insights.json",
 })
 
 _CANDIDATE_FRAME_EXTS: frozenset[str] = frozenset({".jpg", ".jpeg", ".png"})
@@ -684,6 +685,7 @@ _ARTIFACT_LABELS: dict[str, str] = {
     "frame_scores.json": "Frame scores",
     "scenes.json": "Scene boundaries",
     "speaker_names.json": "Speaker names",
+    "insights.json": "Structured insights",
 }
 
 
@@ -2052,6 +2054,7 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                 "speaker_names_json": (
                     job_dir / "speaker_names.json"
                 ).is_file(),
+                "insights_json": (job_dir / "insights.json").is_file(),
             }
             urls = {
                 "analysis_mp4": f"/job/{job_id}/analysis.mp4",
@@ -2064,6 +2067,7 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                 "report_md": f"/job/{job_id}/report.md",
                 "report_html": f"/job/{job_id}/report.html",
                 "report_docx": f"/job/{job_id}/report.docx",
+                "insights_json": f"/job/{job_id}/insights.json",
             }
             return {
                 "job_id": data.get("job_id") or job_id,

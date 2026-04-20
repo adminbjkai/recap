@@ -211,11 +211,21 @@ def main() -> int:
             "report_md",
             "report_html",
             "report_docx",
+            "insights_json",
         ):
             if url_key not in urls:
                 fail(case, f"urls missing {url_key!r}: {urls!r}")
         if urls["react_transcript"] != "/app/job/minimal_job/transcript":
             fail(case, f"react_transcript url wrong: {urls!r}")
+        artifacts = entry.get("artifacts", {})
+        if "insights_json" not in artifacts:
+            fail(case, f"artifacts missing insights_json: {artifacts!r}")
+        if artifacts.get("insights_json") is not False:
+            fail(
+                case,
+                "insights_json artifact flag should be False before "
+                f"running insights; got {artifacts.get('insights_json')!r}",
+            )
         passed()
 
         case = "api-jobs-list-skips-malformed-job"
@@ -362,6 +372,53 @@ def main() -> int:
             fail(case, f"expected 200, got {status}: {got!r}")
         if got.get("speakers") != {"1": "Lin"}:
             fail(case, f"empty value did not clear mapping: {got!r}")
+        passed()
+
+        case = "api-insights-artifact-flag-and-raw-file"
+        insights_doc = {
+            "version": 1,
+            "provider": "mock",
+            "model": "mock-v1",
+            "generated_at": "2026-04-20T00:00:00Z",
+            "sources": {
+                "transcript": "transcript.json",
+                "chapters": None,
+                "speaker_names": None,
+                "selected_frames": None,
+            },
+            "overview": {
+                "title": "Check",
+                "short_summary": "s",
+                "detailed_summary": "s",
+                "quick_bullets": ["bullet"],
+            },
+            "chapters": [],
+            "action_items": [],
+        }
+        (job_dir / "insights.json").write_text(
+            json.dumps(insights_doc), encoding="utf-8",
+        )
+        summary_after = get_json(case, port, "/api/jobs/minimal_job")
+        arts = summary_after.get("artifacts", {})
+        if arts.get("insights_json") is not True:
+            fail(
+                case,
+                f"insights_json artifact flag not True after writing "
+                f"insights.json: {arts!r}",
+            )
+        insights_url = summary_after.get("urls", {}).get("insights_json")
+        if insights_url != "/job/minimal_job/insights.json":
+            fail(case, f"insights_json URL wrong: {insights_url!r}")
+        status, headers, body = request(
+            port, "GET", "/job/minimal_job/insights.json",
+        )
+        if status != 200:
+            fail(case, f"raw insights.json status={status}")
+        if "application/json" not in headers.get("Content-Type", ""):
+            fail(case, "raw insights.json did not serve as JSON")
+        parsed = json.loads(body.decode("utf-8"))
+        if parsed.get("overview", {}).get("title") != "Check":
+            fail(case, f"raw insights.json content mismatch: {parsed!r}")
         passed()
 
         print(f"OK: {CHECKS_PASSED} API checks passed")

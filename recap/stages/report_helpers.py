@@ -16,8 +16,11 @@ change without updating the scripts in lockstep.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
+
+from .insights import validate_insights as _validate_insights
 
 
 WHITESPACE_RE = re.compile(r"\s+")
@@ -311,6 +314,34 @@ def check_hero_coherence(ch: dict) -> dict | None:
             "decision='selected_hero'"
         )
     return None
+
+
+def load_insights(path: Path) -> dict | None:
+    """Load and validate ``insights.json``; return ``None`` if absent.
+
+    Raises ``RuntimeError`` with an ``insights.json malformed: ...``
+    prefix if the file exists but does not match the schema. The
+    exporters deliberately surface this loudly: a half-valid insights
+    artifact must not produce a half-valid report.
+    """
+    if not path.is_file():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            f"insights.json malformed: invalid JSON: {e.msg}"
+        ) from e
+    return _validate_insights(data)
+
+
+def insights_chapters_by_index(insights: dict) -> dict[int, dict]:
+    out: dict[int, dict] = {}
+    for ch in insights.get("chapters") or []:
+        if isinstance(ch, dict) and isinstance(ch.get("index"), int):
+            out[ch["index"]] = ch
+    return out
 
 
 def check_supporting_coherence(ch: dict) -> None:

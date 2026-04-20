@@ -1,5 +1,10 @@
 # Tasks
 
+> Product direction and ordered slices:
+> [docs/product_roadmap.md](docs/product_roadmap.md). UX inspiration
+> sources and the borrow-patterns-not-code rule:
+> [docs/ux_inspiration.md](docs/ux_inspiration.md).
+
 ## Phase 1: Reliable Core
 
 - [x] Create a job model and working-directory convention with `job.json`
@@ -71,6 +76,7 @@
 - [x] Add JSON API scaffold and Vite/React transcript workspace at `/app/job/<id>/transcript` (React 18 + Vite + TypeScript + Vitest; Python serves `web/dist` under `/app/*`; API endpoints cover CSRF, job summary, transcript JSON, and speaker-name overlays; speaker names persist in `speaker_names.json`; `transcript.json` and exporters unchanged; old HTML routes remain live)
 - [x] React jobs index page (`/app/`) backed by `/api/jobs` (malformed `job.json` entries skipped server-side; `AppShell` sticky top bar links to legacy dashboard and `/new`; `JobCard` shows status badge + artifact chips + formatted created/updated times + actions; client-side search by filename/job_id and status pill filter; `verify_api.py` extended to 14 checks covering the listing and malformed-entry skip; Vitest specs for `JobCard` and `JobsIndexPage` raise total to 7; HTML jobs index at `/` remains live)
 - [x] Polish React UI and transcript interactions (visual-system rewrite in `web/src/index.css` with CSS custom-property tokens, typography scale, elevation, radii, focus ring, and `prefers-reduced-motion` guard; jobs index hero + stats row; `JobCard` status stripe + artifact chips + action hierarchy; sticky left rail in transcript workspace; client-side transcript search with match count + prev/next + highlight rendering + Enter/Shift+Enter cycling + scroll active match into view, backed by `lib/search.ts`; speaker-filter chips on the speaker legend with `aria-pressed` toggling and "Show all" reset; cleaner empty/loading/error states; Vitest suite grows to 22 specs across six files)
+- [x] Structured insights + report integration (new `recap insights --job <path> --provider mock|groq` stage writes `insights.json` with overview / quick bullets / per-chapter summaries / action items; mock provider is deterministic and offline, Groq provider uses stdlib HTTP with `GROQ_API_KEY`/`GROQ_MODEL` and fails cleanly on a missing key; `recap assemble`, `recap export-html`, and `recap export-docx` render `## Overview` and enrich chapter headings when `insights.json` is present and stay byte-compatible when it is absent; UI whitelists `insights.json`, API surfaces the `insights_json` artifact flag and URL, React `JobCard` shows an "Insights" chip; `scripts/verify_reports.py` grows to 23 checks (4 new insights cases), `scripts/verify_api.py` grows to 15 checks; `job.STAGES` and `recap run` composition unchanged; no new Python deps; [docs/product_roadmap.md](docs/product_roadmap.md) slice 3)
 - [ ] React job detail page and rich-report progress page backed by JSON APIs
 - [ ] React new-job page with engine selector and browser upload
 - [ ] Exporter integration: assemble / export-html / export-docx read `speaker_names.json`

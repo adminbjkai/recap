@@ -1,8 +1,24 @@
 # Recap
 
-Recap is an automated video-to-documentation pipeline for turning screen recordings into structured, chaptered documentation with a small set of relevant screenshots.
+Recap is a local-first, privacy-respecting video-to-documentation tool.
+You drop in a screen recording, Recap gives you back a polished
+transcript workspace and a report that is actually useful as
+documentation — not just a transcript dump.
 
-The system is designed around a staged cascade: cheap deterministic processing first, semantic alignment on a reduced candidate set, and optional VLM checks only on the final shortlist of frames.
+The system is designed around a staged cascade: cheap deterministic
+processing first, semantic alignment on a reduced candidate set, and
+optional VLM checks only on the final shortlist of frames. An opt-in
+`recap insights` stage generates structured summaries, quick bullets,
+action items, and per-chapter titles/summaries that flow into the
+Markdown / HTML / DOCX exports.
+
+## Product direction
+
+- **Target product** and ordered slices:
+  [docs/product_roadmap.md](docs/product_roadmap.md).
+- **UX inspiration sources** (Cap5, CapSoftware/Cap, steipete/summarize)
+  and the "borrow patterns, not code" rule:
+  [docs/ux_inspiration.md](docs/ux_inspiration.md).
 
 ## Pipeline
 
@@ -45,6 +61,7 @@ Each job should produce inspectable intermediate artifacts, including:
 - `frame_ranks.json`
 - `frame_shortlist.json`
 - `selected_frames.json` (opt-in; produced by `recap verify`)
+- `insights.json` (opt-in; produced by `recap insights`)
 - `report.md`
 
 Optional downstream outputs include `report.docx` and `report.html`.
@@ -957,6 +974,49 @@ transcript search utilities, the transcript table highlights and
 empty states, and the transcript search bar interactions.
 `npm audit --audit-level=moderate` should remain clean; runtime
 dependencies are intentionally small.
+
+### Structured insights (`recap insights`)
+
+`recap insights --job <path>` is an opt-in slice that reads
+`transcript.json` (plus `chapter_candidates.json`, `speaker_names.json`,
+and `selected_frames.json` when present) and writes a single
+`insights.json` artifact with an overview, quick bullets, per-chapter
+title/summary/bullets/action items, and a flat list of action items:
+
+```bash
+.venv/bin/python -m recap insights --job jobs/<id> --provider mock
+```
+
+Two providers are supported:
+
+- `--provider mock` (default) — deterministic, offline, zero network
+  calls. Produces a useful summary derived from the transcript and
+  chapter text so local users can inspect the pipeline without any
+  credentials.
+- `--provider groq` — calls Groq's chat-completions API in strict JSON
+  mode using stdlib HTTP (no new Python dependencies). Requires
+  `GROQ_API_KEY` in the environment; honors `GROQ_MODEL` (default
+  `llama-3.3-70b-versatile`) and `GROQ_BASE_URL`. Fails cleanly with
+  a one-line error when the key is missing. Transcript input is
+  truncated to 48 000 characters and per-chapter text to 2 000
+  characters to keep request size bounded.
+
+`recap insights` is **not** part of `job.STAGES` and is **not** invoked
+by `recap run`. When `insights.json` exists, `recap assemble`,
+`recap export-html`, and `recap export-docx` automatically enrich their
+output with:
+
+- an `## Overview` section (short + detailed summary, quick bullets,
+  action items with timestamp + chapter suffixes);
+- per-chapter titles and summaries inside the existing `## Chapters`
+  section when `selected_frames.json` is also present, or a standalone
+  chapter list built from insights alone when it is not.
+
+When `insights.json` is absent, exports stay byte-compatible with
+today's output. Re-running `recap insights` without `--force` skips
+when the artifact already exists. The API surfaces the artifact flag
+(`insights_json`) and a raw URL at `/job/<id>/insights.json`, and the
+React jobs index shows an "Insights" chip on each `JobCard`.
 
 ### Cloud transcription (Deepgram)
 

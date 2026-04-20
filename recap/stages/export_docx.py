@@ -34,6 +34,8 @@ from .report_helpers import (
     check_supporting_coherence as _check_supporting_coherence,
     collapse_whitespace as _collapse_whitespace,
     format_ts as _format_ts,
+    insights_chapters_by_index as _insights_chapters_by_index,
+    load_insights as _load_insights,
     summarize_metadata as _summarize_metadata,
     validate_chapter_candidates as _validate_chapter_candidates,
     validate_selected_frames as _validate_selected_frames,
@@ -50,6 +52,89 @@ def _add_caption(doc, caption: str) -> None:
     run.italic = True
 
 
+def _render_overview(doc, insights: dict) -> None:
+    overview = insights.get("overview") or {}
+    doc.add_heading("Overview", level=2)
+    short_summary = (overview.get("short_summary") or "").strip()
+    if short_summary:
+        doc.add_paragraph(short_summary)
+    detailed = (overview.get("detailed_summary") or "").strip()
+    if detailed and detailed != short_summary:
+        doc.add_paragraph(detailed)
+
+    bullets = overview.get("quick_bullets") or []
+    if bullets:
+        doc.add_heading("Quick bullets", level=3)
+        for b in bullets:
+            if isinstance(b, str) and b.strip():
+                doc.add_paragraph(b.strip(), style="List Bullet")
+
+    actions = insights.get("action_items") or []
+    if actions:
+        doc.add_heading("Action items", level=3)
+        for ai in actions:
+            if not isinstance(ai, dict):
+                continue
+            text = (ai.get("text") or "").strip()
+            if not text:
+                continue
+            bits = [text]
+            stamp = ai.get("timestamp_seconds")
+            if isinstance(stamp, (int, float)) and not isinstance(stamp, bool):
+                bits.append(f"[{_format_ts(float(stamp))}]")
+            ch_idx = ai.get("chapter_index")
+            if isinstance(ch_idx, int):
+                bits.append(f"Chapter {ch_idx}")
+            owner = ai.get("owner")
+            if isinstance(owner, str) and owner.strip():
+                bits.append(f"Owner: {owner.strip()}")
+            due = ai.get("due")
+            if isinstance(due, str) and due.strip():
+                bits.append(f"Due: {due.strip()}")
+            suffix = (" — " + " · ".join(bits[1:])) if len(bits) > 1 else ""
+            doc.add_paragraph(
+                f"☐ {bits[0]}{suffix}", style="List Bullet"
+            )
+
+
+def _add_chapter_insights_block(doc, ch: dict) -> None:
+    summary = (ch.get("summary") or "").strip()
+    if summary:
+        doc.add_paragraph(summary)
+    bullets = ch.get("bullets") or []
+    for b in bullets:
+        if isinstance(b, str) and b.strip():
+            doc.add_paragraph(b.strip(), style="List Bullet")
+    action_items = ch.get("action_items") or []
+    if action_items:
+        doc.add_paragraph("Action items:")
+        for ai in action_items:
+            if isinstance(ai, str) and ai.strip():
+                doc.add_paragraph(f"☐ {ai.strip()}", style="List Bullet")
+    speakers = ch.get("speaker_focus") or []
+    if speakers:
+        p = doc.add_paragraph()
+        r = p.add_run(f"Speakers: {', '.join(speakers)}")
+        r.italic = True
+
+
+def _render_insights_only_chapters(doc, insights: dict) -> None:
+    doc.add_heading("Chapters", level=2)
+    for ch in insights.get("chapters") or []:
+        if not isinstance(ch, dict):
+            continue
+        idx = ch.get("index")
+        start = _format_ts(ch.get("start_seconds"))
+        end = _format_ts(ch.get("end_seconds"))
+        title = (ch.get("title") or "").strip()
+        heading = f"Chapter {idx}"
+        if title:
+            heading += f" — {title}"
+        heading += f" [{start} – {end}]"
+        doc.add_heading(heading, level=3)
+        _add_chapter_insights_block(doc, ch)
+
+
 def _add_image(doc, image_path: Path) -> None:
     doc.add_picture(str(image_path), width=Inches(_IMAGE_WIDTH_INCHES))
 
@@ -60,6 +145,7 @@ def _render_chapters(
     selected: dict,
     chapter_text_by_index: dict[int, str],
     frames_dir: Path,
+    insights_by_idx: dict[int, dict] | None = None,
 ) -> None:
     doc.add_heading("Chapters", level=2)
 
@@ -76,9 +162,14 @@ def _render_chapters(
 
         start = _format_ts(ch.get("start_seconds") or 0.0)
         end = _format_ts(ch.get("end_seconds") or 0.0)
-        doc.add_heading(
-            f"Chapter {ch_idx} — [{start} – {end}]", level=3
-        )
+        insight = (insights_by_idx or {}).get(ch_idx)
+        heading = f"Chapter {ch_idx}"
+        if insight and (insight.get("title") or "").strip():
+            heading += f" — {insight['title'].strip()}"
+        heading += f" [{start} – {end}]"
+        doc.add_heading(heading, level=3)
+        if insight is not None:
+            _add_chapter_insights_block(doc, insight)
 
         frames_by_scene: dict[int, dict] = {}
         for fr in ch["frames"]:
@@ -130,6 +221,7 @@ def build_document(
     selected: dict | None,
     chapter_text_by_index: dict[int, str] | None,
     frames_dir: Path,
+    insights: dict | None = None,
 ):
     doc = Document()
     title = job.get("original_filename") or job.get("job_id") or "Recap"
@@ -141,6 +233,14 @@ def build_document(
         doc.add_paragraph(f"Source file: {job['original_filename']}")
     if job.get("created_at"):
         doc.add_paragraph(f"Created: {job['created_at']}")
+
+    if insights is not None:
+        _render_overview(doc, insights)
+
+    if selected is None and insights is not None and (
+        insights.get("chapters") or []
+    ):
+        _render_insights_only_chapters(doc, insights)
 
     doc.add_heading("Media", level=2)
     dur = meta_summary.get("duration_seconds")
@@ -162,7 +262,16 @@ def build_document(
         )
 
     if selected is not None and chapter_text_by_index is not None:
-        _render_chapters(doc, selected, chapter_text_by_index, frames_dir)
+        insights_by_idx = (
+            _insights_chapters_by_index(insights) if insights else None
+        )
+        _render_chapters(
+            doc,
+            selected,
+            chapter_text_by_index,
+            frames_dir,
+            insights_by_idx=insights_by_idx,
+        )
 
     doc.add_heading("Transcript", level=2)
     if transcript is None:
@@ -213,6 +322,8 @@ def run(paths: JobPaths, force: bool = False) -> Path:
             with open(paths.transcript_json, "r", encoding="utf-8") as f:
                 transcript = json.load(f)
 
+        insights = _load_insights(paths.insights_json)
+
         selected: dict | None = None
         chapter_text_by_index: dict[int, str] | None = None
         if paths.selected_frames_json.exists():
@@ -250,6 +361,7 @@ def run(paths: JobPaths, force: bool = False) -> Path:
             selected,
             chapter_text_by_index,
             paths.candidate_frames_dir,
+            insights=insights,
         )
 
         doc.save(str(tmp))
@@ -259,6 +371,7 @@ def run(paths: JobPaths, force: bool = False) -> Path:
             "report": paths.report_docx.name,
             "bytes": paths.report_docx.stat().st_size,
             "embedded_selected_frames": selected is not None,
+            "embedded_insights": insights is not None,
         }
         update_stage(paths, "export_docx", COMPLETED, extra=extra)
         return paths.report_docx

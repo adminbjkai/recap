@@ -1,5 +1,11 @@
 # Recap — Phase 1 Handoff (+ Phase 2 checklist complete, + first five Phase 3 slices, + first Phase 4 slice)
 
+> **Product direction:** see [docs/product_roadmap.md](docs/product_roadmap.md)
+> for the ordered list of slices and
+> [docs/ux_inspiration.md](docs/ux_inspiration.md) for which patterns
+> are borrowed from Cap5, CapSoftware/Cap, and steipete/summarize. The
+> rule is "borrow patterns, not code."
+
 This document closes out Phase 1 of Recap and records the Phase 2
 slices approved and implemented so far: Stage 5 candidate frame
 extraction, and the combined pHash + SSIM duplicate marking with
@@ -813,6 +819,19 @@ Primary `GET` routes:
   single image under `candidate_frames/` with extension `.jpg`,
   `.jpeg`, or `.png`. Any other extension or any traversal
   attempt returns 404.
+- `recap insights --job <path> --provider mock|groq [--force]` is an
+  opt-in slice that writes `insights.json` with an overview, quick
+  bullets, per-chapter title/summary/bullets/action items, and a flat
+  list of action items. The mock provider is deterministic and
+  offline; the Groq provider calls `https://api.groq.com` via stdlib
+  HTTP using `GROQ_API_KEY` (+ `GROQ_MODEL`, `GROQ_BASE_URL`) and
+  fails cleanly on a missing key with the stage marked `failed`.
+  `recap insights` is **not** in `job.STAGES` and is **not** invoked
+  by `recap run`. When `insights.json` is present, `recap assemble`,
+  `recap export-html`, and `recap export-docx` render an `## Overview`
+  section and enrich the existing `## Chapters` rendering with titles,
+  summaries, bullets, action items, and speaker focus. When absent,
+  exports stay byte-compatible with prior behavior.
 - `GET /api/csrf` — returns the server CSRF token as JSON for the
   React app.
 - `GET /api/jobs` — returns the jobs index listing as

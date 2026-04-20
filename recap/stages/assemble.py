@@ -25,16 +25,117 @@ from .report_helpers import (
     check_supporting_coherence as _check_supporting_coherence,
     collapse_whitespace as _collapse_whitespace,
     format_ts as _format_ts,
+    insights_chapters_by_index as _insights_chapters_by_index,
+    load_insights as _load_insights,
     summarize_metadata as _summarize_metadata,
     validate_chapter_candidates as _validate_chapter_candidates,
     validate_selected_frames as _validate_selected_frames,
 )
 
 
+def _overview_section_lines(insights: dict) -> list[str]:
+    overview = insights.get("overview") or {}
+    out: list[str] = []
+    out.append("## Overview")
+    out.append("")
+    short_summary = (overview.get("short_summary") or "").strip()
+    if short_summary:
+        out.append(short_summary)
+        out.append("")
+    detailed = (overview.get("detailed_summary") or "").strip()
+    if detailed and detailed != short_summary:
+        out.append(detailed)
+        out.append("")
+    bullets = overview.get("quick_bullets") or []
+    if bullets:
+        out.append("### Quick bullets")
+        out.append("")
+        for b in bullets:
+            if isinstance(b, str) and b.strip():
+                out.append(f"- {b.strip()}")
+        out.append("")
+    actions = insights.get("action_items") or []
+    if actions:
+        out.append("### Action items")
+        out.append("")
+        for ai in actions:
+            if not isinstance(ai, dict):
+                continue
+            text = (ai.get("text") or "").strip()
+            if not text:
+                continue
+            stamp = ai.get("timestamp_seconds")
+            suffix_parts: list[str] = []
+            if isinstance(stamp, (int, float)) and not isinstance(stamp, bool):
+                suffix_parts.append(f"[{_format_ts(float(stamp))}]")
+            ch_idx = ai.get("chapter_index")
+            if isinstance(ch_idx, int):
+                suffix_parts.append(f"Chapter {ch_idx}")
+            owner = ai.get("owner")
+            if isinstance(owner, str) and owner.strip():
+                suffix_parts.append(f"Owner: {owner.strip()}")
+            due = ai.get("due")
+            if isinstance(due, str) and due.strip():
+                suffix_parts.append(f"Due: {due.strip()}")
+            suffix = f" — {' · '.join(suffix_parts)}" if suffix_parts else ""
+            out.append(f"- [ ] {text}{suffix}")
+        out.append("")
+    return out
+
+
+def _insights_chapter_block(ch: dict) -> list[str]:
+    out: list[str] = []
+    summary = (ch.get("summary") or "").strip()
+    if summary:
+        out.append(summary)
+        out.append("")
+    bullets = ch.get("bullets") or []
+    if bullets:
+        for b in bullets:
+            if isinstance(b, str) and b.strip():
+                out.append(f"- {b.strip()}")
+        out.append("")
+    action_items = ch.get("action_items") or []
+    if action_items:
+        out.append("**Action items:**")
+        out.append("")
+        for ai in action_items:
+            if isinstance(ai, str) and ai.strip():
+                out.append(f"- [ ] {ai.strip()}")
+        out.append("")
+    speakers = ch.get("speaker_focus") or []
+    if speakers:
+        out.append(f"*Speakers:* {', '.join(speakers)}")
+        out.append("")
+    return out
+
+
+def _insights_only_chapters_section_lines(insights: dict) -> list[str]:
+    out: list[str] = []
+    out.append("## Chapters")
+    out.append("")
+    for ch in insights.get("chapters") or []:
+        if not isinstance(ch, dict):
+            continue
+        idx = ch.get("index")
+        start = _format_ts(ch.get("start_seconds"))
+        end = _format_ts(ch.get("end_seconds"))
+        title = (ch.get("title") or "").strip()
+        heading = f"### Chapter {idx}"
+        if title:
+            heading += f" — {title}"
+        heading += f" [{start} – {end}]"
+        out.append(heading)
+        out.append("")
+        out.extend(_insights_chapter_block(ch))
+    return out
+
+
 def _chapter_section_lines(
     selected: dict,
     chapter_text_by_index: dict[int, str],
     frames_dir: Path,
+    insights_by_idx: dict[int, dict] | None = None,
 ) -> list[str]:
     lines: list[str] = []
     lines.append("## Chapters")
@@ -49,8 +150,15 @@ def _chapter_section_lines(
             )
         start = _format_ts(ch.get("start_seconds") or 0.0)
         end = _format_ts(ch.get("end_seconds") or 0.0)
-        lines.append(f"### Chapter {ch_idx} — [{start} – {end}]")
+        heading = f"### Chapter {ch_idx}"
+        insight = (insights_by_idx or {}).get(ch_idx)
+        if insight and (insight.get("title") or "").strip():
+            heading += f" — {insight['title'].strip()}"
+        heading += f" [{start} – {end}]"
+        lines.append(heading)
         lines.append("")
+        if insight is not None:
+            lines.extend(_insights_chapter_block(insight))
 
         frames_by_scene: dict[int, dict] = {}
         for fr in ch["frames"]:
@@ -131,6 +239,7 @@ def build_markdown(
     meta_summary: dict,
     transcript: dict | None,
     chapters_section: list[str] | None = None,
+    insights: dict | None = None,
 ) -> str:
     lines: list[str] = []
     title = job.get("original_filename") or job.get("job_id")
@@ -142,6 +251,17 @@ def build_markdown(
     if job.get("created_at"):
         lines.append(f"- Created: {job['created_at']}")
     lines.append("")
+
+    if insights is not None:
+        lines.extend(_overview_section_lines(insights))
+
+    # When selected_frames is absent but insights provides chapters,
+    # still render a Chapters section (text-only) so the report
+    # surfaces structured content even without hero screenshots.
+    if chapters_section is None and insights is not None and (
+        insights.get("chapters") or []
+    ):
+        lines.extend(_insights_only_chapters_section_lines(insights))
 
     lines.append("## Media")
     dur = meta_summary.get("duration_seconds")
@@ -211,6 +331,11 @@ def run(paths: JobPaths, force: bool = False) -> Path:
             update_stage(paths, "assemble", COMPLETED, extra={"skipped": True})
             return paths.report_md
 
+        insights = _load_insights(paths.insights_json)
+        insights_by_idx = (
+            _insights_chapters_by_index(insights) if insights else {}
+        )
+
         chapters_section: list[str] | None = None
         if paths.selected_frames_json.exists():
             try:
@@ -239,10 +364,19 @@ def run(paths: JobPaths, force: bool = False) -> Path:
             chapter_text_by_index = _validate_chapter_candidates(chapters_raw)
 
             chapters_section = _chapter_section_lines(
-                selected, chapter_text_by_index, paths.candidate_frames_dir
+                selected,
+                chapter_text_by_index,
+                paths.candidate_frames_dir,
+                insights_by_idx=insights_by_idx,
             )
 
-        md = build_markdown(job, meta_summary, transcript, chapters_section)
+        md = build_markdown(
+            job,
+            meta_summary,
+            transcript,
+            chapters_section,
+            insights=insights,
+        )
         tmp.write_text(md, encoding="utf-8")
         tmp.replace(paths.report_md)
 
@@ -250,6 +384,7 @@ def run(paths: JobPaths, force: bool = False) -> Path:
             "report": paths.report_md.name,
             "bytes": paths.report_md.stat().st_size,
             "embedded_selected_frames": chapters_section is not None,
+            "embedded_insights": insights is not None,
         }
         update_stage(paths, "assemble", COMPLETED, extra=extra)
         return paths.report_md

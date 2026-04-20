@@ -15,6 +15,7 @@ const ARTIFACT_ORDER: { key: ArtifactKey; label: string }[] = [
   { key: "report_html", label: "HTML" },
   { key: "report_docx", label: "DOCX" },
   { key: "speaker_names_json", label: "Speakers" },
+  { key: "insights_json", label: "Insights" },
 ];
 
 function statusLabel(status: string | undefined | null): string {

@@ -1,8 +1,12 @@
 # Recap — Continuation Guide
 
 This file exists so a future session can resume from the current repo
-state without re-deriving context. It is not a roadmap. For what the
-system does and produces, read `HANDOFF.md`.
+state without re-deriving context. It is not a roadmap — see
+[docs/product_roadmap.md](docs/product_roadmap.md) for the ordered list
+of slices and [docs/ux_inspiration.md](docs/ux_inspiration.md) for
+which UX patterns we borrow from Cap5, CapSoftware/Cap, and
+steipete/summarize ("borrow patterns, not code"). For what the system
+does and produces, read `HANDOFF.md`.
 
 ## Current state
 
@@ -43,11 +47,32 @@ system does and produces, read `HANDOFF.md`.
   speaker-filter chips on the speaker legend (click pill to
   hide/show, `aria-pressed` state, "Show all" reset when any
   hidden). Speaker rename still persists to `speaker_names.json`.
-- `scripts/verify_api.py` covers 14 API checks. The Vitest suite has
-  22 specs across six files: `SpeakerRenameForm`, `SpeakerLegend`
-  filter chips, `JobCard`, `JobsIndexPage`, `TranscriptSearchBar`,
-  `TranscriptTable` highlighting + empty states, and `lib/search`
-  pure helpers. Legacy HTML routes remain live.
+- `scripts/verify_api.py` covers 15 API checks (listing + artifact
+  flags + speaker-names contract + insights artifact flag + raw
+  insights.json serving). `scripts/verify_reports.py` covers 23
+  checks (selected-path / absent-path / four malformed-artifact
+  cases + the scenes-interrupt regression + four insights cases:
+  mock happy path, absent-insights compatibility, offline-mock
+  without Groq env, and Groq-missing-key fail-clean). The Vitest
+  suite has 22 specs across six files: `SpeakerRenameForm`,
+  `SpeakerLegend` filter chips, `JobCard`, `JobsIndexPage`,
+  `TranscriptSearchBar`, `TranscriptTable` highlighting + empty
+  states, and `lib/search` pure helpers. Legacy HTML routes remain
+  live.
+- `recap insights --job <path> --provider mock|groq [--force]` is
+  opt-in and writes `jobs/<id>/insights.json` with overview, quick
+  bullets, per-chapter summaries, and action items. It is **not** in
+  `job.STAGES` and **not** invoked by `recap run`. `recap/stages/
+  insights.py` hosts both providers; the Groq provider uses stdlib
+  HTTP + `GROQ_API_KEY` / `GROQ_MODEL` / `GROQ_BASE_URL` and fails
+  cleanly on a missing key. `recap/stages/report_helpers.py` owns
+  `load_insights` / `insights_chapters_by_index`. `recap/stages/
+  assemble.py`, `export_html.py`, and `export_docx.py` all render an
+  `## Overview` section and enrich chapter headings/summaries when
+  `insights.json` is present; byte-compatible with prior output when
+  it is not. `recap/ui.py` whitelists `insights.json`, labels it
+  "Structured insights", and exposes the `insights_json` artifact
+  flag + URL. React `JobCard` shows an "Insights" chip.
 - Diarized transcripts now render speaker-colored rows plus a
   compact speakers legend. A new module-level constant
   `_SPEAKER_PALETTE_SIZE = 8` caps the palette; eight `.speaker-0`..

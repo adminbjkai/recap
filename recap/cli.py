@@ -56,6 +56,7 @@ from .stages import (
     export_docx,
     export_html,
     ingest,
+    insights,
     normalize,
     rank,
     scenes,
@@ -73,6 +74,8 @@ DEFAULT_ENGINE = "faster-whisper"
 ENGINE_CHOICES = ("faster-whisper", "deepgram")
 DEFAULT_VLM_PROVIDER = "mock"
 VLM_PROVIDER_CHOICES = ("mock", "gemini")
+DEFAULT_INSIGHTS_PROVIDER = insights.DEFAULT_PROVIDER
+INSIGHTS_PROVIDER_CHOICES = insights.PROVIDER_CHOICES
 
 
 def _open_or_create(args) -> job_mod.JobPaths:
@@ -176,6 +179,13 @@ def cmd_shortlist(args) -> int:
 def cmd_verify(args) -> int:
     paths = job_mod.open_job(Path(args.job))
     verify.run(paths, provider=args.provider, force=args.force)
+    return 0
+
+
+def cmd_insights(args) -> int:
+    paths = job_mod.open_job(Path(args.job))
+    out = insights.run(paths, provider=args.provider, force=args.force)
+    print(out)
     return 0
 
 
@@ -362,6 +372,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--force", action="store_true")
     sp.set_defaults(func=cmd_verify)
+
+    sp = sub.add_parser(
+        "insights",
+        help=(
+            "Opt-in slice: structured summaries / action items / per-"
+            "chapter titles -> insights.json. Not invoked by `recap run`."
+        ),
+    )
+    sp.add_argument("--job", required=True)
+    sp.add_argument(
+        "--provider",
+        default=DEFAULT_INSIGHTS_PROVIDER,
+        choices=INSIGHTS_PROVIDER_CHOICES,
+        help=(
+            f"insights provider (default: {DEFAULT_INSIGHTS_PROVIDER}). "
+            "'groq' requires GROQ_API_KEY in env; honors GROQ_MODEL and "
+            "GROQ_BASE_URL."
+        ),
+    )
+    sp.add_argument("--force", action="store_true")
+    sp.set_defaults(func=cmd_insights)
 
     sp = sub.add_parser("assemble", help="Stage 8: basic report.md")
     sp.add_argument("--job", required=True)
