@@ -85,6 +85,24 @@ _VIDEO_EXTENSIONS: frozenset[str] = frozenset({
     ".mp4", ".mov", ".mkv", ".webm", ".m4v",
 })
 
+# Descriptive labels for the /api/engines endpoint. Kept in lockstep
+# with the legacy /new HTML page so offline + browser users see the
+# same wording.
+_API_ENGINE_DESCRIPTORS: tuple[dict[str, object], ...] = (
+    {
+        "id": "faster-whisper",
+        "label": "faster-whisper (default, local)",
+        "category": "local",
+        "default": True,
+    },
+    {
+        "id": "deepgram",
+        "label": "deepgram (cloud; diarized speakers)",
+        "category": "cloud",
+        "default": False,
+    },
+)
+
 _POST_BODY_MAX = 4096            # bytes
 _OUTPUT_TRUNCATE_BYTES = 8192    # stdout/stderr cap, UTF-8 bytes
 _SUBPROCESS_TIMEOUT = 60.0       # seconds (per-stage rerun)
@@ -2098,11 +2116,102 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                 for entry in entries
             ]
 
+        def _api_sources_listing(self) -> dict:
+            """GET /api/sources payload — discovery mirror of the
+            legacy ``render_new`` HTML source picker, returned as JSON.
+
+            Never reads file contents. Only directory listing + stat.
+            Malformed stat entries are skipped rather than failing the
+            whole response.
+            """
+            exts = sorted(_VIDEO_EXTENSIONS)
+            entries: list[dict[str, object]] = []
+            payload: dict[str, object] = {
+                "sources_root": (
+                    str(sources_resolved) if sources_resolved else None
+                ),
+                "sources_root_exists": bool(
+                    sources_resolved and sources_resolved.is_dir()
+                ),
+                "extensions": exts,
+                "sources": entries,
+            }
+            if sources_resolved and sources_resolved.is_dir():
+                try:
+                    iterator = sorted(sources_resolved.iterdir())
+                except OSError:
+                    iterator = []
+                for entry in iterator:
+                    try:
+                        if not entry.is_file():
+                            continue
+                        if entry.suffix.lower() not in _VIDEO_EXTENSIONS:
+                            continue
+                        st = entry.stat()
+                    except OSError:
+                        continue
+                    entries.append({
+                        "name": entry.name,
+                        "size_bytes": int(st.st_size),
+                        "modified_at": time.strftime(
+                            "%Y-%m-%dT%H:%M:%SZ",
+                            time.gmtime(st.st_mtime),
+                        ),
+                    })
+            return payload
+
+        def _api_engines_listing(self) -> dict:
+            """GET /api/engines payload — tells the React /app/new page
+            which engines are available in this server's environment.
+
+            Never surfaces the value of ``DEEPGRAM_API_KEY``; only
+            whether it is set. Matches legacy ``render_new`` copy.
+            """
+            deepgram_key_present = bool(os.environ.get("DEEPGRAM_API_KEY"))
+            engines: list[dict[str, object]] = []
+            for desc in _API_ENGINE_DESCRIPTORS:
+                engine_id = str(desc.get("id"))
+                entry: dict[str, object] = dict(desc)
+                if engine_id == "faster-whisper":
+                    entry["available"] = True
+                    entry["note"] = "Runs locally. No API key required."
+                elif engine_id == "deepgram":
+                    entry["available"] = bool(deepgram_key_present)
+                    entry["note"] = (
+                        "Deepgram available — DEEPGRAM_API_KEY detected "
+                        "in the server's environment."
+                        if deepgram_key_present
+                        else "Set DEEPGRAM_API_KEY in the server's "
+                        "environment to enable Deepgram."
+                    )
+                else:
+                    entry["available"] = False
+                    entry["note"] = "Not configured."
+                engines.append(entry)
+            return {
+                "engines": engines,
+                "default": "faster-whisper",
+            }
+
         def _api_get(self, segments: list[str]) -> None:
             # GET /api/csrf
             if segments == ["api", "csrf"]:
                 token = getattr(self.server, "csrf_token", "") or ""
                 self._send_json(HTTPStatus.OK, {"token": token})
+                return
+
+            # GET /api/sources
+            if segments == ["api", "sources"]:
+                self._send_json(
+                    HTTPStatus.OK, self._api_sources_listing(),
+                )
+                return
+
+            # GET /api/engines
+            if segments == ["api", "engines"]:
+                self._send_json(
+                    HTTPStatus.OK, self._api_engines_listing(),
+                )
                 return
 
             # GET /api/jobs
@@ -2910,6 +3019,366 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                 pass
             self._send_json(HTTPStatus.OK, doc)
 
+        def _handle_api_jobs_start(self) -> None:
+            """POST /api/jobs/start — JSON body.
+
+            Reuses the legacy POST /run safety model (Host pinning,
+            CSRF via ``X-Recap-Token``, body-size cap, source path
+            safety, engine allowlist, ``_run_slot`` ownership transfer)
+            and the shared ``_background_run`` implementation so the
+            React /app/new flow and the legacy /new flow share exactly
+            one pipeline path. On success returns 202 with the job id
+            and canonical React/legacy detail URLs.
+
+            Body shape:
+
+                {
+                  "source": {"kind": "sources-root", "name": "..."}
+                            OR {"kind": "absolute-path", "path": "..."},
+                  "engine": "faster-whisper" | "deepgram"
+                }
+
+            No field in the request body, the CSRF token, the Host
+            header, or ``DEEPGRAM_API_KEY`` is ever logged, echoed in
+            error text, or written to ``job.json``.
+
+            A test-only environment flag
+            ``RECAP_API_STUB_JOB_START=1`` is supported: when set on
+            the server process, the handler performs every validation
+            step, but skips the synchronous ``recap ingest`` subprocess
+            and the background ``recap run`` dispatch, returning 202
+            with a synthesized ``stub-<timestamp>`` job id. This lets
+            ``scripts/verify_api.py`` prove the dispatch path cheaply
+            without running real transcription.
+            """
+            # 1. Host pinning.
+            allowed_hosts = getattr(
+                self.server, "allowed_hosts", frozenset(),
+            )
+            got_host = self.headers.get("Host") or ""
+            if not allowed_hosts or not any(
+                secrets.compare_digest(got_host, allowed)
+                for allowed in allowed_hosts
+            ):
+                self._reject_api(
+                    HTTPStatus.FORBIDDEN, "host",
+                    "Host header mismatch.",
+                )
+                return
+
+            # 2. Content-Type.
+            ct = (
+                self.headers.get("Content-Type") or ""
+            ).split(";")[0].strip()
+            if ct.lower() != "application/json":
+                self._reject_api(
+                    HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "content-type",
+                    "Content-Type must be application/json.",
+                )
+                return
+
+            # 3. Content-Length cap.
+            raw_len = self.headers.get("Content-Length")
+            try:
+                content_length = (
+                    int(raw_len) if raw_len is not None else -1
+                )
+            except ValueError:
+                content_length = -1
+            if content_length < 0:
+                self._reject_api(
+                    HTTPStatus.LENGTH_REQUIRED, "content-length-missing",
+                    "Content-Length is required.",
+                )
+                return
+            if content_length > _API_POST_BODY_MAX:
+                self._reject_api(
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "body-too-large",
+                    f"Request body exceeds {_API_POST_BODY_MAX} bytes.",
+                )
+                return
+
+            # 4. CSRF via X-Recap-Token header.
+            expected_token = getattr(
+                self.server, "csrf_token", "",
+            ) or ""
+            got_token = self.headers.get("X-Recap-Token") or ""
+            if not expected_token or not secrets.compare_digest(
+                got_token, expected_token,
+            ):
+                self._reject_api(
+                    HTTPStatus.FORBIDDEN, "csrf",
+                    "CSRF token missing or invalid.",
+                )
+                return
+
+            # 5. Parse JSON body.
+            raw = (
+                self.rfile.read(content_length)
+                if content_length > 0
+                else b""
+            )
+            try:
+                parsed = json.loads(raw.decode("utf-8", "replace"))
+            except ValueError:
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "bad-json",
+                    "Body is not valid JSON.",
+                )
+                return
+            if not isinstance(parsed, dict):
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "bad-json",
+                    "Top-level JSON must be an object.",
+                )
+                return
+
+            # 6. Source shape.
+            source = parsed.get("source")
+            if not isinstance(source, dict):
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "bad-schema",
+                    "Missing or invalid 'source' object.",
+                )
+                return
+            source_kind = source.get("kind")
+            if source_kind == "sources-root":
+                if sources_resolved is None:
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "sources-root-missing",
+                        "Server was started without a sources root.",
+                    )
+                    return
+                name = source.get("name")
+                if not isinstance(name, str) or not name.strip():
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "source-name-missing",
+                        "source.name is required for kind "
+                        "'sources-root'.",
+                    )
+                    return
+                if Path(name).name != name:
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "source-name-invalid",
+                        "source.name must be a plain filename, no path "
+                        "separators.",
+                    )
+                    return
+                candidate = (sources_resolved / name)
+            elif source_kind == "absolute-path":
+                path = source.get("path")
+                if not isinstance(path, str) or not path.strip():
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "source-path-missing",
+                        "source.path is required for kind "
+                        "'absolute-path'.",
+                    )
+                    return
+                candidate = Path(path).expanduser()
+            else:
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "source-kind-invalid",
+                    "source.kind must be 'sources-root' or "
+                    "'absolute-path'.",
+                )
+                return
+
+            try:
+                resolved = candidate.resolve()
+            except (OSError, RuntimeError, ValueError) as e:
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "source-invalid",
+                    f"Could not resolve source path: "
+                    f"{type(e).__name__}.",
+                )
+                return
+
+            if sources_resolved is None:
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "sources-root-missing",
+                    "Server was started without a sources root.",
+                )
+                return
+            try:
+                resolved.relative_to(sources_resolved)
+            except ValueError:
+                self._reject_api(
+                    HTTPStatus.FORBIDDEN, "source-outside-root",
+                    "Source path is outside the configured sources "
+                    "root.",
+                )
+                return
+
+            if not resolved.is_file():
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "source-not-file",
+                    "Source does not exist or is not a regular file.",
+                )
+                return
+
+            if resolved.suffix.lower() not in _VIDEO_EXTENSIONS:
+                exts = " ".join(sorted(_VIDEO_EXTENSIONS))
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "source-bad-ext",
+                    f"Unsupported video extension. Allowed: {exts}.",
+                )
+                return
+
+            # 7. Engine allowlist + Deepgram env check.
+            engine = parsed.get("engine")
+            if engine is None:
+                engine = "faster-whisper"
+            if not isinstance(engine, str) or engine not in _ENGINE_CHOICES:
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "engine-invalid",
+                    "Unsupported transcription engine.",
+                )
+                return
+            if (
+                engine == "deepgram"
+                and not os.environ.get("DEEPGRAM_API_KEY")
+            ):
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "deepgram-unavailable",
+                    "Deepgram requires DEEPGRAM_API_KEY in the "
+                    "server's environment.",
+                )
+                return
+
+            # 8. Test-only dispatch shim. The flag is intentionally
+            # coarse and undocumented in product-facing surfaces;
+            # scripts/verify_api.py opts in per-subprocess.
+            if os.environ.get("RECAP_API_STUB_JOB_START") == "1":
+                stub_job_id = (
+                    "stub-"
+                    + time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+                )
+                self.server.logger_stream.write(
+                    f"[recap-ui] (stub) accepted /api/jobs/start "
+                    f"engine={engine}\n"
+                )
+                self.server.logger_stream.flush()
+                self._send_json(
+                    HTTPStatus.ACCEPTED,
+                    {
+                        "job_id": stub_job_id,
+                        "engine": engine,
+                        "react_detail": f"/app/job/{stub_job_id}",
+                        "legacy_detail": f"/job/{stub_job_id}/",
+                        "started_at": _now_iso(),
+                        "stub": True,
+                    },
+                )
+                return
+
+            # 9. Acquire the global run slot before any heavy work.
+            if not _run_slot.acquire(blocking=False):
+                self._reject_api(
+                    HTTPStatus.TOO_MANY_REQUESTS, "slot",
+                    "Another video is being processed. Please wait "
+                    "and try again.",
+                    extra_headers={"Retry-After": "30"},
+                )
+                return
+
+            slot_transferred = False
+            try:
+                # Synchronous ingest.
+                try:
+                    ingest = subprocess.run(
+                        [
+                            sys.executable, "-m", "recap", "ingest",
+                            "--source", str(resolved),
+                            "--jobs-root", str(root_resolved),
+                        ],
+                        cwd=str(REPO_ROOT),
+                        capture_output=True,
+                        text=True,
+                        timeout=_INGEST_TIMEOUT,
+                        check=False,
+                    )
+                except subprocess.TimeoutExpired:
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "ingest-timeout",
+                        f"ingest timed out after "
+                        f"{int(_INGEST_TIMEOUT)}s.",
+                    )
+                    return
+                except OSError as e:
+                    self._reject_api(
+                        HTTPStatus.INTERNAL_SERVER_ERROR, "ingest-spawn",
+                        f"failed to spawn recap ingest: "
+                        f"{type(e).__name__}.",
+                    )
+                    return
+
+                if ingest.returncode != 0:
+                    err = (
+                        (ingest.stderr or "").strip()
+                        or (ingest.stdout or "").strip()
+                        or f"ingest failed with exit "
+                           f"{ingest.returncode}"
+                    )
+                    if len(err) > 400:
+                        err = err[:399] + "…"
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "ingest-failed",
+                        f"ingest failed: {err}",
+                    )
+                    return
+
+                stdout_lines = [
+                    ln for ln in (ingest.stdout or "").splitlines()
+                    if ln.strip()
+                ]
+                if not stdout_lines:
+                    self._reject_api(
+                        HTTPStatus.INTERNAL_SERVER_ERROR,
+                        "ingest-no-root",
+                        "ingest produced no job root.",
+                    )
+                    return
+                new_job_dir = Path(stdout_lines[-1].strip())
+                job_id = new_job_dir.name
+                safe_job_dir = _safe_job_dir(root_resolved, job_id)
+                if safe_job_dir is None:
+                    self._reject_api(
+                        HTTPStatus.INTERNAL_SERVER_ERROR,
+                        "ingest-unexpected-root",
+                        "ingest produced an unexpected job root.",
+                    )
+                    return
+
+                started_at = _now_iso()
+                _set_in_progress(job_id, "run", started_at)
+                thread = threading.Thread(
+                    target=_background_run,
+                    args=(job_id, safe_job_dir, engine),
+                    daemon=True,
+                )
+                thread.start()
+                slot_transferred = True
+
+                self.server.logger_stream.write(
+                    f"[recap-ui] started recap run job={job_id} "
+                    f"engine={engine} via=/api/jobs/start\n"
+                )
+                self.server.logger_stream.flush()
+
+                self._send_json(
+                    HTTPStatus.ACCEPTED,
+                    {
+                        "job_id": job_id,
+                        "engine": engine,
+                        "react_detail": f"/app/job/{job_id}",
+                        "legacy_detail": f"/job/{job_id}/",
+                        "started_at": started_at,
+                    },
+                )
+            finally:
+                if not slot_transferred:
+                    _run_slot.release()
+
         def do_POST(self) -> None:  # noqa: N802
             # Early API POST dispatch: any /api/* path uses the JSON
             # validation pipeline and JSON error shape. All other
@@ -2927,6 +3396,10 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                 and early_segments[3] == "speaker-names"
             ):
                 self._handle_api_speaker_names_post(early_segments[2])
+                return
+
+            if early_segments == ["api", "jobs", "start"]:
+                self._handle_api_jobs_start()
                 return
 
             if early_segments and early_segments[0] == "api":

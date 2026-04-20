@@ -65,6 +65,55 @@ export type InsightsLoadState =
   | { status: "error"; message: string; reason?: string }
   | { status: "loaded"; insights: InsightsDoc };
 
+export type SourceEntry = {
+  name: string;
+  size_bytes: number;
+  modified_at: string;
+};
+
+export type SourcesPayload = {
+  sources_root: string | null;
+  sources_root_exists: boolean;
+  extensions: string[];
+  sources: SourceEntry[];
+};
+
+export type EngineEntry = {
+  id: string;
+  label: string;
+  category: string;
+  default: boolean;
+  available: boolean;
+  note?: string;
+};
+
+export type EnginesPayload = {
+  engines: EngineEntry[];
+  default: string;
+};
+
+export type StartSourceSpec =
+  | { kind: "sources-root"; name: string }
+  | { kind: "absolute-path"; path: string };
+
+export type StartJobRequest = {
+  source: StartSourceSpec;
+  engine: string;
+};
+
+export type StartJobResponse = {
+  job_id: string;
+  engine: string;
+  react_detail: string;
+  legacy_detail: string;
+  started_at: string;
+  stub?: boolean;
+};
+
+export type StartJobResult =
+  | { kind: "accepted"; response: StartJobResponse }
+  | { kind: "error"; message: string; reason?: string; status: number };
+
 export type TranscriptSegment = {
   id?: number;
   start: number;
@@ -185,6 +234,54 @@ export async function getInsights(id: string): Promise<InsightsFetchResult> {
     };
   }
   return { kind: "loaded", insights: body as InsightsDoc };
+}
+
+export function getSources(): Promise<SourcesPayload> {
+  return requestJson<SourcesPayload>("/api/sources");
+}
+
+export function getEngines(): Promise<EnginesPayload> {
+  return requestJson<EnginesPayload>("/api/engines");
+}
+
+async function postStartJob(
+  body: StartJobRequest,
+  token: string,
+): Promise<Response> {
+  return fetch("/api/jobs/start", {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-Recap-Token": token,
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function startJob(
+  body: StartJobRequest,
+): Promise<StartJobResult> {
+  let token = await getCsrf();
+  let response = await postStartJob(body, token);
+  if (response.status === 403) {
+    // Token may have rotated mid-session; refresh once before giving up.
+    token = await getCsrf(true);
+    response = await postStartJob(body, token);
+  }
+  const parsed = await parseJson<StartJobResponse | ApiErrorBody>(response);
+  if (!response.ok) {
+    const apiBody = parsed as ApiErrorBody;
+    return {
+      kind: "error",
+      status: response.status,
+      message:
+        apiBody.error || `${response.status} ${response.statusText}`,
+      reason: apiBody.reason,
+    };
+  }
+  return { kind: "accepted", response: parsed as StartJobResponse };
 }
 
 export function getSpeakerNames(id: string): Promise<SpeakerNamesDoc> {

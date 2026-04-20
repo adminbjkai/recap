@@ -23,9 +23,9 @@ export default function AppShell({ children }: Props) {
             <a className="recap-topnav-link" href="/">
               Legacy dashboard
             </a>
-            <a className="recap-topnav-link primary" href="/new">
+            <Link className="recap-topnav-link primary" to="/new">
               New job
-            </a>
+            </Link>
           </nav>
         </div>
       </header>

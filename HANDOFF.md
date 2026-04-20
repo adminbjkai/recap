@@ -832,13 +832,16 @@ Primary `GET` routes:
   section and enrich the existing `## Chapters` rendering with titles,
   summaries, bullets, action items, and speaker focus. When absent,
   exports stay byte-compatible with prior behavior.
-- The React surface now has three pages: `/app/` (jobs index),
-  `/app/job/<id>` (job dashboard — hero, stage timeline, artifact
-  grid, insights preview), and `/app/job/<id>/transcript` (transcript
-  workspace). The legacy HTML detail page at `/job/<id>/` remains
-  live as a fallback. Jobs-index `JobCard` primary click now opens
-  the React dashboard; the secondary "Transcript" action still
-  routes to the transcript workspace.
+- The React surface now has four pages: `/app/` (jobs index),
+  `/app/new` (start a new recap job — source picker, engine
+  selector, "what happens next" panel, and a single dispatch button
+  wired to `POST /api/jobs/start`), `/app/job/<id>` (job dashboard —
+  hero, stage timeline, artifact grid, insights preview), and
+  `/app/job/<id>/transcript` (transcript workspace). The legacy HTML
+  detail page at `/job/<id>/` and the legacy `/new` form remain live
+  as fallbacks. Jobs-index `JobCard` primary click now opens the
+  React dashboard; the secondary "Transcript" action still routes
+  to the transcript workspace.
 - `GET /api/csrf` — returns the server CSRF token as JSON for the
   React app.
 - `GET /api/jobs` — returns the jobs index listing as
@@ -861,6 +864,33 @@ Primary `GET` routes:
 - `GET /api/jobs/<job_id>/speaker-names` — returns
   `speaker_names.json` or the empty default document when absent or
   malformed.
+- `GET /api/sources` — lists video files under the configured
+  `--sources-root` as
+  `{sources_root, sources_root_exists, extensions, sources: [{name,
+  size_bytes, modified_at}, ...]}`. Filters on the same extension set
+  accepted by the legacy `POST /run`, skips non-files, and never reads
+  file contents.
+- `GET /api/engines` — reports transcription engine availability as
+  `{engines: [{id, label, category, default, available, note}, ...],
+  default}`. `faster-whisper` is always available and the default;
+  `deepgram` is available only when `DEEPGRAM_API_KEY` is set in the
+  server environment. The value of the key is never echoed.
+- `POST /api/jobs/start` — dispatches a new run. Body:
+  `{"source": {"kind": "sources-root", "name": "..."} | {"kind":
+  "absolute-path", "path": "..."}, "engine": "..."}`. Reuses the
+  legacy `POST /run` safety primitives (loopback Host pinning,
+  `X-Recap-Token` CSRF, 8 KiB body cap, source-path containment under
+  the sources root, engine allowlist, `DEEPGRAM_API_KEY` env check,
+  single `_run_slot` semaphore) and the shared ingest +
+  `_background_run` implementation. Returns 202 with
+  `{job_id, engine, react_detail, legacy_detail, started_at}`.
+  Validation failures return JSON `{"error": "...", "reason": "..."}`.
+  Never logs the request body, CSRF token, Deepgram key, or captured
+  subprocess output. A test-only `RECAP_API_STUB_JOB_START=1`
+  environment flag — opted in only by `scripts/verify_api.py` — runs
+  every validation step but skips the real `recap ingest` +
+  `recap run` dispatch so CI can prove routing without running heavy
+  transcription. The legacy `POST /run` form remains unchanged.
 - `GET /app/*` — serves `web/dist` assets when present, otherwise
   falls back to `web/dist/index.html` so React Router owns `/` (jobs
   index), `/job/<id>` (dashboard), and `/job/<id>/transcript`

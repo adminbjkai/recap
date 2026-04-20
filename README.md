@@ -587,12 +587,13 @@ routes:
 
 ```text
 /app/                            (jobs index)
+/app/new                         (start a new job)
 /app/job/<job_id>                (job dashboard)
 /app/job/<job_id>/transcript     (transcript workspace)
 ```
 
 Both pages are wrapped in a polished `AppShell` with a sticky top bar
-that links to the legacy HTML dashboard and `/new`. The visual system
+that links to the legacy HTML dashboard and to `/app/new`. The visual system
 (see `web/src/index.css`) uses a small set of CSS custom properties
 for colors, typography, radii, elevation, and focus states, plus
 `prefers-reduced-motion` safeguards — no Tailwind and no component
@@ -664,21 +665,38 @@ fallback routing. The React slices so far port the jobs index (`/`),
 the transcript workspace (`/job/<id>/transcript`), and a dashboard
 job detail page (`/job/<id>`) that renders the hero, stage timeline,
 artifact grid, and an insights preview when `insights.json` is
-present. `/new` and rich-report progress still use the legacy HTML
-routes. No Tailwind, Zustand, Playwright, auth, remote binding, or
-exporter integration is included yet.
+present. A React "start a recap" page at `/app/new` drives
+`POST /api/jobs/start` so users can launch a run without touching the
+legacy HTML form. Rich-report progress still uses the legacy HTML
+routes. No Tailwind, Zustand, Playwright, auth, remote binding,
+browser screen recording, or exporter integration is included yet.
 
 The JSON API surface is:
 
 ```text
 GET  /api/csrf                       token for state-changing POSTs
+GET  /api/sources                    video files under --sources-root
+GET  /api/engines                    engine availability (no key value)
 GET  /api/jobs                       jobs index listing
 GET  /api/jobs/<id>                  single-job summary
 GET  /api/jobs/<id>/transcript       raw transcript.json
 GET  /api/jobs/<id>/insights         parsed insights.json (404 if absent)
 GET  /api/jobs/<id>/speaker-names    current speaker-names overlay
 POST /api/jobs/<id>/speaker-names    update overlay (CSRF, Host-pinned)
+POST /api/jobs/start                 dispatch a new run (CSRF, Host-pinned)
 ```
+
+`POST /api/jobs/start` accepts a JSON body of either
+`{"source": {"kind": "sources-root", "name": "..."}, "engine": "..."}`
+or `{"source": {"kind": "absolute-path", "path": "..."}, "engine": "..."}`,
+reuses the legacy `POST /run` safety primitives (Host pinning,
+`X-Recap-Token` CSRF, 8 KiB body cap, source-path root containment,
+engine allowlist, `DEEPGRAM_API_KEY` check, single `_run_slot`) and the
+shared ingest + background-run implementation, and returns 202 with
+`{job_id, engine, react_detail, legacy_detail, started_at}`. Validation
+failures return JSON `{"error": "...", "reason": "..."}`. The legacy
+`POST /run` fallback remains unchanged. Browser screen recording is
+tracked as a future slice.
 
 ### Start a new job from the browser
 

@@ -13,16 +13,21 @@ does and produces, read `HANDOFF.md`.
 - Phase 1 of Recap is implemented, audited, hardened, and closed out.
 - The modern web app is implemented beside the legacy stdlib
   dashboard. `recap/ui.py` exposes JSON endpoints `GET /api/csrf`,
-  `GET /api/jobs`, `GET /api/jobs/<id>`,
-  `GET /api/jobs/<id>/transcript`,
+  `GET /api/sources`, `GET /api/engines`, `GET /api/jobs`,
+  `GET /api/jobs/<id>`, `GET /api/jobs/<id>/transcript`,
   `GET /api/jobs/<id>/insights` (read-only; 404 when absent, 500 on
-  malformed),
-  `GET /api/jobs/<id>/speaker-names`, and
-  `POST /api/jobs/<id>/speaker-names`; it also serves the built React
-  app from `web/dist` under `/app/*` with SPA fallback routing. React
-  routes are now `/app/` (jobs index), `/app/job/<id>` (dashboard),
-  and `/app/job/<id>/transcript` (transcript workspace). The legacy
-  HTML pages at `/` and `/job/<id>/` remain live as a fallback.
+  malformed), `GET /api/jobs/<id>/speaker-names`,
+  `POST /api/jobs/<id>/speaker-names`, and `POST /api/jobs/start`
+  (dispatch a new run from the React surface); it also serves the
+  built React app from `web/dist` under `/app/*` with SPA fallback
+  routing. React routes are now `/app/` (jobs index), `/app/new`
+  (start a new recap job), `/app/job/<id>` (dashboard), and
+  `/app/job/<id>/transcript` (transcript workspace). The legacy
+  HTML pages at `/`, `/new`, and `/job/<id>/` remain live as a
+  fallback. The React `/app/new` page is a thin client on top of
+  the shared ingest + `_background_run` implementation, not a new
+  pipeline path. Browser screen recording is tracked as a future
+  slice (see [docs/product_roadmap.md](docs/product_roadmap.md)).
   `GET /api/jobs` returns `{"jobs": [summary, ...]}` sorted by
   `created_at` descending; malformed `job.json` entries are dropped
   silently. Each summary's `urls` block includes `detail_html`,
@@ -58,9 +63,20 @@ does and produces, read `HANDOFF.md`.
   (`recap insights --provider groq`, env `GROQ_API_KEY` /
   `GROQ_MODEL` / `GROQ_BASE_URL`). Both providers have mock / offline
   fallbacks and are never called by automated tests.
-- `scripts/verify_api.py` covers 15 API checks (listing + artifact
-  flags + speaker-names contract + insights artifact flag + raw
-  insights.json serving). `scripts/verify_reports.py` covers 29
+- `scripts/verify_api.py` covers the API contract: CSRF shape,
+  `/api/sources` listing (extension filter + scratch file metadata),
+  `/api/engines` availability (faster-whisper always, Deepgram only
+  with `DEEPGRAM_API_KEY`, key value never echoed),
+  `/api/jobs/start` validation (missing CSRF → 403, invalid engine
+  → 400, Deepgram-without-key → 400, path outside sources root →
+  403, traversal name → 400), a dispatch-success check that uses
+  the test-only `RECAP_API_STUB_JOB_START=1` shim so CI never runs
+  real transcription, plus the existing listing + artifact flags +
+  speaker-names contract + insights artifact flag + raw
+  `insights.json` serving. The shim is **only** enabled when
+  `scripts/verify_api.py` sets the env var on its own
+  subprocess — it is not reachable in normal dev/prod operation.
+  `scripts/verify_reports.py` covers 29
   checks (selected-path / absent-path / four malformed-artifact
   cases + the scenes-interrupt regression + ten insights cases:
   mock happy path, absent-insights compatibility, offline-mock
@@ -68,11 +84,14 @@ does and produces, read `HANDOFF.md`.
   static-source guard, validate_insights sources requirement,
   speaker-names graceful-fallback, selected-frames graceful-fallback,
   chapter-candidates fail-clean, and the Groq max_tokens cap). The
-  Vitest suite has 22 specs across six files: `SpeakerRenameForm`,
-  `SpeakerLegend` filter chips, `JobCard`, `JobsIndexPage`,
-  `TranscriptSearchBar`, `TranscriptTable` highlighting + empty
-  states, and `lib/search` pure helpers. Legacy HTML routes remain
-  live.
+  Vitest suite covers `SpeakerRenameForm`, `SpeakerLegend` filter
+  chips, `JobCard`, `JobsIndexPage`, `TranscriptSearchBar`,
+  `TranscriptTable` highlighting + empty states, `lib/search` pure
+  helpers, and `NewJobPage` (loading state, sources render +
+  selection, Deepgram-disabled state, successful start + redirect,
+  error state). Legacy HTML routes at `/`, `/new`, and
+  `/job/<id>/` — together with `POST /run` — remain live as
+  fallbacks.
 - `recap insights --job <path> --provider mock|groq [--force]` is
   opt-in and writes `jobs/<id>/insights.json` with overview, quick
   bullets, per-chapter summaries, and action items. It is **not** in

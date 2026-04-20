@@ -19,6 +19,27 @@ export type TranscriptRow = {
   speakerClassName?: string;
 };
 
+const _FILE_SIZE_UNITS = ["B", "KB", "MB", "GB", "TB"] as const;
+
+export function formatFileSize(bytes: unknown): string {
+  if (
+    typeof bytes !== "number" ||
+    !Number.isFinite(bytes) ||
+    bytes < 0
+  ) {
+    return "—";
+  }
+  if (bytes === 0) return "0 B";
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < _FILE_SIZE_UNITS.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const digits = value < 10 && unit > 0 ? 1 : 0;
+  return `${value.toFixed(digits)} ${_FILE_SIZE_UNITS[unit]}`;
+}
+
 export function formatJobDateTime(value: unknown): string {
   if (typeof value !== "string" || !value.trim()) {
     return "—";

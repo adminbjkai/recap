@@ -123,15 +123,33 @@ Shipped in this slice:
   `recap insights` kick-offs. Until those land, users run the rich-
   report action on the legacy HTML page or via CLI.
 
-## 5. React `/app/new` upload and start flow
+## 5. React `/app/new` start flow — **done (start subset)**
 
-Replace the HTML `/new` form with a React surface that:
+**Shipped in:**
+- `Add React new job flow`
 
-- Lists sources under `--sources-root`.
-- Offers engine selection (`faster-whisper` vs. `deepgram`).
-- Provides progress UI while `recap run` executes.
-- Lets the user jump to the transcript workspace as soon as it is
-  ready without waiting for the full chain.
+**What it gives users:**
+- `/app/new` React page with hero, source picker (lists videos under
+  `--sources-root` via `GET /api/sources`), absolute-path fallback,
+  engine selector (faster-whisper default / Deepgram opt-in when
+  `DEEPGRAM_API_KEY` is present via `GET /api/engines`), "what
+  happens next" panel, empty / loading / error / success states,
+  keyboard-accessible controls, and visible focus.
+- `POST /api/jobs/start` dispatch endpoint that reuses the legacy
+  `POST /run` safety primitives and the shared ingest + background-
+  run implementation, returning 202 with
+  `{job_id, engine, react_detail, legacy_detail, started_at}` and
+  JSON `{error, reason}` on failure. The React page redirects to
+  `/app/job/<id>` on success.
+- AppShell "New job" CTA points at `/app/new`. Legacy `/new` form
+  and `POST /run` remain live as fallbacks.
+- Verifier (`scripts/verify_api.py`) grew with cases for
+  `/api/sources`, `/api/engines`, and `/api/jobs/start` — using a
+  test-only `RECAP_API_STUB_JOB_START=1` shim that is off outside
+  the verifier.
+
+**Deferred to slice 5b:** streaming / polling progress UI while
+`recap run` executes (see slice 4b for the related dashboard work).
 
 ## 6. Browser screen recording via MediaRecorder
 

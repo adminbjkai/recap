@@ -128,7 +128,13 @@ def wait_for_server(port: int, timeout: float = 10.0) -> None:
     fail("startup", f"UI did not respond within {timeout}s (last={last_err})")
 
 
-def start_ui(jobs_root: Path, port: int, sources_root: Path) -> subprocess.Popen:
+def start_ui(
+    jobs_root: Path,
+    port: int,
+    sources_root: Path,
+    *,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.Popen:
     args = [
         sys.executable, "-m", "recap", "ui",
         "--host", "127.0.0.1",
@@ -138,6 +144,13 @@ def start_ui(jobs_root: Path, port: int, sources_root: Path) -> subprocess.Popen
     ]
     env = os.environ.copy()
     env.pop("DEEPGRAM_API_KEY", None)
+    # The /api/jobs/start dispatch test relies on the test-only shim
+    # documented in recap/ui.py so the verifier can prove validation
+    # without spawning a real recap ingest + recap run pair. All other
+    # routes are unaffected by the shim.
+    env["RECAP_API_STUB_JOB_START"] = "1"
+    if extra_env:
+        env.update(extra_env)
     return subprocess.Popen(
         args,
         cwd=REPO_ROOT,
@@ -176,6 +189,12 @@ def main() -> int:
         shutil.copytree(FIXTURE, job_dir)
         sources_root = scratch_root / "sources"
         sources_root.mkdir()
+        # Scratch video file so /api/sources has something to list and
+        # the dispatch-success test has a real source to resolve.
+        scratch_video = sources_root / "demo.mp4"
+        scratch_video.write_bytes(b"fake mp4 bytes for verifier")
+        # Plus one file that must be ignored by the listing (wrong ext).
+        (sources_root / "notes.txt").write_bytes(b"not a video")
 
         port = free_port()
         proc = start_ui(jobs_root, port, sources_root)
@@ -186,6 +205,161 @@ def main() -> int:
         token = csrf.get("token")
         if not isinstance(token, str) or len(token) < 32:
             fail(case, f"bad csrf token shape: {token!r}")
+        passed()
+
+        case = "api-sources-lists-scratch-videos"
+        payload = get_json(case, port, "/api/sources")
+        exts = payload.get("extensions") or []
+        if ".mp4" not in exts:
+            fail(case, f"extensions missing .mp4: {payload!r}")
+        if payload.get("sources_root") != str(sources_root.resolve()):
+            fail(case, f"sources_root wrong: {payload!r}")
+        if payload.get("sources_root_exists") is not True:
+            fail(case, f"sources_root_exists should be True: {payload!r}")
+        entries = payload.get("sources") or []
+        names = [e.get("name") for e in entries]
+        if "demo.mp4" not in names:
+            fail(case, f"demo.mp4 not listed: {entries!r}")
+        if "notes.txt" in names:
+            fail(
+                case,
+                f"notes.txt unexpectedly listed (wrong ext filter): "
+                f"{entries!r}",
+            )
+        demo_entry = next(e for e in entries if e.get("name") == "demo.mp4")
+        if not isinstance(demo_entry.get("size_bytes"), int):
+            fail(case, f"demo.mp4 size_bytes missing/invalid: {demo_entry!r}")
+        if not isinstance(demo_entry.get("modified_at"), str):
+            fail(case, f"demo.mp4 modified_at missing/invalid: {demo_entry!r}")
+        passed()
+
+        case = "api-engines-reports-availability"
+        payload = get_json(case, port, "/api/engines")
+        engines = payload.get("engines") or []
+        by_id = {e.get("id"): e for e in engines}
+        if "faster-whisper" not in by_id or "deepgram" not in by_id:
+            fail(case, f"engines missing entries: {engines!r}")
+        if by_id["faster-whisper"].get("available") is not True:
+            fail(case, f"faster-whisper must be available: {engines!r}")
+        # The verifier subprocess scrubs DEEPGRAM_API_KEY from env, so
+        # Deepgram should report as unavailable.
+        if by_id["deepgram"].get("available") is not False:
+            fail(case, f"deepgram should be unavailable: {engines!r}")
+        if payload.get("default") != "faster-whisper":
+            fail(case, f"default engine wrong: {payload!r}")
+        # Belt-and-braces: no engine entry should carry a raw API key.
+        as_text = json.dumps(payload)
+        if "DEEPGRAM_API_KEY=" in as_text or " sk-" in as_text:
+            fail(case, "engines payload appears to leak a key value")
+        passed()
+
+        case = "api-start-missing-csrf"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/start",
+            {
+                "source": {"kind": "sources-root", "name": "demo.mp4"},
+                "engine": "faster-whisper",
+            },
+        )
+        if status != 403:
+            fail(case, f"expected 403, got {status}: {got!r}")
+        expect_reason(case, got, "csrf")
+        passed()
+
+        case = "api-start-invalid-engine"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/start",
+            {
+                "source": {"kind": "sources-root", "name": "demo.mp4"},
+                "engine": "bogus-engine",
+            },
+            token=token,
+        )
+        if status != 400:
+            fail(case, f"expected 400, got {status}: {got!r}")
+        expect_reason(case, got, "engine-invalid")
+        passed()
+
+        case = "api-start-deepgram-without-key"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/start",
+            {
+                "source": {"kind": "sources-root", "name": "demo.mp4"},
+                "engine": "deepgram",
+            },
+            token=token,
+        )
+        if status != 400:
+            fail(case, f"expected 400, got {status}: {got!r}")
+        expect_reason(case, got, "deepgram-unavailable")
+        passed()
+
+        case = "api-start-rejects-path-outside-sources-root"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/start",
+            {
+                "source": {
+                    "kind": "absolute-path",
+                    "path": "/etc/hosts",
+                },
+                "engine": "faster-whisper",
+            },
+            token=token,
+        )
+        if status != 403:
+            fail(case, f"expected 403, got {status}: {got!r}")
+        expect_reason(case, got, "source-outside-root")
+        passed()
+
+        case = "api-start-rejects-traversal-name"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/start",
+            {
+                "source": {
+                    "kind": "sources-root",
+                    "name": "../../etc/hosts",
+                },
+                "engine": "faster-whisper",
+            },
+            token=token,
+        )
+        if status != 400:
+            fail(case, f"expected 400, got {status}: {got!r}")
+        expect_reason(case, got, "source-name-invalid")
+        passed()
+
+        case = "api-start-accepts-valid-dispatch"
+        # Server runs with RECAP_API_STUB_JOB_START=1 so this call
+        # proves every validation step without spawning `recap ingest`
+        # or `recap run`. The response is 202 with a synthesized
+        # stub-<timestamp> job id.
+        status, _, got = post_json(
+            port,
+            "/api/jobs/start",
+            {
+                "source": {"kind": "sources-root", "name": "demo.mp4"},
+                "engine": "faster-whisper",
+            },
+            token=token,
+        )
+        if status != 202:
+            fail(case, f"expected 202, got {status}: {got!r}")
+        if got.get("engine") != "faster-whisper":
+            fail(case, f"engine echo wrong: {got!r}")
+        if got.get("stub") is not True:
+            fail(case, f"response must indicate stub: {got!r}")
+        job_id = got.get("job_id")
+        if not isinstance(job_id, str) or not job_id.startswith("stub-"):
+            fail(case, f"stub job_id wrong: {got!r}")
+        if got.get("react_detail") != f"/app/job/{job_id}":
+            fail(case, f"react_detail wrong: {got!r}")
+        if got.get("legacy_detail") != f"/job/{job_id}/":
+            fail(case, f"legacy_detail wrong: {got!r}")
         passed()
 
         case = "api-jobs-list-returns-jobs"
