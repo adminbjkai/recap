@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   getInsights,
@@ -9,6 +9,7 @@ import {
 import { formatJobDateTime } from "../lib/format";
 import ArtifactGrid from "../components/ArtifactGrid";
 import InsightsPreview from "../components/InsightsPreview";
+import RunActionsPanel from "../components/RunActionsPanel";
 import StageTimeline from "../components/StageTimeline";
 
 type LoadState =
@@ -50,31 +51,29 @@ export default function JobDetailPage() {
     status: "loading",
   });
 
-  useEffect(() => {
-    let cancelled = false;
-    if (!id) {
-      setState({ status: "error", message: "Missing job id." });
-      return;
-    }
-    setState({ status: "loading" });
-    setInsightsState({ status: "loading" });
-    getJob(id)
+  const loadJob = useCallback((jobId: string) => {
+    return getJob(jobId)
       .then((job) => {
-        if (cancelled) return;
         setState({ status: "loaded", job });
       })
       .catch((err) => {
-        if (cancelled) return;
         setState({
           status: "error",
-          message: err instanceof Error ? err.message : "Could not load job.",
+          message:
+            err instanceof Error ? err.message : "Could not load job.",
         });
       });
-    getInsights(id)
+  }, []);
+
+  const loadInsights = useCallback((jobId: string) => {
+    setInsightsState({ status: "loading" });
+    return getInsights(jobId)
       .then((result) => {
-        if (cancelled) return;
         if (result.kind === "loaded") {
-          setInsightsState({ status: "loaded", insights: result.insights });
+          setInsightsState({
+            status: "loaded",
+            insights: result.insights,
+          });
         } else if (result.kind === "absent") {
           setInsightsState({ status: "absent" });
         } else {
@@ -86,17 +85,38 @@ export default function JobDetailPage() {
         }
       })
       .catch((err) => {
-        if (cancelled) return;
         setInsightsState({
           status: "error",
           message:
-            err instanceof Error ? err.message : "Could not load insights.",
+            err instanceof Error
+              ? err.message
+              : "Could not load insights.",
         });
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [id]);
+  }, []);
+
+  useEffect(() => {
+    if (!id) {
+      setState({ status: "error", message: "Missing job id." });
+      return;
+    }
+    setState({ status: "loading" });
+    loadJob(id);
+    loadInsights(id);
+  }, [id, loadJob, loadInsights]);
+
+  const handleRunCompleted = useCallback(
+    (runType: "insights" | "rich-report") => {
+      if (!id) return;
+      // Regardless of which run finished, refresh the job summary so
+      // artifact flags / stage timeline reflect any new artifacts.
+      loadJob(id);
+      if (runType === "insights") {
+        loadInsights(id);
+      }
+    },
+    [id, loadJob, loadInsights],
+  );
 
   const metaChips = useMemo(() => {
     if (state.status !== "loaded") return [] as string[];
@@ -250,6 +270,11 @@ export default function JobDetailPage() {
             state={insightsState}
             insightsJsonUrl={insightsJsonUrl ?? undefined}
           />
+          <RunActionsPanel
+            jobId={job.job_id}
+            insightsPresent={!!job.artifacts?.insights_json}
+            onRunCompleted={handleRunCompleted}
+          />
           <ArtifactGrid job={job} />
         </div>
         <aside className="detail-rail">
@@ -271,16 +296,10 @@ export default function JobDetailPage() {
                   Open the legacy HTML detail page
                 </a>
                 <p>
-                  The stdlib dashboard remains live as a fallback and
-                  still hosts the rich-report action button.
+                  The stdlib dashboard remains live as a fallback —
+                  exporter reruns and the legacy rich-report form are
+                  still available there.
                 </p>
-              </li>
-              <li>
-                <span className="next-actions-muted">
-                  React action surfaces for rich reports, new jobs, and
-                  insights generation are on the roadmap but not live
-                  yet — use the legacy page or the CLI until they ship.
-                </span>
               </li>
             </ul>
           </section>

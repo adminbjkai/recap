@@ -212,6 +212,10 @@ def start_ui(
     # without spawning a real recap ingest + recap run pair. All other
     # routes are unaffected by the shim.
     env["RECAP_API_STUB_JOB_START"] = "1"
+    # Also short-circuit /api/jobs/<id>/runs/insights and
+    # /api/jobs/<id>/runs/rich-report so CI never spawns a real
+    # `recap insights` call or the 11-stage chain.
+    env["RECAP_API_STUB_RUN"] = "1"
     if extra_env:
         env.update(extra_env)
     return subprocess.Popen(
@@ -568,6 +572,189 @@ def main() -> int:
         if status != 400:
             fail(case, f"expected 400, got {status}: {got!r}")
         expect_reason(case, got, "short-body")
+        passed()
+
+        # -----------------------------------------------------------
+        # /api/jobs/<id>/runs/{insights,rich-report} — React dispatch
+        # endpoints for slice 4b. The server is spawned with
+        # RECAP_API_STUB_RUN=1 so the POST handlers skip the real
+        # subprocess chain and write a canned success entry
+        # synchronously.
+        # -----------------------------------------------------------
+
+        case = "api-runs-insights-last-no-run"
+        got = get_json(case, port, "/api/jobs/minimal_job/runs/insights/last")
+        if got.get("run_type") != "insights":
+            fail(case, f"run_type wrong: {got!r}")
+        if got.get("status") != "no-run":
+            fail(case, f"status should be no-run before any run: {got!r}")
+        passed()
+
+        case = "api-runs-rich-report-last-no-run"
+        got = get_json(
+            case, port, "/api/jobs/minimal_job/runs/rich-report/last",
+        )
+        if got.get("run_type") != "rich-report":
+            fail(case, f"run_type wrong: {got!r}")
+        if got.get("status") != "no-run":
+            fail(case, f"status should be no-run before any run: {got!r}")
+        passed()
+
+        case = "api-runs-insights-missing-csrf"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/runs/insights",
+            {"provider": "mock"},
+        )
+        if status != 403:
+            fail(case, f"expected 403, got {status}: {got!r}")
+        expect_reason(case, got, "csrf")
+        passed()
+
+        case = "api-runs-insights-invalid-provider"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/runs/insights",
+            {"provider": "openai"},
+            token=token,
+        )
+        if status != 400:
+            fail(case, f"expected 400, got {status}: {got!r}")
+        expect_reason(case, got, "provider-invalid")
+        passed()
+
+        case = "api-runs-insights-groq-without-key"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/runs/insights",
+            {"provider": "groq"},
+            token=token,
+        )
+        if status != 400:
+            fail(case, f"expected 400, got {status}: {got!r}")
+        expect_reason(case, got, "groq-unavailable")
+        passed()
+
+        case = "api-runs-insights-no-such-job"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/does-not-exist/runs/insights",
+            {"provider": "mock"},
+            token=token,
+        )
+        if status != 404:
+            fail(case, f"expected 404, got {status}: {got!r}")
+        expect_reason(case, got, "no-such-job")
+        passed()
+
+        case = "api-runs-insights-dispatch-mock"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/runs/insights",
+            {"provider": "mock", "force": True},
+            token=token,
+        )
+        if status != 202:
+            fail(case, f"expected 202, got {status}: {got!r}")
+        if got.get("run_type") != "insights":
+            fail(case, f"run_type wrong: {got!r}")
+        if got.get("stub") is not True:
+            fail(case, f"expected stub=true in verifier: {got!r}")
+        if got.get("provider") != "mock":
+            fail(case, f"provider echo wrong: {got!r}")
+        if got.get("force") is not True:
+            fail(case, f"force echo wrong: {got!r}")
+        if got.get("status_url") != "/api/jobs/minimal_job/runs/insights/last":
+            fail(case, f"status_url wrong: {got!r}")
+        if got.get("react_detail") != "/app/job/minimal_job":
+            fail(case, f"react_detail wrong: {got!r}")
+        passed()
+
+        case = "api-runs-insights-last-after-stub"
+        got = get_json(case, port, "/api/jobs/minimal_job/runs/insights/last")
+        if got.get("status") != "success":
+            fail(case, f"status should be success after stub: {got!r}")
+        if got.get("provider") != "mock":
+            fail(case, f"provider persisted wrong: {got!r}")
+        if got.get("force") is not True:
+            fail(case, f"force persisted wrong: {got!r}")
+        if got.get("exit_code") != 0:
+            fail(case, f"exit_code wrong: {got!r}")
+        for key in ("started_at", "finished_at", "stdout", "stderr"):
+            if key not in got:
+                fail(case, f"missing key {key!r} in status: {got!r}")
+        passed()
+
+        case = "api-runs-rich-report-missing-csrf"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/runs/rich-report",
+            {},
+        )
+        if status != 403:
+            fail(case, f"expected 403, got {status}: {got!r}")
+        expect_reason(case, got, "csrf")
+        passed()
+
+        case = "api-runs-rich-report-no-such-job"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/does-not-exist/runs/rich-report",
+            {},
+            token=token,
+            content_type="text/plain",
+        )
+        if status != 404:
+            fail(case, f"expected 404, got {status}: {got!r}")
+        expect_reason(case, got, "no-such-job")
+        passed()
+
+        case = "api-runs-rich-report-dispatch"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/runs/rich-report",
+            {},
+            token=token,
+            # The rich-report handler ignores the body; empty payload
+            # with an arbitrary Content-Type must still be accepted.
+            content_type="application/json",
+        )
+        if status != 202:
+            fail(case, f"expected 202, got {status}: {got!r}")
+        if got.get("run_type") != "rich-report":
+            fail(case, f"run_type wrong: {got!r}")
+        if got.get("stub") is not True:
+            fail(case, f"expected stub=true: {got!r}")
+        if got.get("status_url") != "/api/jobs/minimal_job/runs/rich-report/last":
+            fail(case, f"status_url wrong: {got!r}")
+        if got.get("react_detail") != "/app/job/minimal_job":
+            fail(case, f"react_detail wrong: {got!r}")
+        passed()
+
+        case = "api-runs-rich-report-last-after-stub"
+        got = get_json(
+            case, port, "/api/jobs/minimal_job/runs/rich-report/last",
+        )
+        if got.get("status") != "success":
+            fail(case, f"status should be success: {got!r}")
+        stages = got.get("stages") or []
+        if not isinstance(stages, list) or len(stages) != 11:
+            fail(case, f"expected 11 stages in chain, got {len(stages)}: {got!r}")
+        expected_stage_names = [
+            "scenes", "dedupe", "window", "similarity", "chapters",
+            "rank", "shortlist", "verify", "assemble",
+            "export-html", "export-docx",
+        ]
+        got_names = [s.get("name") for s in stages]
+        if got_names != expected_stage_names:
+            fail(case, f"stage name order wrong: {got_names!r}")
+        for entry in stages:
+            if entry.get("status") != "completed":
+                fail(case, f"stub stage not completed: {entry!r}")
+        if got.get("current_stage") is not None:
+            fail(case, f"current_stage should be None after success: {got!r}")
+        if got.get("failed_stage") is not None:
+            fail(case, f"failed_stage should be None on success: {got!r}")
         passed()
 
         case = "api-jobs-list-returns-jobs"

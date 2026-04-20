@@ -88,13 +88,12 @@ carry real, useful information, not just a transcript dump.
 - No full React insights UI yet; a chip is enough for now.
 - No prompt customization beyond env.
 
-## 4. React job detail + rich-report progress — **done (dashboard); 4b next**
+## 4. React job detail + rich-report progress — **done**
 
 **Shipped in:**
-- `e709673 Add React job detail dashboard`
-
-Dashboard landing is shipped; rich-report progress + action endpoints
-are deferred to slice 4b. **4b is the next active slice.**
+- `e709673 Add React job detail dashboard` (4a: dashboard landing)
+- `Add React rich-report progress + action endpoints` (4b: action
+  endpoints + polling)
 
 Shipped in this slice:
 
@@ -122,23 +121,44 @@ Shipped in this slice:
   `/app/job/:id/transcript`.
 - Legacy HTML detail page at `/job/:id/` remains live as a fallback.
 
-**4b. React rich-report progress + action endpoints — next:**
+**4b. React rich-report progress + action endpoints — shipped:**
 
-- Streaming / polling progress while `recap run` or the rich-report
-  chain is executing. Probably polling first, SSE later (slice 13
-  covers the SSE transport work).
-- React action endpoints for the 11-stage rich-report chain and for
-  `recap insights` kick-offs. The existing legacy HTML actions at
-  `/job/<id>/` stay live.
-- New `POST /api/jobs/<id>/insights` dispatch (CSRF + Host-pinned)
-  and `POST /api/jobs/<id>/rich-report` dispatch that reuse the
-  existing per-job locks and `_run_slot` semaphore.
-- React `InsightsPreview` gains a "Generate insights" affordance when
-  `insights.json` is absent; dashboard gains a "Generate rich
-  report" affordance that mirrors the legacy form.
+- New `POST /api/jobs/<id>/runs/insights` (JSON body
+  `{provider, force}`; provider allowlist `{mock, groq}`; Groq
+  requires `GROQ_API_KEY`) kicks off `recap insights` under the same
+  subprocess boundary as the CLI.
+- New `POST /api/jobs/<id>/runs/rich-report` reuses the legacy
+  `_background_rich_report` worker and the shared
+  `(job_id, "rich-report")` `_last_run` entry, so a React-dispatched
+  chain and a legacy-HTML-dispatched chain are indistinguishable
+  from a status consumer's point of view.
+- New `GET /api/jobs/<id>/runs/insights/last` and
+  `GET /api/jobs/<id>/runs/rich-report/last` return a JSON status
+  payload with `no-run` / `in-progress` / `success` / `failure`,
+  timestamps, elapsed, truncated stdout/stderr, and (for
+  rich-report) the ordered stage list with per-stage status and
+  stderr.
+- React `RunActionsPanel` on `/app/job/:id` renders the generate /
+  regenerate insights action (with provider select + force
+  checkbox), the rich-report action, a pending/running/completed/
+  failed pill + colored dot (status is never color-only), a 2.5 s
+  polling loop that only runs while something is in flight,
+  auto-refresh of the parent job summary + insights preview on
+  completion, and a fallback link to the legacy
+  `/job/<id>/run/rich-report/last` page.
+- Both dispatch endpoints share the existing safety model: Host
+  pinning, `X-Recap-Token` CSRF, 8 KiB body cap, the global
+  `_run_slot` semaphore, and a per-job lock transferred to the
+  worker thread.
+- Neither endpoint adds any stage to `_RUNNABLE_STAGES` /
+  `_LAST_RESULT_STAGES`. `recap run` composition and `job.STAGES`
+  are unchanged. The legacy `/job/<id>/run/rich-report`,
+  `/job/<id>/run/rich-report/last`, exporter rerun routes, and the
+  `/new` / `POST /run` form remain live as fallbacks.
 
-Until 4b lands, users run the rich-report action on the legacy HTML
-page or via CLI.
+**Still deferred:** SSE / WebSocket transport for progress (slice 13
+owns that work). Polling is sufficient while run budgets stay below
+a handful of minutes.
 
 ## 5. React `/app/new` start flow — **done (start subset)**
 

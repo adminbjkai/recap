@@ -685,7 +685,49 @@ GET  /api/jobs/<id>/speaker-names    current speaker-names overlay
 POST /api/jobs/<id>/speaker-names    update overlay (CSRF, Host-pinned)
 POST /api/jobs/start                 dispatch a new run (CSRF, Host-pinned)
 POST /api/recordings                 browser-recorded clip upload (CSRF, Host-pinned)
+POST /api/jobs/<id>/runs/insights    dispatch `recap insights` (CSRF, Host-pinned)
+GET  /api/jobs/<id>/runs/insights/last      latest insights run status (JSON)
+POST /api/jobs/<id>/runs/rich-report dispatch the 11-stage chain (CSRF, Host-pinned)
+GET  /api/jobs/<id>/runs/rich-report/last   latest rich-report status (JSON)
 ```
+
+### React run actions + progress (slice 4b)
+
+The `/app/job/<id>` dashboard hosts a **Generate & enrich** panel that
+drives two server-side runs through the API:
+
+- **Insights** — `POST /api/jobs/<id>/runs/insights` with a JSON body
+  of `{"provider": "mock"|"groq", "force": true|false}`. Defaults to
+  `mock`. `groq` requires `GROQ_API_KEY` in the server environment;
+  when it's missing, the endpoint returns `400 groq-unavailable`
+  without echoing the key. The handler runs the stage as a subprocess
+  (`python -m recap insights ...`) so the UI module never imports
+  `recap.stages.insights` directly. Success returns `202 Accepted`
+  with `{job_id, run_type, status_url, react_detail, started_at,
+  provider, force}`.
+- **Rich report** — `POST /api/jobs/<id>/runs/rich-report` kicks off
+  the same 11-stage chain that the legacy form at
+  `/job/<id>/run/rich-report` has been running. Both endpoints share
+  the `_background_rich_report` worker and write the same
+  `(job_id, "rich-report")` entry in `_last_run`, so the legacy
+  status page and the React panel see the same progress.
+
+The React panel polls the status endpoints every ~2.5s while a run is
+in flight, renders pending/running/completed/failed state (dot color
+*and* labelled text so nothing is color-only), shows the current
+rich-report stage and an ordered stage list with failed-stage stderr
+inlined as a bounded `<pre>` on failure, and refreshes the job
+summary + insights preview on completion. The legacy HTML rich-report
+status page at `/job/<id>/run/rich-report/last` stays live as a
+fallback.
+
+Both dispatch endpoints reuse the existing safety model: Host
+pinning, `X-Recap-Token` CSRF, an 8 KiB body cap, the global
+`_run_slot` semaphore, and a per-job lock transferred into the
+worker thread. They do **not** add any stage to `_RUNNABLE_STAGES` or
+`_LAST_RESULT_STAGES`, do **not** change `cmd_run` composition, and
+do **not** change the behavior of the legacy exporter-rerun POST
+routes or the `/new` form.
 
 `POST /api/jobs/start` accepts a JSON body of either
 `{"source": {"kind": "sources-root", "name": "..."}, "engine": "..."}`

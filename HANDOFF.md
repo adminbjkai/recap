@@ -832,6 +832,21 @@ Primary `GET` routes:
   section and enrich the existing `## Chapters` rendering with titles,
   summaries, bullets, action items, and speaker focus. When absent,
   exports stay byte-compatible with prior behavior.
+- The React `/app/job/<id>` dashboard now hosts a **Generate &
+  enrich** panel (`RunActionsPanel`) that drives the two new run-
+  dispatch endpoints. It renders the latest insights / rich-report
+  run status (no-run / in-progress / success / failed with both a
+  colored dot and a labelled pill so no information is color-only),
+  polls the status endpoints every 2.5s while something is in
+  flight, shows the current rich-report stage and an ordered stage
+  list with failed-stage stderr inlined as a bounded `<pre>`, and
+  refreshes the parent job summary + insights preview on completion.
+  Starting an insights run posts `{provider, force}`; starting the
+  rich-report chain posts an empty body. The legacy rich-report
+  status page at `/job/<id>/run/rich-report/last` remains live and
+  is linked from the panel as a fallback. Actions are keyboard-
+  accessible and the `aria-busy` / `disabled` attributes track the
+  run state.
 - The React surface now has four pages: `/app/` (jobs index),
   `/app/new` (start a new recap job — source picker, engine
   selector, "what happens next" panel, and a single dispatch button
@@ -899,6 +914,48 @@ Primary `GET` routes:
   every validation step but skips the real `recap ingest` +
   `recap run` dispatch so CI can prove routing without running heavy
   transcription. The legacy `POST /run` form remains unchanged.
+- `POST /api/jobs/<id>/runs/insights` — dispatch `recap insights`.
+  Body: `{"provider": "mock" | "groq", "force": true | false}` (both
+  keys optional; provider defaults to `mock`, force to `false`).
+  Reuses Host pinning, `X-Recap-Token` CSRF, the 8 KiB body cap, the
+  global `_run_slot` semaphore, and a per-job lock transferred into
+  `_background_insights`. Runs the stage as a subprocess
+  (`python -m recap insights --job <dir> --provider <p> [--force]`)
+  so the UI module never imports `recap.stages.insights`. Groq
+  requires `GROQ_API_KEY` in the server environment — the value is
+  never logged, echoed, or written to `job.json`. On success returns
+  `202 Accepted` with `{job_id, run_type, status_url, react_detail,
+  started_at, provider, force}`. Validation errors return JSON
+  `{"error": "...", "reason": "..."}` with reasons drawn from
+  `{host, content-type, content-length-missing, body-too-large,
+  csrf, no-such-job, bad-json, provider-invalid, groq-unavailable,
+  force-invalid, slot, lock}`. A test-only
+  `RECAP_API_STUB_RUN=1` env flag (opted into only by
+  `scripts/verify_api.py`) short-circuits the subprocess and writes
+  a canned success entry synchronously so CI never spawns the real
+  provider call.
+- `GET /api/jobs/<id>/runs/insights/last` — JSON status for the most
+  recent insights run against this job.
+  `{job_id, run_type, status: "no-run"|"in-progress"|"success"|
+  "failure", started_at, finished_at, elapsed, exit_code, provider,
+  force, stdout, stderr}`. Never generates; pure status readout.
+- `POST /api/jobs/<id>/runs/rich-report` — dispatch the existing
+  11-stage rich-report chain from the React surface. Reuses the
+  legacy `_background_rich_report` worker and the
+  `(job_id, "rich-report")` entry in `_last_run`, so a React-started
+  chain and a legacy-HTML-started chain are indistinguishable from
+  the status page's point of view. The body is ignored. Same safety
+  primitives as the insights POST. `rich-report` is **not** added to
+  `_RUNNABLE_STAGES` or `_LAST_RESULT_STAGES`. The test-only
+  `RECAP_API_STUB_RUN=1` flag short-circuits the subprocess chain
+  the same way the insights handler does.
+- `GET /api/jobs/<id>/runs/rich-report/last` — JSON status for the
+  most recent rich-report chain. Includes
+  `{job_id, run_type, status, started_at, finished_at, elapsed,
+  current_stage, failed_stage, stages: [{name, status, exit_code,
+  stdout, stderr, elapsed}, ...]}`. Stages are ordered to match
+  `_RICH_REPORT_STAGES` so the React panel can render chain progress
+  without re-deriving the order.
 - `POST /api/recordings` — accept a browser-recorded screen clip.
   Body is a raw `video/webm` or `video/mp4` upload (codec parameters
   are stripped); everything else returns 415 before the body is read.

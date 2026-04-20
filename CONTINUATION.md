@@ -18,7 +18,17 @@ does and produces, read `HANDOFF.md`.
   `GET /api/jobs/<id>/insights` (read-only; 404 when absent, 500 on
   malformed), `GET /api/jobs/<id>/speaker-names`,
   `POST /api/jobs/<id>/speaker-names`, `POST /api/jobs/start`
-  (dispatch a new run from the React surface), and
+  (dispatch a new run from the React surface),
+  `POST /api/jobs/<id>/runs/insights` +
+  `GET /api/jobs/<id>/runs/insights/last` (dispatch `recap
+  insights` and read status — subprocess boundary, provider
+  allowlist, Groq requires `GROQ_API_KEY`, `_run_slot` + per-job
+  lock reuse),
+  `POST /api/jobs/<id>/runs/rich-report` +
+  `GET /api/jobs/<id>/runs/rich-report/last` (dispatch the 11-stage
+  chain via the shared `_background_rich_report` worker so React
+  and legacy HTML share the same `(job_id, "rich-report")`
+  `_last_run` entry), and
   `POST /api/recordings` (accept a browser-recorded screen clip
   streamed to `<sources-root>/recording-<UTC>-<hex>.<ext>` under a
   server-picked filename, Host-pinned, CSRF-guarded, 2 GiB cap,
@@ -85,11 +95,20 @@ does and produces, read `HANDOFF.md`.
   any body read, a small-webm happy path that round-trips bytes to
   disk and appears in `/api/sources`, a Content-Disposition
   traversal attempt that's ignored by the server-picked filename,
-  and a short-body case → 400), plus the existing listing +
-  artifact flags + speaker-names contract + insights artifact flag
-  + raw `insights.json` serving. The shim is **only** enabled when
-  `scripts/verify_api.py` sets the env var on its own
-  subprocess — it is not reachable in normal dev/prod operation.
+  and a short-body case → 400),
+  `/api/jobs/<id>/runs/insights` (missing CSRF → 403, invalid
+  provider → 400, Groq-without-key → 400, no-such-job → 404, mock
+  dispatch → 202 + status→success via the `RECAP_API_STUB_RUN=1`
+  shim) plus `/api/jobs/<id>/runs/insights/last` before/after,
+  `/api/jobs/<id>/runs/rich-report` (missing CSRF → 403, no-such-
+  job → 404, stub dispatch → 202) plus
+  `/api/jobs/<id>/runs/rich-report/last` before/after (proves the
+  11-stage chain order in the status payload),
+  plus the existing listing + artifact flags + speaker-names
+  contract + insights artifact flag + raw `insights.json` serving.
+  The stubs are **only** enabled when `scripts/verify_api.py`
+  sets the env vars on its own subprocess — neither is reachable
+  in normal dev/prod operation.
   `scripts/verify_reports.py` covers 29
   checks (selected-path / absent-path / four malformed-artifact
   cases + the scenes-interrupt regression + ten insights cases:
@@ -103,7 +122,11 @@ does and produces, read `HANDOFF.md`.
   `TranscriptTable` highlighting + empty states, `lib/search` pure
   helpers, `NewJobPage` (loading state, sources render + selection,
   Deepgram-disabled state, successful start + redirect, error
-  state), and `RecordingPanel` (unsupported browser, ready →
+  state), `RunActionsPanel` (missing-insights CTA label, present-
+  insights CTA label, insights dispatch + CSRF header assertion +
+  onRunCompleted callback, insights error render, failed-insights
+  bounded stderr panel, rich-report ordered stage list, failed
+  rich-report stage panel), and `RecordingPanel` (unsupported browser, ready →
   recording → preview transitions with a fake MediaRecorder +
   getDisplayMedia, upload-success → saved state with CSRF header
   assertions, error state on API failure, permission-denied error

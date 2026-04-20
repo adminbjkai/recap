@@ -471,6 +471,103 @@ def _background_rich_report(
         _run_slot.release()
 
 
+def _background_insights(
+    job_id: str,
+    job_dir: Path,
+    provider: str,
+    force: bool,
+    job_lock: threading.Lock,
+) -> None:
+    """Run `python -m recap insights --job <dir> --provider <p> [--force]`
+    and store the result in `_last_run[(job_id, "insights")]`.
+
+    Ownership contract: the handler acquires `_run_slot` and the
+    per-job `job_lock` before spawning; this thread releases both in
+    its `finally`. Never imports `recap.stages.insights` directly; the
+    subprocess boundary is non-negotiable. stdout/stderr are truncated
+    to `_OUTPUT_TRUNCATE_BYTES`. The subprocess inherits the server
+    environment so `GROQ_API_KEY` reaches the child when needed. The
+    subprocess timeout matches the full-run ceiling because `insights`
+    can run the Groq HTTP round-trip against a long transcript.
+    """
+    started_at = _now_iso()
+    t0 = time.monotonic()
+
+    with _job_locks_guard:
+        _last_run[(job_id, "insights")] = {
+            "started_at": started_at,
+            "finished_at": None,
+            "exit_code": None,
+            "status": "in-progress",
+            "stdout": "",
+            "stderr": "",
+            "provider": provider,
+            "force": bool(force),
+        }
+
+    try:
+        argv = [
+            sys.executable, "-m", "recap", "insights",
+            "--job", str(job_dir),
+            "--provider", provider,
+        ]
+        if force:
+            argv.append("--force")
+        try:
+            proc = subprocess.Popen(
+                argv,
+                cwd=str(REPO_ROOT),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except OSError as e:
+            _set_final(job_id, "insights", {
+                "started_at": started_at,
+                "finished_at": _now_iso(),
+                "exit_code": None,
+                "status": "failure",
+                "stdout": "",
+                "stderr": _truncate_output(
+                    f"failed to spawn recap insights: "
+                    f"{type(e).__name__}: {e}"
+                ),
+                "elapsed": time.monotonic() - t0,
+                "provider": provider,
+                "force": bool(force),
+            })
+            return
+        try:
+            stdout, stderr = proc.communicate(timeout=_FULL_RUN_TIMEOUT)
+            exit_code = proc.returncode
+            status = "success" if exit_code == 0 else "failure"
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            exit_code = None
+            status = "failure"
+            stderr = (stderr or "") + (
+                f"\ntimeout after {int(_FULL_RUN_TIMEOUT)}s\n"
+            )
+        _set_final(job_id, "insights", {
+            "started_at": started_at,
+            "finished_at": _now_iso(),
+            "exit_code": exit_code,
+            "status": status,
+            "stdout": _truncate_output(stdout or ""),
+            "stderr": _truncate_output(stderr or ""),
+            "elapsed": time.monotonic() - t0,
+            "provider": provider,
+            "force": bool(force),
+        })
+    finally:
+        try:
+            job_lock.release()
+        except RuntimeError:
+            pass
+        _run_slot.release()
+
+
 _WEB_DIST_DIR: Path = REPO_ROOT / "web" / "dist"
 
 _API_SPEAKER_KEY_RE = re.compile(r"^\d+$")
@@ -496,6 +593,20 @@ _RECORDING_CONTENT_TYPES: dict[str, str] = {
 # Filename prefix used for browser-recorded uploads. The server picks
 # the whole name; the browser filename is never trusted.
 _RECORDING_NAME_PREFIX = "recording"
+
+# Providers accepted by POST /api/jobs/<id>/runs/insights. Matches the
+# CLI-level provider choices in `recap insights`.
+_INSIGHTS_PROVIDERS: frozenset[str] = frozenset({"mock", "groq"})
+
+# Test-only env flag. When set on the server process, the three new
+# run-dispatch handlers — `/api/jobs/<id>/runs/insights` and
+# `/api/jobs/<id>/runs/rich-report` — skip the real subprocess chain
+# and write a canned success entry synchronously. This lets
+# `scripts/verify_api.py` prove the dispatch path cheaply without
+# running a real `recap insights` / 11-stage rich-report chain in CI.
+# Not documented in product-facing docs; opted into only by the
+# verifier subprocess.
+_RUN_STUB_ENV = "RECAP_API_STUB_RUN"
 
 
 def _speaker_name_contains_control(value: str) -> bool:
@@ -2365,6 +2476,52 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                 self._send_json(HTTPStatus.OK, data)
                 return
 
+            # GET /api/jobs/<id>/runs/insights/last
+            if (
+                len(segments) == 6
+                and segments[0] == "api"
+                and segments[1] == "jobs"
+                and segments[3] == "runs"
+                and segments[4] == "insights"
+                and segments[5] == "last"
+            ):
+                job_id = segments[2]
+                job_dir = _safe_job_dir(root_resolved, job_id)
+                if job_dir is None:
+                    self._send_json(
+                        HTTPStatus.NOT_FOUND,
+                        {"error": "job not found", "reason": "no-such-job"},
+                    )
+                    return
+                self._send_json(
+                    HTTPStatus.OK,
+                    self._api_run_status(job_id, "insights"),
+                )
+                return
+
+            # GET /api/jobs/<id>/runs/rich-report/last
+            if (
+                len(segments) == 6
+                and segments[0] == "api"
+                and segments[1] == "jobs"
+                and segments[3] == "runs"
+                and segments[4] == "rich-report"
+                and segments[5] == "last"
+            ):
+                job_id = segments[2]
+                job_dir = _safe_job_dir(root_resolved, job_id)
+                if job_dir is None:
+                    self._send_json(
+                        HTTPStatus.NOT_FOUND,
+                        {"error": "job not found", "reason": "no-such-job"},
+                    )
+                    return
+                self._send_json(
+                    HTTPStatus.OK,
+                    self._api_run_status(job_id, "rich-report"),
+                )
+                return
+
             self._send_json(
                 HTTPStatus.NOT_FOUND,
                 {"error": "not found", "reason": "no-route"},
@@ -3399,6 +3556,474 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                 if not slot_transferred:
                     _run_slot.release()
 
+        def _guard_api_mutating_request(
+            self,
+            *,
+            expect_json: bool = True,
+        ) -> bytes | None:
+            """Shared pre-check for the run-dispatch POSTs.
+
+            Enforces Host pinning, Content-Type (``application/json``
+            when ``expect_json`` is true), presence + bound of
+            Content-Length (capped at ``_API_POST_BODY_MAX``), and
+            ``X-Recap-Token`` CSRF. On rejection, writes the JSON
+            error response and returns ``None``. On acceptance,
+            returns the raw request body bytes (possibly empty).
+            """
+            allowed_hosts = getattr(
+                self.server, "allowed_hosts", frozenset(),
+            )
+            got_host = self.headers.get("Host") or ""
+            if not allowed_hosts or not any(
+                secrets.compare_digest(got_host, allowed)
+                for allowed in allowed_hosts
+            ):
+                self._reject_api(
+                    HTTPStatus.FORBIDDEN, "host",
+                    "Host header mismatch.",
+                )
+                return None
+
+            if expect_json:
+                ct = (
+                    self.headers.get("Content-Type") or ""
+                ).split(";")[0].strip().lower()
+                if ct != "application/json":
+                    self._reject_api(
+                        HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+                        "content-type",
+                        "Content-Type must be application/json.",
+                    )
+                    return None
+
+            raw_len = self.headers.get("Content-Length")
+            try:
+                content_length = (
+                    int(raw_len) if raw_len is not None else -1
+                )
+            except ValueError:
+                content_length = -1
+            if content_length < 0:
+                self._reject_api(
+                    HTTPStatus.LENGTH_REQUIRED,
+                    "content-length-missing",
+                    "Content-Length is required.",
+                )
+                return None
+            if content_length > _API_POST_BODY_MAX:
+                self._reject_api(
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                    "body-too-large",
+                    f"Request body exceeds {_API_POST_BODY_MAX} bytes.",
+                )
+                return None
+
+            expected_token = getattr(
+                self.server, "csrf_token", "",
+            ) or ""
+            got_token = self.headers.get("X-Recap-Token") or ""
+            if not expected_token or not secrets.compare_digest(
+                got_token, expected_token,
+            ):
+                self._reject_api(
+                    HTTPStatus.FORBIDDEN, "csrf",
+                    "CSRF token missing or invalid.",
+                )
+                return None
+
+            return (
+                self.rfile.read(content_length)
+                if content_length > 0
+                else b""
+            )
+
+        def _handle_api_runs_insights_post(self, job_id: str) -> None:
+            """POST /api/jobs/<id>/runs/insights — kick off `recap
+            insights` against an existing job.
+
+            Reuses the legacy safety model (Host pinning, CSRF via
+            ``X-Recap-Token``, 8 KiB body cap, engine/provider allowlist,
+            global ``_run_slot`` semaphore, per-job lock) and the
+            subprocess boundary — the UI never imports
+            ``recap.stages.insights``; everything runs as
+            ``python -m recap insights ...``. On success returns 202
+            with ``{job_id, run_type, status_url, react_detail}``.
+
+            Body shape (both optional):
+
+                {"provider": "mock" | "groq", "force": true | false}
+
+            ``provider`` defaults to ``mock``. ``groq`` requires
+            ``GROQ_API_KEY`` in the server environment — the value is
+            never logged, echoed, or written to ``job.json``.
+
+            A test-only ``RECAP_API_STUB_RUN=1`` environment flag —
+            opted into only by ``scripts/verify_api.py`` — short-
+            circuits the subprocess and writes a canned success entry
+            synchronously so CI can exercise dispatch without spawning
+            a real provider call.
+            """
+            body = self._guard_api_mutating_request()
+            if body is None:
+                return
+
+            job_dir = _safe_job_dir(root_resolved, job_id)
+            if job_dir is None:
+                self._reject_api(
+                    HTTPStatus.NOT_FOUND, "no-such-job",
+                    "job not found",
+                )
+                return
+
+            if body:
+                try:
+                    parsed = json.loads(body.decode("utf-8", "replace"))
+                except ValueError:
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "bad-json",
+                        "Body is not valid JSON.",
+                    )
+                    return
+                if not isinstance(parsed, dict):
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "bad-json",
+                        "Top-level JSON must be an object.",
+                    )
+                    return
+            else:
+                parsed = {}
+
+            provider = parsed.get("provider", "mock")
+            if not isinstance(provider, str) or provider not in _INSIGHTS_PROVIDERS:
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "provider-invalid",
+                    "Unsupported insights provider.",
+                )
+                return
+
+            if (
+                provider == "groq"
+                and not os.environ.get("GROQ_API_KEY")
+            ):
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "groq-unavailable",
+                    "Groq requires GROQ_API_KEY in the server's "
+                    "environment.",
+                )
+                return
+
+            force_raw = parsed.get("force", False)
+            if not isinstance(force_raw, bool):
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "force-invalid",
+                    "'force' must be a boolean.",
+                )
+                return
+
+            # Test-only dispatch shim. Writes a canned success entry
+            # synchronously without touching subprocesses.
+            if os.environ.get(_RUN_STUB_ENV) == "1":
+                started_at = _now_iso()
+                _set_final(job_id, "insights", {
+                    "started_at": started_at,
+                    "finished_at": _now_iso(),
+                    "exit_code": 0,
+                    "status": "success",
+                    "stdout": "(stub) insights run skipped\n",
+                    "stderr": "",
+                    "elapsed": 0.0,
+                    "provider": provider,
+                    "force": bool(force_raw),
+                })
+                self.server.logger_stream.write(
+                    f"[recap-ui] (stub) accepted "
+                    f"/api/jobs/{job_id}/runs/insights "
+                    f"provider={provider} force={bool(force_raw)}\n"
+                )
+                self.server.logger_stream.flush()
+                self._send_json(
+                    HTTPStatus.ACCEPTED,
+                    {
+                        "job_id": job_id,
+                        "run_type": "insights",
+                        "status_url": (
+                            f"/api/jobs/{job_id}/runs/insights/last"
+                        ),
+                        "react_detail": f"/app/job/{job_id}",
+                        "started_at": started_at,
+                        "provider": provider,
+                        "force": bool(force_raw),
+                        "stub": True,
+                    },
+                )
+                return
+
+            # Acquire the global slot before the per-job lock so two
+            # jobs can't both hold a lock while one starves the slot.
+            if not _run_slot.acquire(blocking=False):
+                self._reject_api(
+                    HTTPStatus.TOO_MANY_REQUESTS, "slot",
+                    "Another long-running job is already in progress. "
+                    "Please wait and try again.",
+                    extra_headers={"Retry-After": "30"},
+                )
+                return
+
+            slot_transferred = False
+            lock: threading.Lock | None = None
+            lock_acquired = False
+            try:
+                lock = _get_job_lock(job_id)
+                lock_acquired = lock.acquire(
+                    timeout=_LOCK_ACQUIRE_TIMEOUT,
+                )
+                if not lock_acquired:
+                    self._reject_api(
+                        HTTPStatus.TOO_MANY_REQUESTS, "lock",
+                        "Another action is already in progress for "
+                        "this job. Try again shortly.",
+                        extra_headers={"Retry-After": "2"},
+                    )
+                    return
+
+                started_at = _now_iso()
+                # Seed the in-progress entry before spawning so the
+                # status endpoint immediately reflects an active run.
+                with _job_locks_guard:
+                    _last_run[(job_id, "insights")] = {
+                        "started_at": started_at,
+                        "finished_at": None,
+                        "exit_code": None,
+                        "status": "in-progress",
+                        "stdout": "",
+                        "stderr": "",
+                        "provider": provider,
+                        "force": bool(force_raw),
+                    }
+
+                thread = threading.Thread(
+                    target=_background_insights,
+                    args=(
+                        job_id, job_dir, provider,
+                        bool(force_raw), lock,
+                    ),
+                    daemon=True,
+                )
+                thread.start()
+                slot_transferred = True
+
+                self.server.logger_stream.write(
+                    f"[recap-ui] started insights job={job_id} "
+                    f"provider={provider} force={bool(force_raw)} "
+                    f"via=/api/runs/insights\n"
+                )
+                self.server.logger_stream.flush()
+
+                self._send_json(
+                    HTTPStatus.ACCEPTED,
+                    {
+                        "job_id": job_id,
+                        "run_type": "insights",
+                        "status_url": (
+                            f"/api/jobs/{job_id}/runs/insights/last"
+                        ),
+                        "react_detail": f"/app/job/{job_id}",
+                        "started_at": started_at,
+                        "provider": provider,
+                        "force": bool(force_raw),
+                    },
+                )
+            finally:
+                if not slot_transferred:
+                    if lock is not None and lock_acquired:
+                        try:
+                            lock.release()
+                        except RuntimeError:
+                            pass
+                    _run_slot.release()
+
+        def _handle_api_runs_rich_report_post(self, job_id: str) -> None:
+            """POST /api/jobs/<id>/runs/rich-report — kick off the
+            existing 11-stage rich-report chain from the React surface.
+
+            Reuses the legacy ``_background_rich_report`` worker and
+            the ``(job_id, "rich-report")`` entry in ``_last_run``, so
+            a React-started chain and a legacy-HTML-started chain are
+            indistinguishable from the status page's point of view and
+            the legacy ``/job/<id>/run/rich-report/last`` page still
+            works while the React dashboard polls the API status
+            endpoint.
+
+            Body is ignored (kept as JSON-object-or-empty for
+            symmetry). The test-only ``RECAP_API_STUB_RUN=1`` flag
+            short-circuits the subprocess chain the same way the
+            insights handler does.
+            """
+            body = self._guard_api_mutating_request(expect_json=False)
+            if body is None:
+                return
+
+            job_dir = _safe_job_dir(root_resolved, job_id)
+            if job_dir is None:
+                self._reject_api(
+                    HTTPStatus.NOT_FOUND, "no-such-job",
+                    "job not found",
+                )
+                return
+
+            if os.environ.get(_RUN_STUB_ENV) == "1":
+                started_at = _now_iso()
+                stages_state = [
+                    {
+                        "name": name,
+                        "status": "completed",
+                        "exit_code": 0,
+                        "stdout": "",
+                        "stderr": "",
+                        "elapsed": 0.0,
+                    }
+                    for name, _args in _RICH_REPORT_STAGES
+                ]
+                _set_final(job_id, "rich-report", {
+                    "started_at": started_at,
+                    "finished_at": _now_iso(),
+                    "status": "success",
+                    "current_stage": None,
+                    "failed_stage": None,
+                    "stages": stages_state,
+                    "elapsed": 0.0,
+                })
+                self.server.logger_stream.write(
+                    f"[recap-ui] (stub) accepted "
+                    f"/api/jobs/{job_id}/runs/rich-report\n"
+                )
+                self.server.logger_stream.flush()
+                self._send_json(
+                    HTTPStatus.ACCEPTED,
+                    {
+                        "job_id": job_id,
+                        "run_type": "rich-report",
+                        "status_url": (
+                            f"/api/jobs/{job_id}/runs/rich-report/last"
+                        ),
+                        "react_detail": f"/app/job/{job_id}",
+                        "started_at": started_at,
+                        "stub": True,
+                    },
+                )
+                return
+
+            if not _run_slot.acquire(blocking=False):
+                self._reject_api(
+                    HTTPStatus.TOO_MANY_REQUESTS, "slot",
+                    "Another long-running job is already in progress. "
+                    "Please wait and try again.",
+                    extra_headers={"Retry-After": "30"},
+                )
+                return
+
+            slot_transferred = False
+            lock: threading.Lock | None = None
+            lock_acquired = False
+            try:
+                lock = _get_job_lock(job_id)
+                lock_acquired = lock.acquire(
+                    timeout=_LOCK_ACQUIRE_TIMEOUT,
+                )
+                if not lock_acquired:
+                    self._reject_api(
+                        HTTPStatus.TOO_MANY_REQUESTS, "lock",
+                        "Another action is already in progress for "
+                        "this job. Try again shortly.",
+                        extra_headers={"Retry-After": "2"},
+                    )
+                    return
+
+                started_at = _now_iso()
+                with _job_locks_guard:
+                    _last_run[(job_id, "rich-report")] = {
+                        "started_at": started_at,
+                        "finished_at": None,
+                        "status": "in-progress",
+                        "current_stage": None,
+                        "failed_stage": None,
+                        "stages": [],
+                        "elapsed": None,
+                    }
+
+                thread = threading.Thread(
+                    target=_background_rich_report,
+                    args=(job_id, job_dir, lock),
+                    daemon=True,
+                )
+                thread.start()
+                slot_transferred = True
+
+                self.server.logger_stream.write(
+                    f"[recap-ui] started rich-report job={job_id} "
+                    f"via=/api/runs/rich-report\n"
+                )
+                self.server.logger_stream.flush()
+
+                self._send_json(
+                    HTTPStatus.ACCEPTED,
+                    {
+                        "job_id": job_id,
+                        "run_type": "rich-report",
+                        "status_url": (
+                            f"/api/jobs/{job_id}/runs/rich-report/last"
+                        ),
+                        "react_detail": f"/app/job/{job_id}",
+                        "started_at": started_at,
+                    },
+                )
+            finally:
+                if not slot_transferred:
+                    if lock is not None and lock_acquired:
+                        try:
+                            lock.release()
+                        except RuntimeError:
+                            pass
+                    _run_slot.release()
+
+        def _api_run_status(
+            self, job_id: str, run_type: str,
+        ) -> dict:
+            """Shape a `_last_run` entry as a JSON status payload.
+
+            Always emits ``run_type``, ``status`` (``no-run`` when no
+            entry has been recorded for this job/run type), and the
+            entry's recorded fields when present. Rich-report payloads
+            additionally carry ``stages`` / ``current_stage`` /
+            ``failed_stage``.
+            """
+            entry = _get_last(job_id, run_type)
+            if entry is None:
+                return {
+                    "job_id": job_id,
+                    "run_type": run_type,
+                    "status": "no-run",
+                }
+            out: dict[str, object] = {
+                "job_id": job_id,
+                "run_type": run_type,
+                "status": entry.get("status") or "no-run",
+                "started_at": entry.get("started_at"),
+                "finished_at": entry.get("finished_at"),
+                "elapsed": entry.get("elapsed"),
+                "exit_code": entry.get("exit_code"),
+                "stdout": entry.get("stdout", ""),
+                "stderr": entry.get("stderr", ""),
+            }
+            if run_type == "insights":
+                out["provider"] = entry.get("provider")
+                out["force"] = entry.get("force")
+            if run_type == "rich-report":
+                out["current_stage"] = entry.get("current_stage")
+                out["failed_stage"] = entry.get("failed_stage")
+                out["stages"] = entry.get("stages") or []
+            return out
+
         def _handle_api_recording_post(self) -> None:
             """POST /api/recordings — accept a browser-recorded clip.
 
@@ -3661,6 +4286,28 @@ def _make_handler(jobs_root: Path, sources_root: Path):
 
             if early_segments == ["api", "recordings"]:
                 self._handle_api_recording_post()
+                return
+
+            # POST /api/jobs/<id>/runs/insights
+            if (
+                len(early_segments) == 5
+                and early_segments[0] == "api"
+                and early_segments[1] == "jobs"
+                and early_segments[3] == "runs"
+                and early_segments[4] == "insights"
+            ):
+                self._handle_api_runs_insights_post(early_segments[2])
+                return
+
+            # POST /api/jobs/<id>/runs/rich-report
+            if (
+                len(early_segments) == 5
+                and early_segments[0] == "api"
+                and early_segments[1] == "jobs"
+                and early_segments[3] == "runs"
+                and early_segments[4] == "rich-report"
+            ):
+                self._handle_api_runs_rich_report_post(early_segments[2])
                 return
 
             if early_segments and early_segments[0] == "api":

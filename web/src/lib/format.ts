@@ -56,6 +56,26 @@ export function formatJobDateTime(value: unknown): string {
   return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
 }
 
+export function formatElapsedSeconds(seconds: unknown): string {
+  if (
+    typeof seconds !== "number" ||
+    !Number.isFinite(seconds) ||
+    seconds < 0
+  ) {
+    return "—";
+  }
+  if (seconds < 1) {
+    return `${seconds.toFixed(2)} s`;
+  }
+  if (seconds < 60) {
+    return `${seconds.toFixed(1)} s`;
+  }
+  const whole = Math.round(seconds);
+  const mm = Math.floor(whole / 60);
+  const ss = whole % 60;
+  return `${mm}m ${String(ss).padStart(2, "0")}s`;
+}
+
 export function formatElapsed(ms: number): string {
   const safe = Number.isFinite(ms) && ms > 0 ? ms : 0;
   const totalSeconds = Math.floor(safe / 1000);

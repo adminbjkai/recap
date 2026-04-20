@@ -126,6 +126,78 @@ export type RecordingUploadResult =
   | { kind: "saved"; response: RecordingUploadResponse }
   | { kind: "error"; message: string; reason?: string; status: number };
 
+export type InsightsProvider = "mock" | "groq";
+
+export type InsightsRunStatus = {
+  job_id: string;
+  run_type: "insights";
+  status: "no-run" | "in-progress" | "success" | "failure";
+  started_at?: string | null;
+  finished_at?: string | null;
+  elapsed?: number | null;
+  exit_code?: number | null;
+  provider?: InsightsProvider | null;
+  force?: boolean | null;
+  stdout?: string;
+  stderr?: string;
+};
+
+export type RichReportStageRow = {
+  name: string;
+  status: "pending" | "running" | "completed" | "failed";
+  exit_code: number | null;
+  stdout: string;
+  stderr: string;
+  elapsed: number | null;
+};
+
+export type RichReportRunStatus = {
+  job_id: string;
+  run_type: "rich-report";
+  status: "no-run" | "in-progress" | "success" | "failure";
+  started_at?: string | null;
+  finished_at?: string | null;
+  elapsed?: number | null;
+  current_stage?: string | null;
+  failed_stage?: string | null;
+  stages?: RichReportStageRow[];
+  stdout?: string;
+  stderr?: string;
+};
+
+export type StartInsightsRequest = {
+  provider?: InsightsProvider;
+  force?: boolean;
+};
+
+export type StartInsightsResponse = {
+  job_id: string;
+  run_type: "insights";
+  status_url: string;
+  react_detail: string;
+  started_at: string;
+  provider: InsightsProvider;
+  force: boolean;
+  stub?: boolean;
+};
+
+export type StartInsightsResult =
+  | { kind: "accepted"; response: StartInsightsResponse }
+  | { kind: "error"; message: string; reason?: string; status: number };
+
+export type StartRichReportResponse = {
+  job_id: string;
+  run_type: "rich-report";
+  status_url: string;
+  react_detail: string;
+  started_at: string;
+  stub?: boolean;
+};
+
+export type StartRichReportResult =
+  | { kind: "accepted"; response: StartRichReportResponse }
+  | { kind: "error"; message: string; reason?: string; status: number };
+
 export type TranscriptSegment = {
   id?: number;
   start: number;
@@ -344,6 +416,96 @@ export async function uploadRecording(
     };
   }
   return { kind: "saved", response: parsed as RecordingUploadResponse };
+}
+
+export function getInsightsRun(id: string): Promise<InsightsRunStatus> {
+  return requestJson<InsightsRunStatus>(
+    `/api/jobs/${encodeURIComponent(id)}/runs/insights/last`,
+  );
+}
+
+export function getRichReportRun(
+  id: string,
+): Promise<RichReportRunStatus> {
+  return requestJson<RichReportRunStatus>(
+    `/api/jobs/${encodeURIComponent(id)}/runs/rich-report/last`,
+  );
+}
+
+async function postRun(
+  url: string,
+  body: unknown,
+  token: string,
+): Promise<Response> {
+  return fetch(url, {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-Recap-Token": token,
+    },
+    body: JSON.stringify(body ?? {}),
+  });
+}
+
+export async function startInsightsRun(
+  id: string,
+  body: StartInsightsRequest = {},
+): Promise<StartInsightsResult> {
+  const url = `/api/jobs/${encodeURIComponent(id)}/runs/insights`;
+  let token = await getCsrf();
+  let response = await postRun(url, body, token);
+  if (response.status === 403) {
+    token = await getCsrf(true);
+    response = await postRun(url, body, token);
+  }
+  const parsed = await parseJson<
+    StartInsightsResponse | ApiErrorBody
+  >(response);
+  if (!response.ok) {
+    const apiBody = parsed as ApiErrorBody;
+    return {
+      kind: "error",
+      status: response.status,
+      message:
+        apiBody.error || `${response.status} ${response.statusText}`,
+      reason: apiBody.reason,
+    };
+  }
+  return {
+    kind: "accepted",
+    response: parsed as StartInsightsResponse,
+  };
+}
+
+export async function startRichReportRun(
+  id: string,
+): Promise<StartRichReportResult> {
+  const url = `/api/jobs/${encodeURIComponent(id)}/runs/rich-report`;
+  let token = await getCsrf();
+  let response = await postRun(url, {}, token);
+  if (response.status === 403) {
+    token = await getCsrf(true);
+    response = await postRun(url, {}, token);
+  }
+  const parsed = await parseJson<
+    StartRichReportResponse | ApiErrorBody
+  >(response);
+  if (!response.ok) {
+    const apiBody = parsed as ApiErrorBody;
+    return {
+      kind: "error",
+      status: response.status,
+      message:
+        apiBody.error || `${response.status} ${response.statusText}`,
+      reason: apiBody.reason,
+    };
+  }
+  return {
+    kind: "accepted",
+    response: parsed as StartRichReportResponse,
+  };
 }
 
 export function getSpeakerNames(id: string): Promise<SpeakerNamesDoc> {
