@@ -162,6 +162,62 @@ def run(paths: JobPaths, force: bool = False, threshold: float = DEFAULT_THRESHO
             },
         )
         return data
+    except KeyboardInterrupt:
+        # Ctrl-C during PySceneDetect's cv2 frame loop would otherwise
+        # leave `stages.scenes.status` as "running" because
+        # KeyboardInterrupt is a BaseException and bypasses the broader
+        # `except Exception` below. Mark the stage FAILED so the
+        # CLI/UI don't show a stuck run, clean up the partial artifacts
+        # from this recompute attempt, then re-raise so the CLI still
+        # exits with the usual interrupt status.
+        _cleanup_partial_artifacts(paths)
+        update_stage(
+            paths, "scenes", FAILED,
+            error="KeyboardInterrupt: interrupted by user",
+        )
+        raise
     except Exception as e:
         update_stage(paths, "scenes", FAILED, error=f"{type(e).__name__}: {e}")
         raise
+
+
+def _cleanup_partial_artifacts(paths: JobPaths) -> None:
+    """Remove partially-written artifacts from an interrupted recompute.
+
+    Only reached from the KeyboardInterrupt handler inside `run()`,
+    which is itself only entered AFTER the skip-check. So by
+    construction this helper never runs on a skip path and the caller
+    has already committed to recomputing — either because `--force`
+    was passed (in which case the prior `scenes.json` and
+    `candidate_frames/` have already been torn down upstream) or
+    because `_outputs_exist(paths)` returned False (in which case any
+    pre-existing `scenes.json` was deemed stale).
+
+    Best-effort: swallow OS errors so the outer handler can still
+    record a clean FAILED state. Removes:
+
+    - `candidate_frames/` — partial frames from the interrupted
+      attempt (or stale frames from a prior incomplete run).
+    - `scenes.json.tmp` — in-progress atomic write.
+    - `scenes.json` — the pre-recompute artifact; the recompute
+      branch considered it either absent (`--force`) or stale
+      (`_outputs_exist` returned False), so it must not linger as
+      a mismatched pair with an empty / partially-populated
+      `candidate_frames/`.
+    """
+    try:
+        if paths.candidate_frames_dir.exists():
+            shutil.rmtree(paths.candidate_frames_dir, ignore_errors=True)
+    except OSError:
+        pass
+    try:
+        tmp = paths.scenes_json.with_suffix(".json.tmp")
+        if tmp.exists():
+            tmp.unlink()
+    except OSError:
+        pass
+    try:
+        if paths.scenes_json.exists():
+            paths.scenes_json.unlink()
+    except OSError:
+        pass

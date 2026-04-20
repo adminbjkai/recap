@@ -102,6 +102,30 @@ system does and produces, read `HANDOFF.md`.
   no diarization controls. Local WhisperX/pyannote and an inline
   `<video>` player with transcript-row jump links both remain
   deferred.
+- Reliability fix for interrupted `recap scenes` runs. The stage now
+  catches `KeyboardInterrupt` separately from `except Exception`
+  (needed because `KeyboardInterrupt` inherits from
+  `BaseException`). On interrupt the handler marks
+  `stages.scenes.status = "failed"` with
+  `error = "KeyboardInterrupt: interrupted by user"`, calls a new
+  `_cleanup_partial_artifacts(paths)` helper that best-effort
+  removes `candidate_frames/`, any `scenes.json.tmp`, **and** any
+  pre-existing `scenes.json` — safe because the helper only runs
+  from inside the `run()` try-block past the skip-check, so the
+  caller has already committed to recomputing (either `--force`
+  tore the prior outputs down, or `_outputs_exist` returned
+  False and the on-disk `scenes.json` was already stale). A
+  known-good completed `scenes.json` + `candidate_frames/` set on
+  the skip path is untouched. The handler re-raises so the CLI
+  still exits like an interrupted command. `scripts/verify_reports.py`
+  grew by one check (16 total) that monkeypatches
+  `_detect_and_extract` to raise `KeyboardInterrupt` and asserts
+  `stages.scenes` transitions to `failed`, `scenes.json` is absent,
+  `candidate_frames/` is cleaned up, and no `.tmp` remains — all
+  without invoking PySceneDetect. Other long-running opt-in stages
+  (`dedupe`, `similarity`, `rank`, `shortlist`, `verify`) may share
+  the same bug and are left unchanged in this slice; a broader
+  reliability pass is a follow-up.
 - The `/new` form now lets the user pick the transcription engine.
   A new module-level allowlist `_ENGINE_CHOICES = {"faster-whisper",
   "deepgram"}` and a `<select name="engine">` with two options are

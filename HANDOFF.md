@@ -1140,6 +1140,45 @@ speaker-colored transcript rows, speaker-isolated audio, live
 status streaming (SSE / WebSocket), auth, and remote access —
 are explicitly deferred.
 
+## Reliability: scenes stage handles Ctrl-C cleanly
+
+`recap/stages/scenes.py` now catches `KeyboardInterrupt` separately
+from the broader `except Exception`, because `KeyboardInterrupt`
+inherits from `BaseException` and otherwise would propagate past
+the `except Exception` block and leave `stages.scenes.status =
+"running"` in `job.json`. The new handler:
+
+- marks the stage `FAILED` with
+  `error = "KeyboardInterrupt: interrupted by user"` via
+  `update_stage(...)` so CLI/UI never show a stuck run;
+- calls a small `_cleanup_partial_artifacts(paths)` helper that
+  best-effort removes `candidate_frames/`, any `scenes.json.tmp`
+  in-progress atomic write, **and** any pre-existing `scenes.json`
+  — safe because the helper is only reached from inside the `run()`
+  try-block (past the skip-check), at which point the caller has
+  already committed to recomputing: either `--force` tore down the
+  prior outputs upstream, or `_outputs_exist(paths)` returned False
+  and treated the on-disk `scenes.json` as stale. The skip path
+  never enters the handler, so a known-good completed
+  `scenes.json` + `candidate_frames/` set is untouched;
+- re-raises the `KeyboardInterrupt` so the CLI exits with the
+  usual interrupt status.
+
+Non-interrupt failures (`except Exception`) still go through the
+existing path unchanged. `scripts/verify_reports.py` gained a
+`check_scenes_interrupt_marks_failed` regression case (total 16
+checks) that monkeypatches
+`recap.stages.scenes._detect_and_extract` to raise
+`KeyboardInterrupt` and asserts: `stages.scenes.status == "failed"`,
+the error carries `KeyboardInterrupt`, `scenes.json` is absent,
+`candidate_frames/` is cleaned up, and no `scenes.json.tmp` remains.
+PySceneDetect itself is never invoked — the test is stdlib-only.
+
+This slice is deliberately narrow: other long-running opt-in
+stages (`dedupe`, `similarity`, `rank`, `shortlist`, `verify`) may
+exhibit the same behavior on Ctrl-C but are left unchanged here.
+Addressing them belongs in a follow-up reliability pass.
+
 ## Hardening: offline golden-path validation script
 
 `scripts/verify_reports.py` is a small stdlib+`python-docx` script

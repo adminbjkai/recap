@@ -297,7 +297,13 @@ Per-stage commands (useful for re-running a single stage, or resuming):
 ```
 
 `recap scenes` is the Stage 5 (Phase 2) entry point and is not invoked
-by `recap run`. It writes `scenes.json` and `candidate_frames/`.
+by `recap run`. It writes `scenes.json` and `candidate_frames/`. If
+the command is interrupted with `Ctrl-C` during PySceneDetect's frame
+loop, the stage records `stages.scenes.status = "failed"` with a
+`KeyboardInterrupt` error, removes any partial `candidate_frames/`
+from that attempt, and re-raises the interrupt so the shell exits as
+usual. Re-run `recap scenes --job <path>` to retry; with `--force` it
+also removes any previous `scenes.json` before starting.
 `recap dedupe` is the pHash + SSIM duplicate-marking and Tesseract OCR
 novelty-scoring slice and is also not invoked by `recap run`; it reads
 `scenes.json` plus the JPEGs in `candidate_frames/` and writes

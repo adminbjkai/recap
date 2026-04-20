@@ -65,6 +65,10 @@
 - [ ] Auth / API key management surface
 - [ ] Remote access (non-localhost binding with TLS and auth)
 
+## Reliability
+
+- [x] Mark `recap scenes` as `failed` (not `running`) when Ctrl-C interrupts PySceneDetect/cv2 frame processing; clean up partial `candidate_frames/` for the interrupted attempt; re-raise `KeyboardInterrupt` so the CLI still exits like an interrupted command
+
 ## Hardening
 
 - [x] Add local offline golden-path validation script for Markdown/HTML/DOCX report generation (`scripts/verify_reports.py` + committed fixture under `scripts/fixtures/minimal_job/`; runs `recap assemble`, `recap export-html`, `recap export-docx` against both the selected and absent-selected paths plus negative cases for malformed `selected_frames.json`, traversal `frame_file`, and missing candidate images; stdlib + `python-docx` only; no network, no model downloads; ~1 second wall-clock)

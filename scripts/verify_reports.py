@@ -242,6 +242,132 @@ def check_missing_image() -> None:
             shutil.rmtree(job.parent, ignore_errors=True)
 
 
+def check_scenes_interrupt_marks_failed() -> None:
+    """Regression guard: Ctrl-C during `recap scenes` must leave the
+    stage as `failed`, not `running`, and remove partial
+    `candidate_frames/`. Simulates the interrupt by monkeypatching
+    `recap.stages.scenes._detect_and_extract` to raise
+    `KeyboardInterrupt` directly; never invokes PySceneDetect.
+    """
+    case = "scenes-interrupt-marks-failed"
+    # Import inside the function so the rest of the verifier keeps
+    # working even on systems where PySceneDetect's transitive deps
+    # (cv2) are unavailable. Here we monkeypatch the helper, so the
+    # real detector is never called.
+    sys.path.insert(0, str(REPO_ROOT))
+    from recap import job as job_mod
+    from recap.stages import scenes as scenes_mod
+
+    scratch = Path(tempfile.mkdtemp(prefix="recap_scenes_interrupt_"))
+    try:
+        job_dir = scratch / "job"
+        job_dir.mkdir()
+        # Minimum plausible on-disk state: analysis.mp4 must exist so
+        # scenes.run() doesn't FileNotFoundError before the interrupt.
+        (job_dir / "analysis.mp4").write_bytes(b"")
+        job_json = {
+            "job_id": "scratch",
+            "created_at": "2026-04-19T00:00:00Z",
+            "updated_at": "2026-04-19T00:00:00Z",
+            "status": "pending",
+            "source_path": None,
+            "original_filename": None,
+            "stages": {
+                "ingest": {"status": "completed"},
+                "normalize": {"status": "completed"},
+                "transcribe": {"status": "completed"},
+                "assemble": {"status": "completed"},
+            },
+            "error": None,
+        }
+        (job_dir / "job.json").write_text(json.dumps(job_json))
+        # Seed BOTH a stale scenes.json AND a partial
+        # candidate_frames/ from a prior incomplete run. The stage
+        # entered recompute because `_outputs_exist` would have
+        # returned False (frames listed in scenes.json aren't all on
+        # disk). The interrupt-cleanup path must remove both, not
+        # just candidate_frames/.
+        stale_scenes = {
+            "video": "analysis.mp4",
+            "detector": "ContentDetector",
+            "threshold": 27.0,
+            "fallback": False,
+            "scene_count": 2,
+            "frames_dir": "candidate_frames",
+            "scenes": [
+                {
+                    "index": 1,
+                    "start_seconds": 0.0,
+                    "end_seconds": 5.0,
+                    "start_frame": 0,
+                    "end_frame": 150,
+                    "midpoint_seconds": 2.5,
+                    "frame_file": "scene-001.jpg",
+                },
+                {
+                    "index": 2,
+                    "start_seconds": 5.0,
+                    "end_seconds": 10.0,
+                    "start_frame": 150,
+                    "end_frame": 300,
+                    "midpoint_seconds": 7.5,
+                    "frame_file": "scene-002.jpg",
+                },
+            ],
+        }
+        (job_dir / "scenes.json").write_text(json.dumps(stale_scenes))
+        (job_dir / "candidate_frames").mkdir()
+        (job_dir / "candidate_frames" / "scene-001.jpg").write_bytes(b"x")
+        # scene-002.jpg deliberately missing — this is why
+        # `_outputs_exist` returns False and the stage recomputes.
+        # Also seed a lingering .tmp from an earlier crash.
+        (job_dir / "scenes.json.tmp").write_bytes(b"{}")
+
+        paths = job_mod.open_job(job_dir)
+
+        original = scenes_mod._detect_and_extract
+        def _raise_interrupt(*_a, **_k):
+            raise KeyboardInterrupt()
+        scenes_mod._detect_and_extract = _raise_interrupt
+        try:
+            caught = False
+            try:
+                scenes_mod.run(paths, force=False)
+            except KeyboardInterrupt:
+                caught = True
+            if not caught:
+                fail(case, "scenes.run() did not re-raise KeyboardInterrupt")
+        finally:
+            scenes_mod._detect_and_extract = original
+
+        state = json.loads((job_dir / "job.json").read_text())
+        sc = state.get("stages", {}).get("scenes") or {}
+        if sc.get("status") != "failed":
+            fail(
+                case,
+                f"stages.scenes.status={sc.get('status')!r}, expected 'failed'",
+            )
+        if "KeyboardInterrupt" not in (sc.get("error") or ""):
+            fail(
+                case,
+                f"stages.scenes.error missing KeyboardInterrupt: "
+                f"{sc.get('error')!r}",
+            )
+        if (job_dir / "scenes.json").exists():
+            fail(
+                case,
+                "stale scenes.json was not cleaned up after interrupted "
+                "recompute",
+            )
+        if (job_dir / "candidate_frames").exists():
+            fail(case, "candidate_frames/ was not cleaned up after interrupt")
+        if (job_dir / "scenes.json.tmp").exists():
+            fail(case, "scenes.json.tmp left behind")
+        passed()
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
 def main() -> int:
     if not FIXTURE_ROOT.exists():
         fail("fixture", f"committed fixture not found at {FIXTURE_ROOT}")
@@ -251,6 +377,7 @@ def main() -> int:
     check_bad_start_seconds()
     check_traversal_frame_file()
     check_missing_image()
+    check_scenes_interrupt_marks_failed()
 
     print(f"OK: {CHECKS_PASSED} checks passed")
     return 0
