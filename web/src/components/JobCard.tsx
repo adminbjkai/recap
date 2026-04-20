@@ -14,7 +14,7 @@ const ARTIFACT_ORDER: { key: ArtifactKey; label: string }[] = [
   { key: "report_md", label: "Report" },
   { key: "report_html", label: "HTML" },
   { key: "report_docx", label: "DOCX" },
-  { key: "speaker_names_json", label: "Speaker names" },
+  { key: "speaker_names_json", label: "Speakers" },
 ];
 
 function statusLabel(status: string | undefined | null): string {
@@ -26,22 +26,36 @@ export default function JobCard({ job }: Props) {
   const title = job.original_filename || job.job_id;
   const status = statusLabel(job.status);
   const hasReportHtml = Boolean(job.artifacts?.report_html);
-  const urls = job.urls ?? ({} as JobSummary["urls"]);
-  const reactTranscript = (urls as Record<string, string>).react_transcript
-    ?? `/app/job/${encodeURIComponent(job.job_id)}/transcript`;
-  const detailHtml = (urls as Record<string, string>).detail_html
-    ?? `/job/${encodeURIComponent(job.job_id)}/`;
-  const reportHtmlUrl = (urls as Record<string, string>).report_html
-    ?? `/job/${encodeURIComponent(job.job_id)}/report.html`;
+  const urls = (job.urls ?? {}) as Record<string, string>;
+  const detailHtml =
+    urls.detail_html ?? `/job/${encodeURIComponent(job.job_id)}/`;
+  const reportHtmlUrl =
+    urls.report_html ?? `/job/${encodeURIComponent(job.job_id)}/report.html`;
 
   return (
-    <article className="job-card">
+    <article
+      className={`job-card status-${status}`}
+      aria-labelledby={`job-card-title-${job.job_id}`}
+    >
       <header className="job-card-head">
         <div className="job-card-title-group">
-          <p className="eyebrow">{job.job_id}</p>
-          <h2 className="job-card-title">{title}</h2>
+          <h2
+            className="job-card-title"
+            id={`job-card-title-${job.job_id}`}
+            title={title}
+          >
+            {title}
+          </h2>
+          <p className="job-card-id" title={job.job_id}>
+            {job.job_id}
+          </p>
         </div>
-        <span className={`status-badge status-${status}`}>{status}</span>
+        <span
+          className={`status-badge status-${status}`}
+          aria-label={`Status: ${status}`}
+        >
+          {status}
+        </span>
       </header>
 
       <dl className="job-card-meta">
@@ -98,11 +112,6 @@ export default function JobCard({ job }: Props) {
           </a>
         ) : null}
       </footer>
-
-      {/* react_transcript stays available for copy/paste */}
-      <p className="job-card-hint">
-        React route: <code>{reactTranscript}</code>
-      </p>
     </article>
   );
 }

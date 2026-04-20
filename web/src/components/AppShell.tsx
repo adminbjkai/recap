@@ -8,13 +8,16 @@ type Props = {
 export default function AppShell({ children }: Props) {
   return (
     <div className="recap-app">
-      <header className="recap-topbar">
+      <header className="recap-topbar" role="banner">
         <div className="recap-topbar-inner">
-          <Link className="recap-brand" to="/">
+          <Link className="recap-brand" to="/" aria-label="Recap home">
             <span className="recap-brand-mark" aria-hidden>
-              ◈
+              R
             </span>
             <span className="recap-brand-name">Recap</span>
+            <span className="recap-brand-sub" aria-hidden>
+              transcripts &amp; reports
+            </span>
           </Link>
           <nav className="recap-topnav" aria-label="Primary">
             <a className="recap-topnav-link" href="/">

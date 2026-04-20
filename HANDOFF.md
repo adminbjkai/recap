@@ -863,25 +863,63 @@ integration in this slice. Cache-Control is `no-store` on dynamic
 responses so reloads always reflect current disk state. `Ctrl-C`
 calls `server.server_close()` and exits 0 cleanly.
 
-The React surface currently has two pages. `/app/` is a jobs index
-page that fetches `GET /api/jobs`, renders one `JobCard` per job with
-a status badge, artifact chips, formatted created/updated times, and
-links into the transcript workspace, the legacy detail page, and the
-HTML report when present. It supports a client-side search (filename
-or job id) and a status pill row (all / completed / running / failed /
-pending). `AppShell` wraps both routes with a sticky top bar that
-links to the legacy dashboard and `/new`. The transcript workspace
-lives at `/app/job/<id>/transcript`: it fetches the job summary,
-transcript payload, and speaker-name overlay from `/api/*`; renders
-native video from `/job/<id>/analysis.mp4`; mirrors the legacy
-active-row sync in `useActiveRow`; renders speaker-colored rows and a
-legend; and lets the user rename speakers inline. The frontend fetch
-layer lazily calls `GET /api/csrf`, sends the token in `X-Recap-Token`
-on save, and refreshes once on a 403 before surfacing an error. The
-component test suite covers `SpeakerRenameForm`, `JobCard`, and
-`JobsIndexPage` (including search and status filtering);
-`scripts/verify_api.py` covers the API contract against a scratch
-fixture and must remain green alongside `scripts/verify_ui.py`.
+The React surface currently has two pages, both wrapped in
+`AppShell` which provides a sticky top bar with the product mark and
+links to the legacy HTML dashboard and `/new`. The visual system
+lives in `web/src/index.css` as a small set of CSS custom properties
+(surfaces, ink, lines, brand, accent, status colors, elevation,
+radii, typography scale, focus ring) plus a `prefers-reduced-motion`
+block that zeroes out transitions and animations. No Tailwind and no
+component library.
+
+`/app/` is the jobs index. It fetches `GET /api/jobs` and renders a
+hero section with the page title, a primary `New job` button, and a
+stats row (total / completed / running / failed / pending). One
+`JobCard` renders per job with a top status stripe, a status badge,
+artifact chips that visibly distinguish ready vs. missing, created
+and updated timestamps, and a primary action that opens the
+transcript workspace plus optional ghost buttons for the legacy
+detail page and the HTML report. A controls row below the hero
+offers a search input (filename or job id) and a status pill row
+(all / completed / running / failed / pending). Loading, error, "no
+jobs yet", and "no matches" states are all rendered as full hero
+cards; the "no matches" state offers a one-click reset of query +
+status filter.
+
+The transcript workspace lives at `/app/job/<id>/transcript`. It
+fetches the job summary, transcript payload, and speaker-name
+overlay from `/api/*`; renders native video from
+`/job/<id>/analysis.mp4` in a sticky left rail; mirrors the legacy
+active-row sync via `useActiveRow`; and renders speaker-colored rows
+with a speaker legend. The legend's pills double as show/hide filter
+chips — clicking a pill toggles its `aria-pressed` state and adds/
+removes the speaker from a `hiddenSpeakers` set that filters the
+rendered rows client-side. A "Show all" reset appears when any voice
+is hidden. Renaming speakers still writes the `speaker_names.json`
+overlay through `POST /api/jobs/<id>/speaker-names`.
+
+The transcript card header carries a `TranscriptSearchBar` that
+filters within the currently-visible rows. `lib/search.ts` computes
+case-insensitive substring matches and produces a per-row split of
+text/match segments; the table wraps each match in a `<mark>` with a
+`data-match-index` attribute. A match-count display shows
+`N / total` (or `0 matches`), prev/next buttons cycle through
+matches, `Enter` / `Shift+Enter` are wired to the same cycle, and an
+effect scrolls the active match into view. Active matches get a
+stronger highlight; non-active matches use a softer accent tint. An
+explicit empty state is shown when every speaker is hidden or when
+the transcript has no rows.
+
+The frontend fetch layer lazily calls `GET /api/csrf`, sends the
+token in `X-Recap-Token` on save, and refreshes once on a 403 before
+surfacing an error. The component test suite covers
+`SpeakerRenameForm`, `SpeakerLegend` filter chips, `JobCard`,
+`JobsIndexPage` (search + status filtering), `TranscriptSearchBar`
+(match display, clear, disabled nav), `TranscriptTable` (highlight
+rendering + empty states + toolbar slot), and the
+`lib/search.ts` helpers. `scripts/verify_api.py` covers the API
+contract against a scratch fixture and must remain green alongside
+`scripts/verify_ui.py`.
 
 The per-job detail page additionally renders two read-only sections
 introduced in a follow-up slice. **Errors**, hoisted to the top of

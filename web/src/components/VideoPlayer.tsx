@@ -18,6 +18,9 @@ const VideoPlayer = forwardRef<HTMLVideoElement, VideoPlayerProps>(
             title={title}
           />
         </div>
+        <p className="video-caption" title={title}>
+          {title}
+        </p>
       </section>
     );
   },

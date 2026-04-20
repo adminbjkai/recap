@@ -573,18 +573,33 @@ routes:
 /app/job/<job_id>/transcript     (transcript workspace)
 ```
 
-The jobs index calls `GET /api/jobs` and renders one `JobCard` per job
-with a status badge, artifact chips, formatted created/updated times,
-and quick links into the transcript workspace, the legacy detail page,
-and the HTML report (when present). A search input filters by filename
-or job id, and a status pill row filters by completed / running /
-failed / pending. Malformed `job.json` entries are skipped by the
-backend so the frontend never has to guard each card.
+Both pages are wrapped in a polished `AppShell` with a sticky top bar
+that links to the legacy HTML dashboard and `/new`. The visual system
+(see `web/src/index.css`) uses a small set of CSS custom properties
+for colors, typography, radii, elevation, and focus states, plus
+`prefers-reduced-motion` safeguards — no Tailwind and no component
+library.
+
+The jobs index calls `GET /api/jobs`. The hero surfaces totals broken
+down by status (total / completed / running / failed / pending) and
+one-line summary. Each `JobCard` shows a top status stripe, a status
+badge, artifact chips with ready/missing state, created and updated
+timestamps, and action buttons: a primary "Open transcript workspace"
+route plus optional links to the legacy detail page and HTML report.
+A search input filters by filename or job id, and a status pill row
+filters by completed / running / failed / pending. Loading, error,
+and empty states all render as full hero cards, and "No matches" adds
+a one-click reset. Malformed `job.json` entries are skipped
+server-side so the frontend never has to guard each card.
 
 The transcript workspace is a modern video + transcript surface:
-native video playback, active-row sync, speaker-colored rows, a
-speaker legend, and inline speaker-name renaming. The rename feature
-writes a small per-job `speaker_names.json` overlay:
+native video playback in a sticky left rail, active-row video sync,
+speaker-colored rows, a speaker legend whose pills double as
+show/hide filter chips (with a "Show all" reset when any are hidden),
+a transcript search bar with match count + prev/next cycling +
+highlight rendering (`Enter` / `Shift+Enter` also cycles), and inline
+speaker-name renaming. The rename feature writes a small per-job
+`speaker_names.json` overlay:
 
 ```json
 {
@@ -628,10 +643,11 @@ cd ..
 
 The Python server then serves `web/dist/` from `/app/*` with SPA
 fallback routing. The React slices so far port the jobs index (`/`)
-and the transcript workspace (`/job/<id>/transcript`); job detail,
-`/new`, and rich-report progress still use the legacy HTML routes.
-No Tailwind, Zustand, Playwright, auth, remote binding, or exporter
-integration is included yet.
+and the transcript workspace (`/job/<id>/transcript`), plus a visual
+polish + transcript-UX pass (search, speaker filter chips, sticky
+left rail, hero stats); job detail, `/new`, and rich-report progress
+still use the legacy HTML routes. No Tailwind, Zustand, Playwright,
+auth, remote binding, or exporter integration is included yet.
 
 The JSON API surface is:
 
@@ -932,9 +948,13 @@ npm test -- --run
 
 `npm run build` type-checks the TypeScript app and emits `web/dist/`
 for Python to serve under `/app/*`. The React routes currently are
-`/app/` (jobs index) and `/app/job/<id>/transcript` (transcript
-workspace). The Vitest suite covers the speaker rename form, the
-jobs-index page (search + status filter), and the job card.
+`/app/` (jobs index with hero stats, search, and status filter) and
+`/app/job/<id>/transcript` (transcript workspace with video, speaker
+filter chips, and transcript search + highlighting). The Vitest suite
+covers the speaker rename form, the speaker legend filter chips, the
+jobs-index page (search + status filter), the job card, the
+transcript search utilities, the transcript table highlights and
+empty states, and the transcript search bar interactions.
 `npm audit --audit-level=moderate` should remain clean; runtime
 dependencies are intentionally small.
 

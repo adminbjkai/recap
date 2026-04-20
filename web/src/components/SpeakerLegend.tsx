@@ -6,12 +6,18 @@ import { resolveSpeakerLabel } from "../lib/format";
 type SpeakerLegendProps = {
   speakers: SpeakerInfo[];
   labels: Record<string, string>;
+  hiddenSpeakers: Set<string>;
+  onToggleSpeaker: (key: string) => void;
+  onShowAllSpeakers: () => void;
   onSave: (labels: Record<string, string>) => Promise<void>;
 };
 
 export default function SpeakerLegend({
   speakers,
   labels,
+  hiddenSpeakers,
+  onToggleSpeaker,
+  onShowAllSpeakers,
   onSave,
 }: SpeakerLegendProps) {
   const [editing, setEditing] = useState(false);
@@ -35,32 +41,65 @@ export default function SpeakerLegend({
     }
   };
 
+  const anyHidden = speakers.some((s) => hiddenSpeakers.has(s.key));
+
   return (
     <section className="speaker-panel" aria-label="Speakers">
       <div className="speaker-panel-header">
         <div>
           <p className="eyebrow">Speakers</p>
-          <h2>{speakers.length} voice{speakers.length === 1 ? "" : "s"}</h2>
+          <h2>
+            {speakers.length} voice{speakers.length === 1 ? "" : "s"}
+          </h2>
         </div>
         <button
           type="button"
           className="ghost-button"
           onClick={() => setEditing((value) => !value)}
+          aria-expanded={editing}
         >
           {editing ? "Close" : "Rename"}
         </button>
       </div>
 
-      <div className="speaker-pills">
-        {speakers.map((speaker) => (
-          <span
-            key={speaker.key}
-            className={`speaker-pill ${speaker.className}`}
-          >
-            {resolveSpeakerLabel(speaker.raw, labels)}
-          </span>
-        ))}
-      </div>
+      <p className="speaker-panel-hint">
+        Click a voice to hide or show its rows.
+      </p>
+
+      <ul className="speaker-filter-list" role="list">
+        {speakers.map((speaker) => {
+          const visible = !hiddenSpeakers.has(speaker.key);
+          return (
+            <li key={speaker.key}>
+              <button
+                type="button"
+                className={`speaker-filter-pill ${speaker.className}`}
+                aria-pressed={visible}
+                onClick={() => onToggleSpeaker(speaker.key)}
+                title={
+                  visible
+                    ? "Hide this speaker's rows"
+                    : "Show this speaker's rows"
+                }
+              >
+                <span className="dot" aria-hidden />
+                {resolveSpeakerLabel(speaker.raw, labels)}
+              </button>
+            </li>
+          );
+        })}
+        {anyHidden ? (
+          <li>
+            <button
+              type="button"
+              className="speaker-filter-reset"
+              onClick={onShowAllSpeakers}
+            >
+              Show all
+            </button>
+          </li>
+        ) : null}
+      </ul>
 
       {editing ? (
         <SpeakerRenameForm

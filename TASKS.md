@@ -70,11 +70,12 @@
 
 - [x] Add JSON API scaffold and Vite/React transcript workspace at `/app/job/<id>/transcript` (React 18 + Vite + TypeScript + Vitest; Python serves `web/dist` under `/app/*`; API endpoints cover CSRF, job summary, transcript JSON, and speaker-name overlays; speaker names persist in `speaker_names.json`; `transcript.json` and exporters unchanged; old HTML routes remain live)
 - [x] React jobs index page (`/app/`) backed by `/api/jobs` (malformed `job.json` entries skipped server-side; `AppShell` sticky top bar links to legacy dashboard and `/new`; `JobCard` shows status badge + artifact chips + formatted created/updated times + actions; client-side search by filename/job_id and status pill filter; `verify_api.py` extended to 14 checks covering the listing and malformed-entry skip; Vitest specs for `JobCard` and `JobsIndexPage` raise total to 7; HTML jobs index at `/` remains live)
+- [x] Polish React UI and transcript interactions (visual-system rewrite in `web/src/index.css` with CSS custom-property tokens, typography scale, elevation, radii, focus ring, and `prefers-reduced-motion` guard; jobs index hero + stats row; `JobCard` status stripe + artifact chips + action hierarchy; sticky left rail in transcript workspace; client-side transcript search with match count + prev/next + highlight rendering + Enter/Shift+Enter cycling + scroll active match into view, backed by `lib/search.ts`; speaker-filter chips on the speaker legend with `aria-pressed` toggling and "Show all" reset; cleaner empty/loading/error states; Vitest suite grows to 22 specs across six files)
 - [ ] React job detail page and rich-report progress page backed by JSON APIs
 - [ ] React new-job page with engine selector and browser upload
 - [ ] Exporter integration: assemble / export-html / export-docx read `speaker_names.json`
 - [ ] Chapter-title overlays and editable chapter sidebar
-- [ ] Speaker filter chips and selected-speaker playback ranges
+- [ ] Selected-speaker playback ranges (play only ranges where a chosen voice speaks)
 - [ ] Transcript text editing / correction overlay
 - [ ] Playwright browser coverage for the React workspace
 - [ ] Linux deployment docs and systemd unit sample
