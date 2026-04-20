@@ -114,6 +114,18 @@ export type StartJobResult =
   | { kind: "accepted"; response: StartJobResponse }
   | { kind: "error"; message: string; reason?: string; status: number };
 
+export type RecordingUploadResponse = {
+  name: string;
+  size_bytes: number;
+  modified_at: string;
+  content_type: string;
+  source: { kind: "sources-root"; name: string };
+};
+
+export type RecordingUploadResult =
+  | { kind: "saved"; response: RecordingUploadResponse }
+  | { kind: "error"; message: string; reason?: string; status: number };
+
 export type TranscriptSegment = {
   id?: number;
   start: number;
@@ -282,6 +294,56 @@ export async function startJob(
     };
   }
   return { kind: "accepted", response: parsed as StartJobResponse };
+}
+
+function normalizeRecordingContentType(blobType: string): string {
+  // MediaRecorder often produces types like "video/webm;codecs=vp9,opus".
+  // The server strips codec parameters but we send a clean primary type
+  // so the Content-Type allowlist check matches exactly.
+  const primary = blobType.split(";")[0].trim().toLowerCase();
+  if (primary === "video/mp4") return "video/mp4";
+  return "video/webm";
+}
+
+async function postRecording(
+  blob: Blob,
+  token: string,
+): Promise<Response> {
+  return fetch("/api/recordings", {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": normalizeRecordingContentType(blob.type || ""),
+      "X-Recap-Token": token,
+    },
+    body: blob,
+  });
+}
+
+export async function uploadRecording(
+  blob: Blob,
+): Promise<RecordingUploadResult> {
+  let token = await getCsrf();
+  let response = await postRecording(blob, token);
+  if (response.status === 403) {
+    token = await getCsrf(true);
+    response = await postRecording(blob, token);
+  }
+  const parsed = await parseJson<RecordingUploadResponse | ApiErrorBody>(
+    response,
+  );
+  if (!response.ok) {
+    const apiBody = parsed as ApiErrorBody;
+    return {
+      kind: "error",
+      status: response.status,
+      message:
+        apiBody.error || `${response.status} ${response.statusText}`,
+      reason: apiBody.reason,
+    };
+  }
+  return { kind: "saved", response: parsed as RecordingUploadResponse };
 }
 
 export function getSpeakerNames(id: string): Promise<SpeakerNamesDoc> {

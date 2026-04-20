@@ -841,7 +841,15 @@ Primary `GET` routes:
   detail page at `/job/<id>/` and the legacy `/new` form remain live
   as fallbacks. Jobs-index `JobCard` primary click now opens the
   React dashboard; the secondary "Transcript" action still routes
-  to the transcript workspace.
+  to the transcript workspace. The `/app/new` page exposes three
+  tabs inside the "Source video" card: **Sources root** (pick an
+  existing file), **Record screen** (capture a clip in the browser
+  via Screen Capture + `MediaRecorder` and upload it via
+  `POST /api/recordings` — see below), and **Absolute path**. The
+  record tab gracefully renders an "unsupported" notice when the
+  browser lacks `getDisplayMedia` or `MediaRecorder`, and
+  transcription never starts automatically — saving and starting
+  are separate explicit actions.
 - `GET /api/csrf` — returns the server CSRF token as JSON for the
   React app.
 - `GET /api/jobs` — returns the jobs index listing as
@@ -891,6 +899,33 @@ Primary `GET` routes:
   every validation step but skips the real `recap ingest` +
   `recap run` dispatch so CI can prove routing without running heavy
   transcription. The legacy `POST /run` form remains unchanged.
+- `POST /api/recordings` — accept a browser-recorded screen clip.
+  Body is a raw `video/webm` or `video/mp4` upload (codec parameters
+  are stripped); everything else returns 415 before the body is read.
+  Content-Length is required and capped at 2 GiB
+  (`_RECORDING_BODY_MAX`); the body is streamed to disk in 256 KiB
+  chunks (`_RECORDING_CHUNK_BYTES`) and never held in memory, with a
+  belt-and-braces running cap on bytes actually written. Host pinning
+  and `X-Recap-Token` CSRF apply. The filename is **always** picked
+  by the server — `recording-YYYYMMDDTHHMMSSZ-<hex>.<ext>` — so the
+  browser-supplied filename (including any traversal attempt via
+  Content-Disposition) is ignored entirely. Storage location is
+  `<--sources-root>/<name>`, written as `<name>.tmp` and
+  `os.replace`-d into place, so the recording immediately appears in
+  `GET /api/sources` and can be started through `POST /api/jobs/start`
+  with the existing `{"source": {"kind": "sources-root", "name":
+  "..."}}` shape. On success returns `201 Created` with
+  `{name, size_bytes, modified_at, content_type, source}`. Validation
+  failures return JSON `{"error": "...", "reason": "..."}` with
+  reasons drawn from
+  `{host, content-type, content-length-missing, body-too-large,
+  empty, csrf, no-sources-root, write-failed, short-body,
+  replace-failed, name-invalid}`. Connection close is forced on
+  rejects so a client that lied about `Content-Length` cannot keep
+  the socket open. Request bodies, CSRF tokens, and the value of
+  `DEEPGRAM_API_KEY` are never logged; only metadata
+  (`name=<picked>`, `bytes=<size>`, `content_type=<ct>`) is logged
+  on success.
 - `GET /app/*` — serves `web/dist` assets when present, otherwise
   falls back to `web/dist/index.html` so React Router owns `/` (jobs
   index), `/job/<id>` (dashboard), and `/job/<id>/transcript`

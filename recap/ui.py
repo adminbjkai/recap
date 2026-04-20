@@ -477,6 +477,26 @@ _API_SPEAKER_KEY_RE = re.compile(r"^\d+$")
 _API_SPEAKER_NAME_MAX_LEN = 80
 _API_POST_BODY_MAX = 8192
 
+# Maximum bytes accepted by POST /api/recordings. 2 GiB matches the
+# upper bound for a reasonable one-sitting browser screen recording and
+# keeps resource usage bounded per request. The value is streamed to
+# disk; it is never held in memory.
+_RECORDING_BODY_MAX = 2 * 1024 * 1024 * 1024
+
+# Chunk size used when streaming a recording upload to disk.
+_RECORDING_CHUNK_BYTES = 256 * 1024
+
+# Content-Type → file extension map for the recording endpoint. Any
+# Content-Type not in this map returns 415 before the body is read.
+_RECORDING_CONTENT_TYPES: dict[str, str] = {
+    "video/webm": ".webm",
+    "video/mp4": ".mp4",
+}
+
+# Filename prefix used for browser-recorded uploads. The server picks
+# the whole name; the browser filename is never trusted.
+_RECORDING_NAME_PREFIX = "recording"
+
 
 def _speaker_name_contains_control(value: str) -> bool:
     """Reject ASCII/Unicode control chars except plain tab."""
@@ -3379,6 +3399,243 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                 if not slot_transferred:
                     _run_slot.release()
 
+        def _handle_api_recording_post(self) -> None:
+            """POST /api/recordings — accept a browser-recorded clip.
+
+            Stores the raw upload under the configured ``--sources-root``
+            so it naturally appears in ``GET /api/sources`` and can be
+            started through ``POST /api/jobs/start`` without any new
+            source kind. Reuses the established safety model (Host
+            pinning, ``X-Recap-Token`` CSRF, Content-Length cap,
+            Content-Type allowlist, server-picked filename). The body is
+            never buffered into memory; it streams to a ``.tmp`` file in
+            256 KiB chunks and is atomically ``os.replace``-d into the
+            final name.
+
+            Accepted Content-Types are ``video/webm`` and ``video/mp4``;
+            everything else returns 415 before the body is read. The
+            browser-supplied filename is ignored entirely — the server
+            picks ``recording-<UTC>-<hex>.<ext>`` so a malicious page
+            cannot pick a colliding or traversing name. No field in the
+            request body, the Content-Type, or the CSRF token is logged.
+            """
+            # 1. Host pinning.
+            allowed_hosts = getattr(
+                self.server, "allowed_hosts", frozenset(),
+            )
+            got_host = self.headers.get("Host") or ""
+            if not allowed_hosts or not any(
+                secrets.compare_digest(got_host, allowed)
+                for allowed in allowed_hosts
+            ):
+                self.close_connection = True
+                self._reject_api(
+                    HTTPStatus.FORBIDDEN, "host",
+                    "Host header mismatch.",
+                    extra_headers={"Connection": "close"},
+                )
+                return
+
+            # 2. Content-Type allowlist. Strip any codec parameters.
+            raw_ct = (
+                self.headers.get("Content-Type") or ""
+            ).split(";")[0].strip().lower()
+            if raw_ct not in _RECORDING_CONTENT_TYPES:
+                self.close_connection = True
+                self._reject_api(
+                    HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "content-type",
+                    "Content-Type must be video/webm or video/mp4.",
+                    extra_headers={"Connection": "close"},
+                )
+                return
+            ext = _RECORDING_CONTENT_TYPES[raw_ct]
+
+            # 3. Content-Length must be present and bounded.
+            raw_len = self.headers.get("Content-Length")
+            try:
+                content_length = (
+                    int(raw_len) if raw_len is not None else -1
+                )
+            except ValueError:
+                content_length = -1
+            if content_length < 0:
+                self.close_connection = True
+                self._reject_api(
+                    HTTPStatus.LENGTH_REQUIRED, "content-length-missing",
+                    "Content-Length is required.",
+                    extra_headers={"Connection": "close"},
+                )
+                return
+            if content_length == 0:
+                self.close_connection = True
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "empty",
+                    "Recording body is empty.",
+                    extra_headers={"Connection": "close"},
+                )
+                return
+            if content_length > _RECORDING_BODY_MAX:
+                self.close_connection = True
+                self._reject_api(
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "body-too-large",
+                    f"Request body exceeds {_RECORDING_BODY_MAX} bytes.",
+                    extra_headers={"Connection": "close"},
+                )
+                return
+
+            # 4. CSRF via X-Recap-Token header.
+            expected_token = getattr(
+                self.server, "csrf_token", "",
+            ) or ""
+            got_token = self.headers.get("X-Recap-Token") or ""
+            if not expected_token or not secrets.compare_digest(
+                got_token, expected_token,
+            ):
+                self.close_connection = True
+                self._reject_api(
+                    HTTPStatus.FORBIDDEN, "csrf",
+                    "CSRF token missing or invalid.",
+                    extra_headers={"Connection": "close"},
+                )
+                return
+
+            # 5. Sources root must be configured and usable.
+            if (
+                sources_resolved is None
+                or not sources_resolved.is_dir()
+            ):
+                self.close_connection = True
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "no-sources-root",
+                    "Server was started without a usable sources root.",
+                    extra_headers={"Connection": "close"},
+                )
+                return
+
+            # 6. Server picks the filename. The browser's filename (if
+            # any) is intentionally ignored — this also short-circuits
+            # any traversal attempt via multipart headers.
+            now_suffix = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+            rand_suffix = secrets.token_hex(4)
+            name = (
+                f"{_RECORDING_NAME_PREFIX}-{now_suffix}-"
+                f"{rand_suffix}{ext}"
+            )
+            # Defense in depth: the name must be a plain filename.
+            if Path(name).name != name:
+                self.close_connection = True
+                self._reject_api(
+                    HTTPStatus.INTERNAL_SERVER_ERROR, "name-invalid",
+                    "Generated filename was not a plain basename.",
+                    extra_headers={"Connection": "close"},
+                )
+                return
+            target = sources_resolved / name
+            tmp = sources_resolved / (name + ".tmp")
+
+            # 7. Stream body to tmp with a running size cap.
+            received = 0
+            try:
+                with open(tmp, "wb") as out:
+                    while received < content_length:
+                        remaining = content_length - received
+                        to_read = min(
+                            _RECORDING_CHUNK_BYTES, remaining,
+                        )
+                        chunk = self.rfile.read(to_read)
+                        if not chunk:
+                            break
+                        received += len(chunk)
+                        if received > _RECORDING_BODY_MAX:
+                            out.close()
+                            try:
+                                tmp.unlink(missing_ok=True)
+                            except OSError:
+                                pass
+                            self.close_connection = True
+                            self._reject_api(
+                                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                                "body-too-large",
+                                "Recording exceeded the size cap.",
+                                extra_headers={"Connection": "close"},
+                            )
+                            return
+                        out.write(chunk)
+            except OSError as e:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                self.close_connection = True
+                self._reject_api(
+                    HTTPStatus.INTERNAL_SERVER_ERROR, "write-failed",
+                    f"Failed to write recording: {type(e).__name__}.",
+                    extra_headers={"Connection": "close"},
+                )
+                return
+
+            if received != content_length:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                self.close_connection = True
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "short-body",
+                    "Request body was shorter than Content-Length.",
+                    extra_headers={"Connection": "close"},
+                )
+                return
+
+            try:
+                os.replace(str(tmp), str(target))
+            except OSError as e:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                self.close_connection = True
+                self._reject_api(
+                    HTTPStatus.INTERNAL_SERVER_ERROR, "replace-failed",
+                    f"Failed to finalize recording: "
+                    f"{type(e).__name__}.",
+                    extra_headers={"Connection": "close"},
+                )
+                return
+
+            try:
+                st = target.stat()
+                size_bytes = int(st.st_size)
+                modified_at = time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime(st.st_mtime),
+                )
+            except OSError:
+                size_bytes = received
+                modified_at = time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime(),
+                )
+
+            # Log only metadata; never log headers, body, or the token.
+            try:
+                self.server.logger_stream.write(
+                    f"[recap-ui] saved recording name={name} "
+                    f"bytes={size_bytes} content_type={raw_ct}\n"
+                )
+                self.server.logger_stream.flush()
+            except Exception:
+                pass
+
+            self._send_json(
+                HTTPStatus.CREATED,
+                {
+                    "name": name,
+                    "size_bytes": size_bytes,
+                    "modified_at": modified_at,
+                    "content_type": raw_ct,
+                    "source": {"kind": "sources-root", "name": name},
+                },
+            )
+
         def do_POST(self) -> None:  # noqa: N802
             # Early API POST dispatch: any /api/* path uses the JSON
             # validation pipeline and JSON error shape. All other
@@ -3400,6 +3657,10 @@ def _make_handler(jobs_root: Path, sources_root: Path):
 
             if early_segments == ["api", "jobs", "start"]:
                 self._handle_api_jobs_start()
+                return
+
+            if early_segments == ["api", "recordings"]:
+                self._handle_api_recording_post()
                 return
 
             if early_segments and early_segments[0] == "api":

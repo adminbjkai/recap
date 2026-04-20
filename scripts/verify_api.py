@@ -113,6 +113,69 @@ def post_json(
     return status, got_headers, parsed
 
 
+def raw_post_recording(
+    port: int,
+    *,
+    path: str,
+    body: bytes,
+    content_type: str,
+    token: str | None,
+    content_length_override: int | None = None,
+    extra_headers: dict[str, str] | None = None,
+    host_override: str | None = None,
+) -> tuple[int, dict[str, str], dict]:
+    """POST a recording-style upload, supporting a header that lies
+    about Content-Length. Used to prove the 413 fast-path rejects a
+    claimed-huge body without reading anything.
+    """
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10.0)
+    try:
+        conn.putrequest(
+            "POST", path, skip_host=True, skip_accept_encoding=True,
+        )
+        conn.putheader("Host", host_override or f"127.0.0.1:{port}")
+        conn.putheader("Content-Type", content_type)
+        declared = (
+            content_length_override
+            if content_length_override is not None
+            else len(body)
+        )
+        conn.putheader("Content-Length", str(declared))
+        if token is not None:
+            conn.putheader("X-Recap-Token", token)
+        conn.putheader("Connection", "close")
+        for key, value in (extra_headers or {}).items():
+            conn.putheader(key, value)
+        conn.endheaders()
+        if body:
+            try:
+                conn.send(body)
+            except (BrokenPipeError, ConnectionResetError):
+                # The server may close the socket immediately after
+                # a short-circuit reject (e.g. 413 on a lying
+                # Content-Length). That is OK; we still read the
+                # response below.
+                pass
+        # Signal "no more body bytes" so the server can detect a
+        # short body without blocking on `rfile.read`. For full
+        # bodies this is a no-op; for lying Content-Length cases it
+        # lets the streaming loop hit EOF cleanly.
+        try:
+            conn.sock.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+        resp = conn.getresponse()
+        data = resp.read()
+        got_headers = {k: v for k, v in resp.getheaders()}
+        try:
+            parsed = json.loads(data.decode("utf-8"))
+        except ValueError:
+            parsed = {"_raw": data.decode("utf-8", "replace")}
+        return resp.status, got_headers, parsed
+    finally:
+        conn.close()
+
+
 def wait_for_server(port: int, timeout: float = 10.0) -> None:
     deadline = time.monotonic() + timeout
     last_err: str | None = None
@@ -360,6 +423,151 @@ def main() -> int:
             fail(case, f"react_detail wrong: {got!r}")
         if got.get("legacy_detail") != f"/job/{job_id}/":
             fail(case, f"legacy_detail wrong: {got!r}")
+        passed()
+
+        # -----------------------------------------------------------
+        # /api/recordings — browser-recorded screen capture upload.
+        # The server picks the filename, rejects disallowed content
+        # types, enforces Content-Length, and stores under the
+        # configured sources root so /api/sources lists it.
+        # -----------------------------------------------------------
+
+        # A tiny WebM EBML header is enough for the server: it never
+        # parses the video, and the verifier never spawns FFmpeg or a
+        # transcription engine against the file. We just care that the
+        # bytes round-trip to disk and re-appear under /api/sources.
+        fake_webm = (
+            b"\x1a\x45\xdf\xa3"  # EBML magic
+            b"recap-api-verifier-fake-webm-payload-for-tests"
+        )
+
+        case = "api-recordings-missing-csrf"
+        status, _, got = raw_post_recording(
+            port,
+            path="/api/recordings",
+            body=fake_webm,
+            content_type="video/webm",
+            token=None,
+        )
+        if status != 403:
+            fail(case, f"expected 403, got {status}: {got!r}")
+        expect_reason(case, got, "csrf")
+        passed()
+
+        case = "api-recordings-bad-content-type"
+        status, _, got = raw_post_recording(
+            port,
+            path="/api/recordings",
+            body=fake_webm,
+            content_type="application/octet-stream",
+            token=token,
+        )
+        if status != 415:
+            fail(case, f"expected 415, got {status}: {got!r}")
+        expect_reason(case, got, "content-type")
+        passed()
+
+        case = "api-recordings-oversized-rejected-by-header"
+        status, _, got = raw_post_recording(
+            port,
+            path="/api/recordings",
+            body=b"",
+            content_type="video/webm",
+            token=token,
+            content_length_override=3 * 1024 * 1024 * 1024,
+        )
+        if status != 413:
+            fail(case, f"expected 413, got {status}: {got!r}")
+        expect_reason(case, got, "body-too-large")
+        passed()
+
+        case = "api-recordings-saves-webm-and-lists-it"
+        status, headers_rec, got = raw_post_recording(
+            port,
+            path="/api/recordings",
+            body=fake_webm,
+            content_type="video/webm;codecs=vp9,opus",
+            token=token,
+        )
+        if status != 201:
+            fail(case, f"expected 201, got {status}: {got!r}")
+        rec_name = got.get("name")
+        if (
+            not isinstance(rec_name, str)
+            or not rec_name.startswith("recording-")
+            or not rec_name.endswith(".webm")
+        ):
+            fail(case, f"bad recording name: {got!r}")
+        if got.get("size_bytes") != len(fake_webm):
+            fail(case, f"recorded size wrong: {got!r}")
+        if got.get("content_type") != "video/webm":
+            fail(case, f"content_type echo wrong: {got!r}")
+        source_ref = got.get("source") or {}
+        if (
+            source_ref.get("kind") != "sources-root"
+            or source_ref.get("name") != rec_name
+        ):
+            fail(case, f"source ref wrong: {got!r}")
+        # File must exist under the sources root with matching bytes.
+        stored = sources_root / rec_name
+        if not stored.is_file():
+            fail(case, f"recording not stored: {stored}")
+        if stored.read_bytes() != fake_webm:
+            fail(case, "recording bytes round-trip mismatch")
+        # /api/sources must now include it.
+        listing = get_json(
+            "api-recordings-saves-webm-and-lists-it",
+            port, "/api/sources",
+        )
+        names = [e.get("name") for e in (listing.get("sources") or [])]
+        if rec_name not in names:
+            fail(case, f"recording missing from /api/sources: {names!r}")
+        passed()
+
+        case = "api-recordings-filename-is-server-picked"
+        # The server never trusts the Content-Disposition filename; we
+        # prove that by sending a path-traversal Content-Disposition and
+        # ensuring the stored filename is still a safe recording-* name
+        # in the sources root. (The handler just ignores the header.)
+        status, _, got2 = raw_post_recording(
+            port,
+            path="/api/recordings",
+            body=fake_webm,
+            content_type="video/webm",
+            token=token,
+            extra_headers={
+                "Content-Disposition": (
+                    'attachment; filename="../../etc/passwd"'
+                ),
+            },
+        )
+        if status != 201:
+            fail(case, f"expected 201, got {status}: {got2!r}")
+        name2 = got2.get("name") or ""
+        if (
+            ".." in name2
+            or "/" in name2
+            or not name2.startswith("recording-")
+        ):
+            fail(case, f"server-picked name unsafe: {name2!r}")
+        # The file must be under sources_root and the traversal target
+        # must not exist.
+        if not (sources_root / name2).is_file():
+            fail(case, f"server-picked recording missing: {name2!r}")
+        passed()
+
+        case = "api-recordings-rejects-short-body"
+        status, _, got = raw_post_recording(
+            port,
+            path="/api/recordings",
+            body=b"tiny",
+            content_type="video/webm",
+            token=token,
+            content_length_override=len(b"tiny") + 16,
+        )
+        if status != 400:
+            fail(case, f"expected 400, got {status}: {got!r}")
+        expect_reason(case, got, "short-body")
         passed()
 
         case = "api-jobs-list-returns-jobs"

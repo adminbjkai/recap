@@ -56,6 +56,20 @@ export function formatJobDateTime(value: unknown): string {
   return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
 }
 
+export function formatElapsed(ms: number): string {
+  const safe = Number.isFinite(ms) && ms > 0 ? ms : 0;
+  const totalSeconds = Math.floor(safe / 1000);
+  const hh = Math.floor(totalSeconds / 3600);
+  const mm = Math.floor((totalSeconds % 3600) / 60);
+  const ss = totalSeconds % 60;
+  const mmStr = String(mm).padStart(2, "0");
+  const ssStr = String(ss).padStart(2, "0");
+  if (hh > 0) {
+    return `${hh}:${mmStr}:${ssStr}`;
+  }
+  return `${mmStr}:${ssStr}`;
+}
+
 export function formatTimestamp(seconds: number): string {
   const safe = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
   const whole = Math.floor(safe);

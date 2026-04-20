@@ -17,17 +17,26 @@ does and produces, read `HANDOFF.md`.
   `GET /api/jobs/<id>`, `GET /api/jobs/<id>/transcript`,
   `GET /api/jobs/<id>/insights` (read-only; 404 when absent, 500 on
   malformed), `GET /api/jobs/<id>/speaker-names`,
-  `POST /api/jobs/<id>/speaker-names`, and `POST /api/jobs/start`
-  (dispatch a new run from the React surface); it also serves the
-  built React app from `web/dist` under `/app/*` with SPA fallback
+  `POST /api/jobs/<id>/speaker-names`, `POST /api/jobs/start`
+  (dispatch a new run from the React surface), and
+  `POST /api/recordings` (accept a browser-recorded screen clip
+  streamed to `<sources-root>/recording-<UTC>-<hex>.<ext>` under a
+  server-picked filename, Host-pinned, CSRF-guarded, 2 GiB cap,
+  streams to disk in 256 KiB chunks); it also serves the built
+  React app from `web/dist` under `/app/*` with SPA fallback
   routing. React routes are now `/app/` (jobs index), `/app/new`
   (start a new recap job), `/app/job/<id>` (dashboard), and
   `/app/job/<id>/transcript` (transcript workspace). The legacy
   HTML pages at `/`, `/new`, and `/job/<id>/` remain live as a
   fallback. The React `/app/new` page is a thin client on top of
   the shared ingest + `_background_run` implementation, not a new
-  pipeline path. Browser screen recording is tracked as a future
-  slice (see [docs/product_roadmap.md](docs/product_roadmap.md)).
+  pipeline path. The "Record screen" tab on `/app/new` wraps the
+  browser's Screen Capture + `MediaRecorder` APIs; saving a clip
+  uploads it to `POST /api/recordings`, the file shows up in
+  `GET /api/sources`, and the user then clicks **Start job** as a
+  separate explicit step. Browsers without `getDisplayMedia` or
+  `MediaRecorder` render a clean unsupported state. No new
+  runtime dependencies.
   `GET /api/jobs` returns `{"jobs": [summary, ...]}` sorted by
   `created_at` descending; malformed `job.json` entries are dropped
   silently. Each summary's `urls` block includes `detail_html`,
@@ -71,9 +80,14 @@ does and produces, read `HANDOFF.md`.
   → 400, Deepgram-without-key → 400, path outside sources root →
   403, traversal name → 400), a dispatch-success check that uses
   the test-only `RECAP_API_STUB_JOB_START=1` shim so CI never runs
-  real transcription, plus the existing listing + artifact flags +
-  speaker-names contract + insights artifact flag + raw
-  `insights.json` serving. The shim is **only** enabled when
+  real transcription, `/api/recordings` upload path (missing CSRF
+  → 403, bad content-type → 415, lying Content-Length → 413 before
+  any body read, a small-webm happy path that round-trips bytes to
+  disk and appears in `/api/sources`, a Content-Disposition
+  traversal attempt that's ignored by the server-picked filename,
+  and a short-body case → 400), plus the existing listing +
+  artifact flags + speaker-names contract + insights artifact flag
+  + raw `insights.json` serving. The shim is **only** enabled when
   `scripts/verify_api.py` sets the env var on its own
   subprocess — it is not reachable in normal dev/prod operation.
   `scripts/verify_reports.py` covers 29
@@ -87,11 +101,16 @@ does and produces, read `HANDOFF.md`.
   Vitest suite covers `SpeakerRenameForm`, `SpeakerLegend` filter
   chips, `JobCard`, `JobsIndexPage`, `TranscriptSearchBar`,
   `TranscriptTable` highlighting + empty states, `lib/search` pure
-  helpers, and `NewJobPage` (loading state, sources render +
-  selection, Deepgram-disabled state, successful start + redirect,
-  error state). Legacy HTML routes at `/`, `/new`, and
-  `/job/<id>/` — together with `POST /run` — remain live as
-  fallbacks.
+  helpers, `NewJobPage` (loading state, sources render + selection,
+  Deepgram-disabled state, successful start + redirect, error
+  state), and `RecordingPanel` (unsupported browser, ready →
+  recording → preview transitions with a fake MediaRecorder +
+  getDisplayMedia, upload-success → saved state with CSRF header
+  assertions, error state on API failure, permission-denied error
+  from getDisplayMedia, and a `uploadRecording` unit test that
+  normalizes codec-tagged Content-Type to `video/webm`). Legacy
+  HTML routes at `/`, `/new`, and `/job/<id>/` — together with
+  `POST /run` — remain live as fallbacks.
 - `recap insights --job <path> --provider mock|groq [--force]` is
   opt-in and writes `jobs/<id>/insights.json` with overview, quick
   bullets, per-chapter summaries, and action items. It is **not** in

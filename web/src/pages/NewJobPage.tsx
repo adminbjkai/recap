@@ -5,10 +5,12 @@ import {
   getSources,
   startJob,
   type EngineEntry,
+  type RecordingUploadResponse,
   type SourceEntry,
   type StartSourceSpec,
 } from "../lib/api";
 import { formatFileSize, formatJobDateTime } from "../lib/format";
+import RecordingPanel from "../components/RecordingPanel";
 
 type LoadState =
   | { status: "loading" }
@@ -23,7 +25,7 @@ type LoadState =
     }
   | { status: "error"; message: string };
 
-type Mode = "pick" | "absolute";
+type Mode = "pick" | "record" | "absolute";
 
 type StartState =
   | { kind: "idle" }
@@ -108,6 +110,26 @@ export default function NewJobPage() {
     spec !== null &&
     selectedEngineAvailable &&
     startState.kind !== "submitting";
+
+  const handleRecordingSaved = (saved: RecordingUploadResponse) => {
+    setState((current) => {
+      if (current.status !== "loaded") return current;
+      const entry: SourceEntry = {
+        name: saved.name,
+        size_bytes: saved.size_bytes,
+        modified_at: saved.modified_at,
+      };
+      const existing = current.sources.filter(
+        (src) => src.name !== saved.name,
+      );
+      return {
+        ...current,
+        sources: [entry, ...existing],
+      };
+    });
+    setPickedName(saved.name);
+    setMode("pick");
+  };
 
   const handleStart = async () => {
     if (!spec) return;
@@ -216,6 +238,15 @@ export default function NewJobPage() {
             <button
               type="button"
               role="tab"
+              aria-selected={mode === "record"}
+              className={`mode-tab ${mode === "record" ? "active" : ""}`}
+              onClick={() => setMode("record")}
+            >
+              Record screen
+            </button>
+            <button
+              type="button"
+              role="tab"
               aria-selected={mode === "absolute"}
               className={`mode-tab ${mode === "absolute" ? "active" : ""}`}
               onClick={() => setMode("absolute")}
@@ -265,11 +296,14 @@ export default function NewJobPage() {
                     ? `Drop a file (${state.extensions.join(" ")}) into `
                     : "Create the directory and drop a file into "}
                   <code>{state.sourcesRoot ?? "sample_videos/"}</code>,
-                  or switch to "Absolute path" to point at a file
-                  anywhere on disk.
+                  record a screen clip in the "Record screen" tab, or
+                  switch to "Absolute path" to point at a file anywhere
+                  on disk.
                 </p>
               </div>
             )
+          ) : mode === "record" ? (
+            <RecordingPanel onSaved={handleRecordingSaved} />
           ) : (
             <div className="absolute-path-field">
               <label htmlFor="absolute-path-input">

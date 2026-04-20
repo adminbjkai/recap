@@ -684,6 +684,7 @@ GET  /api/jobs/<id>/insights         parsed insights.json (404 if absent)
 GET  /api/jobs/<id>/speaker-names    current speaker-names overlay
 POST /api/jobs/<id>/speaker-names    update overlay (CSRF, Host-pinned)
 POST /api/jobs/start                 dispatch a new run (CSRF, Host-pinned)
+POST /api/recordings                 browser-recorded clip upload (CSRF, Host-pinned)
 ```
 
 `POST /api/jobs/start` accepts a JSON body of either
@@ -695,8 +696,36 @@ engine allowlist, `DEEPGRAM_API_KEY` check, single `_run_slot`) and the
 shared ingest + background-run implementation, and returns 202 with
 `{job_id, engine, react_detail, legacy_detail, started_at}`. Validation
 failures return JSON `{"error": "...", "reason": "..."}`. The legacy
-`POST /run` fallback remains unchanged. Browser screen recording is
-tracked as a future slice.
+`POST /run` fallback remains unchanged.
+
+### Browser screen recording
+
+`/app/new` also exposes a **Record screen** tab built on the browser's
+Screen Capture API + `MediaRecorder`. The tab is available in any
+modern Chromium, Edge, or Firefox; browsers without
+`navigator.mediaDevices.getDisplayMedia` or `MediaRecorder` render a
+small "not supported" notice instead. Users choose whether to include
+microphone audio alongside display audio, click **Start screen
+recording**, pick the screen/window/tab in the browser's own picker,
+then stop when ready. Stopping produces a local preview —
+transcription never starts automatically. A separate **Save to
+sources** action uploads the captured clip via `POST /api/recordings`;
+after that the recording is selected in the Sources picker and the
+user clicks **Start job** to dispatch the run.
+
+`POST /api/recordings` accepts a raw `video/webm` or `video/mp4` body
+streamed into `<--sources-root>/recording-<UTC>-<hex>.<ext>` under a
+server-picked filename (the browser filename is ignored entirely).
+Uploads are bounded to 2 GiB by a Content-Length cap that rejects
+oversized requests before reading any bytes; the streaming write is
+also capped belt-and-braces. Host pinning and `X-Recap-Token` CSRF
+still apply, and no request body, CSRF token, or `DEEPGRAM_API_KEY`
+is ever logged. The resulting file appears in `GET /api/sources`
+with no further plumbing, so `POST /api/jobs/start` can start a run
+from it using the existing
+`{"source": {"kind": "sources-root", "name": "..."}}` shape.
+Everything stays on the local machine — no third-party upload
+endpoint, no authentication, no cloud storage.
 
 ### Start a new job from the browser
 

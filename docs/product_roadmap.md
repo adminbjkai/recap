@@ -151,11 +151,37 @@ Shipped in this slice:
 **Deferred to slice 5b:** streaming / polling progress UI while
 `recap run` executes (see slice 4b for the related dashboard work).
 
-## 6. Browser screen recording via MediaRecorder
+## 6. Browser screen recording via MediaRecorder — **done**
 
-- Record screen + audio directly in the browser.
-- Upload the resulting MP4 and start a job in one flow.
-- Stay local-first: no third-party upload targets, no remote auth.
+**Shipped in:**
+- `Add browser recording import flow`
+
+**What it gives users:**
+- A **Record screen** tab on `/app/new` that uses
+  `navigator.mediaDevices.getDisplayMedia` + `MediaRecorder` to
+  capture screen video + optional microphone audio locally. Clear
+  unsupported state in non-capable browsers.
+- Local preview after stop, with a separate **Save to sources**
+  action — transcription never starts automatically.
+- New `POST /api/recordings` endpoint that accepts a raw
+  `video/webm` or `video/mp4` body, picks the filename server-side
+  (`recording-<UTC>-<hex>.<ext>`), streams to
+  `<sources-root>/<name>.tmp` in 256 KiB chunks with a 2 GiB cap,
+  and `os.replace`-s into place. Host pinning and `X-Recap-Token`
+  CSRF apply. Browser filenames are ignored entirely.
+- Saved recording appears automatically in `GET /api/sources`, so
+  `POST /api/jobs/start` can start a run from it using the
+  existing `sources-root` source kind.
+- Local-first: no third-party upload targets, no auth, no remote
+  sync. All bytes stay on the machine running `recap ui`.
+
+**Deferred:**
+- Drag-and-drop or file-picker upload of pre-existing local video
+  files (a separate slice from live recording).
+- Rich recording controls: pause/resume, region selection beyond
+  the browser picker, countdown, webcam PIP.
+- Streaming / polling progress UI while `recap run` executes (still
+  tracked as slice 4b).
 
 ## 7. Folder / project / job organization
 
