@@ -495,6 +495,9 @@ table.transcript td { vertical-align: top; }
 button.ts { background: transparent; border: none; padding: 0;
             cursor: pointer; color: inherit; font: inherit; }
 button.ts:hover code { background: #e8f0fe; }
+tr.active { background: #fff7e0; }
+tr.active td:first-child { border-left: 3px solid #f5a623;
+                           padding-left: 0.45rem; }
 """.strip()
 
 
@@ -1221,23 +1224,25 @@ def render_transcript(
                 f'data-start="{start_value}">'
                 f"<code>{_e(start)}</code></button>"
             )
+            row_open = f'<tr data-start="{start_value}">'
         else:
             time_cell = f"<code>{_e(start)}</code>"
+            row_open = "<tr>"
         if use_utterances:
             spk_cell = _format_speaker(row.get("speaker"))
             lines.append(
-                "<tr>"
-                f"<td>{time_cell}</td>"
-                f"<td>{spk_cell}</td>"
-                f"<td>{_e(text)}</td>"
-                "</tr>"
+                row_open
+                + f"<td>{time_cell}</td>"
+                + f"<td>{spk_cell}</td>"
+                + f"<td>{_e(text)}</td>"
+                + "</tr>"
             )
         else:
             lines.append(
-                "<tr>"
-                f"<td>{time_cell}</td>"
-                f"<td>{_e(text)}</td>"
-                "</tr>"
+                row_open
+                + f"<td>{time_cell}</td>"
+                + f"<td>{_e(text)}</td>"
+                + "</tr>"
             )
     lines.append("</tbody></table>")
 
@@ -1257,6 +1262,50 @@ def render_transcript(
             "      }\n"
             "    });\n"
             "  });\n"
+            "  var rows = [];\n"
+            "  document.querySelectorAll('tr[data-start]').forEach(function(tr){\n"
+            "    var t = parseFloat(tr.dataset.start);\n"
+            "    if (isFinite(t)) rows.push({row: tr, start: t});\n"
+            "  });\n"
+            "  rows.sort(function(a, b){ return a.start - b.start; });\n"
+            "  if (!rows.length) return;\n"
+            "  var activeRow = null;\n"
+            "  var lastUserScroll = 0;\n"
+            "  function markUserScroll(){ lastUserScroll = Date.now(); }\n"
+            "  ['wheel', 'touchmove', 'scroll'].forEach(function(evt){\n"
+            "    window.addEventListener(evt, markUserScroll,\n"
+            "      {passive: true, capture: true});\n"
+            "  });\n"
+            "  window.addEventListener('keydown', function(e){\n"
+            "    if (e.key === 'ArrowUp' || e.key === 'ArrowDown' ||\n"
+            "        e.key === 'PageUp' || e.key === 'PageDown' ||\n"
+            "        e.key === 'Home' || e.key === 'End') {\n"
+            "      markUserScroll();\n"
+            "    }\n"
+            "  });\n"
+            "  function findRow(t){\n"
+            "    var lo = 0, hi = rows.length - 1, best = -1;\n"
+            "    while (lo <= hi) {\n"
+            "      var mid = (lo + hi) >> 1;\n"
+            "      if (rows[mid].start <= t) { best = mid; lo = mid + 1; }\n"
+            "      else { hi = mid - 1; }\n"
+            "    }\n"
+            "    return best >= 0 ? rows[best].row : null;\n"
+            "  }\n"
+            "  function update(){\n"
+            "    var row = findRow(player.currentTime || 0);\n"
+            "    if (row === activeRow) return;\n"
+            "    if (activeRow) activeRow.classList.remove('active');\n"
+            "    if (row) row.classList.add('active');\n"
+            "    activeRow = row;\n"
+            "    if (row && Date.now() - lastUserScroll > 3000) {\n"
+            "      row.scrollIntoView({block: 'nearest', behavior: 'smooth'});\n"
+            "    }\n"
+            "  }\n"
+            "  player.addEventListener('timeupdate', update);\n"
+            "  player.addEventListener('seeking', update);\n"
+            "  player.addEventListener('play', update);\n"
+            "  update();\n"
             "})();\n"
             "</script>"
         )

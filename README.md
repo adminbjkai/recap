@@ -631,6 +631,19 @@ framework. When `analysis.mp4` is absent (jobs mid-run, or imported
 without normalize), the player and buttons are silently omitted and
 the transcript renders exactly as before.
 
+As the video plays, the transcript keeps up with it: the row whose
+`start` is the greatest value at or below `currentTime` is highlighted
+(soft background + a left-accent border so the cue is not color-only),
+and the page smoothly scrolls to keep that row in view. Auto-scroll is
+suspended for about three seconds after any user scroll or
+`ArrowUp` / `ArrowDown` / `PageUp` / `PageDown` / `Home` / `End` key
+press, so the page does not fight the reader when they jump elsewhere.
+Clicking any timestamp button jumps the video to that row's start and
+resumes play. When `analysis.mp4` is absent the player, buttons, and
+sync script are all omitted and the transcript renders as a static
+table. No speaker-coloured rows, chapter timeline, keyboard shortcuts,
+or live-caption effects yet — those remain deferred.
+
 `analysis.mp4` is served with HTTP Range support so browsers can scrub
 without downloading the entire file first. The server implements
 single-range requests (`Range: bytes=a-b`, `bytes=a-`, and

@@ -1034,6 +1034,36 @@ floop` → 200 fallback. All mutations live in the scratch job; a
 pre-test assertion confirms `analysis.mp4` is absent before the
 scratch bytes are written.
 
+The transcript page additionally syncs with playback: each `<tr>`
+is emitted with a `data-start="{float}"` attribute when the player
+is present (no attribute in the no-video fallback), and the
+existing inline `<script>` gains an ascending-sorted `rows`
+index, a binary-search `findRow(t)` helper, and an `update()` that
+toggles a `tr.active` CSS class on the row whose `start` is the
+greatest value at or below `player.currentTime`. `update` is
+registered on `timeupdate`, `seeking`, and `play`, and is called
+once at script init so pages restoring a non-zero
+`currentTime` get an immediate highlight. Newly-active rows are
+scrolled via
+`scrollIntoView({block:'nearest',behavior:'smooth'})`, gated by a
+`lastUserScroll` timestamp: `wheel`, `touchmove`, and `scroll`
+events on `window` (registered with `{passive:true,capture:true}`)
+and the `ArrowUp`/`ArrowDown`/`PageUp`/`PageDown`/`Home`/`End`
+keys set `lastUserScroll = Date.now()`, and auto-scroll only
+fires when `Date.now() - lastUserScroll > 3000`. The `tr.active`
+CSS uses both a soft background (`#fff7e0`) and a 3 px left
+accent border (`#f5a623`) so the cue is not color-only. The
+no-video fallback is strictly unchanged: no `<tr data-start>`,
+no `button.ts`, no sync script. `scripts/verify_ui.py` grew to
+57 checks with four additions: per-row `data-start` when video
+is present, the `timeupdate` / `seeking` / `scrollIntoView`
+registrations, the `tr.active { ... }` CSS rule, and a negative
+assertion that the no-video fallback contains neither
+`<tr data-start=` nor `scrollIntoView(`. Explicit non-goals for
+this slice: speaker-coloured rows, chapter timeline, keyboard
+shortcuts, ARIA live-region treatment, search/filter, transcript
+editing.
+
 Remaining UI items — browser file upload, cancelling a running
 job, rerunning opt-in pipeline stages, deleting or archiving
 jobs, persistent run history across server restarts, active-row

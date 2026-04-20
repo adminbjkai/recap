@@ -816,11 +816,48 @@ def main() -> int:
             if body != mp4_bytes:
                 fail(case, "body did not match full bytes")
             passed()
+
+            # Active-row sync requires the transcript page to include
+            # per-row data-start attributes and the extended script.
+            case = "transcript-row-data-start-with-video"
+            _, tbody = expect_status(
+                case, port, "/job/minimal_job/transcript", 200,
+            )
+            expect_contains(case, tbody, b'<tr data-start="0.0"')
+            passed()
+
+            case = "transcript-sync-script-present"
+            _, tbody = expect_status(
+                case, port, "/job/minimal_job/transcript", 200,
+            )
+            expect_contains(
+                case, tbody, b"player.addEventListener('timeupdate'",
+            )
+            expect_contains(
+                case, tbody, b"player.addEventListener('seeking'",
+            )
+            expect_contains(case, tbody, b"scrollIntoView(")
+            passed()
+
+            case = "transcript-active-row-css"
+            _, tbody = expect_status(
+                case, port, "/job/minimal_job/transcript", 200,
+            )
+            expect_contains(case, tbody, b"tr.active {")
+            passed()
         finally:
             try:
                 mp4_path.unlink()
             except FileNotFoundError:
                 pass
+
+        case = "transcript-no-row-data-start-without-video"
+        _, tbody = expect_status(
+            case, port, "/job/minimal_job/transcript", 200,
+        )
+        expect_not_contains(case, tbody, b'<tr data-start="')
+        expect_not_contains(case, tbody, b"scrollIntoView(")
+        passed()
     finally:
         stop_ui(proc)
         shutil.rmtree(scratch_root, ignore_errors=True)

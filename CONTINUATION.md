@@ -7,6 +7,29 @@ system does and produces, read `HANDOFF.md`.
 ## Current state
 
 - Phase 1 of Recap is implemented, audited, hardened, and closed out.
+- The transcript page now follows video playback. When the player
+  is rendered, every `<tr>` emits `data-start="{float}"` and the
+  existing inline script gains an ascending-sorted `rows` index, a
+  binary-search `findRow(t)` helper, and an `update()` that toggles
+  a `tr.active` class on the row whose `start` is the greatest
+  value at or below `player.currentTime`. `update` is registered on
+  `timeupdate`, `seeking`, and `play`, and is called once at init.
+  Newly-active rows are scrolled into view via
+  `scrollIntoView({block:'nearest',behavior:'smooth'})` gated by a
+  3-second user-scroll suspend: `wheel`, `touchmove`, `scroll`
+  (window-capture, passive) and `ArrowUp`/`ArrowDown`/`PageUp`/
+  `PageDown`/`Home`/`End` keydowns set a `lastUserScroll`
+  timestamp, and auto-scroll only fires when
+  `Date.now() - lastUserScroll > 3000`. The `tr.active` CSS uses
+  both a soft background (`#fff7e0`) and a 3 px left accent border
+  (`#f5a623`) so the cue is not color-only. No-video fallback
+  unchanged: no `<tr data-start>`, no `button.ts`, no sync script.
+  Four new verifier checks (total 57) guard the per-row
+  `data-start` attribute, the `timeupdate`/`seeking`/
+  `scrollIntoView` registrations, the `tr.active {` CSS rule, and
+  the no-video fallback's absence of both. Explicit non-goals:
+  speaker-coloured rows, chapter timeline, keyboard shortcuts,
+  ARIA live-region treatment, transcript search/edit.
 - Inline video playback and transcript-row jump links are implemented
   on `/job/<id>/transcript`. `analysis.mp4` is now on
   `_JOB_ROOT_FILES` and `.mp4` maps to `video/mp4` in
