@@ -643,8 +643,34 @@ def main() -> int:
             expect_contains(case, body, b"Speaker 0")
             expect_contains(case, body, b"Speaker 1")
             expect_contains(case, body, b"2 speakers")
+            passed()
+
+            case = "transcript-speaker-legend-with-utterances"
+            expect_contains(case, body, b'class="speakers-legend"')
+            expect_contains(
+                case, body, b'class="speaker-swatch speaker-0"'
+            )
+            expect_contains(
+                case, body, b'class="speaker-swatch speaker-1"'
+            )
+            expect_contains(case, body, b"Speaker 0</span>")
+            expect_contains(case, body, b"Speaker 1</span>")
+            passed()
+
+            case = "transcript-speaker-rows-with-utterances"
+            expect_contains(case, body, b'<tr class="speaker-0"')
+            expect_contains(case, body, b'<tr class="speaker-1"')
+            expect_contains(case, body, b".speaker-0 {")
+            passed()
         finally:
             tp.write_text(original_transcript, encoding="utf-8")
+
+        case = "transcript-no-speaker-classes-without-utterances"
+        _, body = expect_status(
+            case, port, "/job/minimal_job/transcript", 200,
+        )
+        expect_not_contains(case, body, b'class="speaker-')
+        expect_not_contains(case, body, b'class="speakers-legend"')
         passed()
 
         case = "transcript-escape"

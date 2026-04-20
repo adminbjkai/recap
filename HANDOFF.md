@@ -1034,6 +1034,36 @@ floop` → 200 fallback. All mutations live in the scratch job; a
 pre-test assertion confirms `analysis.mp4` is absent before the
 scratch bytes are written.
 
+Diarized transcripts additionally render speaker-colored rows and a
+compact legend. When the data source is `utterances[]` and the
+row's `speaker` id passes `_utterance_speaker_id_valid`, the first
+time a speaker id is seen during iteration it is bound to the class
+`speaker-{N % _SPEAKER_PALETTE_SIZE}` (where `_SPEAKER_PALETTE_SIZE
+= 8`), and that class is emitted on the row's `<tr>`. The mapping is
+stable within a single render (first-seen order) and survives the
+segments-source fallback (it's never populated). A
+`<p class="speakers-legend">` is emitted between the metadata
+paragraph and the `<table>` when utterances mode is active and at
+least one speaker class is assigned; each legend entry is a
+`<span class="speaker-swatch speaker-N">` carrying the same label
+that `_format_speaker` produces (integer → `Speaker {id}`, non-empty
+string → escaped string). Eight pale background rules (`.speaker-0`
+through `.speaker-7`) live in the inline `<style>` block **before**
+`tr.active` so the active-row yellow still visibly overrides the
+speaker tint during playback while the Speaker column text keeps
+identifying who is speaking. The new CSS additions are purely
+class-based so the same `.speaker-N` rule tints `<tr>` rows and the
+`<span>` swatches alike. No JavaScript was added for this slice;
+the existing `tr.active` sync script is unchanged. Segments-only
+transcripts never emit `class="speaker-"` nor the legend, verified
+by a dedicated negative case. Explicit non-goals: speaker rename /
+editing UI, per-speaker filter, audio isolation, palette expansion
+beyond 8, and any client-side script.
+`scripts/verify_ui.py` grew to 60 checks with three additions —
+`transcript-speaker-legend-with-utterances`,
+`transcript-speaker-rows-with-utterances`, and
+`transcript-no-speaker-classes-without-utterances`.
+
 The transcript page additionally syncs with playback: each `<tr>`
 is emitted with a `data-start="{float}"` attribute when the player
 is present (no attribute in the no-video fallback), and the

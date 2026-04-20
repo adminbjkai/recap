@@ -7,6 +7,26 @@ system does and produces, read `HANDOFF.md`.
 ## Current state
 
 - Phase 1 of Recap is implemented, audited, hardened, and closed out.
+- Diarized transcripts now render speaker-colored rows plus a
+  compact speakers legend. A new module-level constant
+  `_SPEAKER_PALETTE_SIZE = 8` caps the palette; eight `.speaker-0`..
+  `.speaker-7` background rules live in the inline `<style>` block
+  before `tr.active` so the active-row yellow still overrides
+  during playback. `render_transcript` builds a stable first-seen
+  `speaker → "speaker-{N % 8}"` map over `source_rows` when
+  `use_utterances` is true and the `speaker` id passes
+  `_utterance_speaker_id_valid`, emits the class on each row's
+  `<tr>` alongside the existing optional `data-start` attribute,
+  and renders a `<p class="speakers-legend">` between the metadata
+  paragraph and the table when the map is non-empty. Legend
+  entries reuse `_format_speaker` so integer ids render as
+  `Speaker {id}` and string ids render as the escaped string. No
+  JavaScript changes. Segments-only transcripts and rows with
+  null/invalid speakers never get a speaker class. Three new
+  verifier checks cover the legend, row classnames, and the
+  no-speaker-class fallback; the UI check count is now 60.
+  Non-goals remain: speaker rename, per-speaker filter, audio
+  isolation, palette customization, JS additions.
 - The transcript page now follows video playback. When the player
   is rendered, every `<tr>` emits `data-start="{float}"` and the
   existing inline script gains an ascending-sorted `rows` index, a

@@ -116,6 +116,11 @@ _run_slot = threading.Semaphore(1)
 # Chunk size used when streaming ranged video responses.
 _RANGE_CHUNK_BYTES = 64 * 1024
 
+# How many distinct speaker-tint colors the transcript viewer cycles
+# through. When a transcript has more than this many speakers, the
+# `speaker-N` classes wrap modulo this size.
+_SPEAKER_PALETTE_SIZE = 8
+
 
 def _parse_range(header: str | None, size: int) -> tuple[int, int] | None:
     """Parse a single-range `Range: bytes=<spec>` header.
@@ -495,6 +500,18 @@ table.transcript td { vertical-align: top; }
 button.ts { background: transparent; border: none; padding: 0;
             cursor: pointer; color: inherit; font: inherit; }
 button.ts:hover code { background: #e8f0fe; }
+.speaker-0 { background: #e8f0fe; }
+.speaker-1 { background: #fce8e6; }
+.speaker-2 { background: #e6f4ea; }
+.speaker-3 { background: #fff4e5; }
+.speaker-4 { background: #f3e8fd; }
+.speaker-5 { background: #e7f7f4; }
+.speaker-6 { background: #fdeae8; }
+.speaker-7 { background: #ebeff5; }
+.speakers-legend { margin: 0.5rem 0 1rem; color: #333; font-size: 0.9em; }
+.speaker-swatch { display: inline-block; padding: 0.1rem 0.55rem;
+                  margin-right: 0.5rem; border-radius: 3px;
+                  font-size: 0.85em; font-weight: 600; }
 tr.active { background: #fff7e0; }
 tr.active td:first-child { border-left: 3px solid #f5a623;
                            padding-left: 0.45rem; }
@@ -1158,6 +1175,20 @@ def render_transcript(
 
     has_video = (job_dir / "analysis.mp4").is_file()
 
+    # Stable speaker → CSS-class mapping in first-seen order. Only
+    # populated when the transcript data source is utterances[] and
+    # the row's speaker id passes `_utterance_speaker_id_valid`.
+    speaker_to_class: dict[object, str] = {}
+    if use_utterances:
+        for row in source_rows:
+            spk = row.get("speaker")
+            if (
+                _utterance_speaker_id_valid(spk)
+                and spk not in speaker_to_class
+            ):
+                idx = len(speaker_to_class) % _SPEAKER_PALETTE_SIZE
+                speaker_to_class[spk] = f"speaker-{idx}"
+
     lines: list[str] = [f"<h1>Recap · {_e(title)}</h1>"]
 
     if has_video:
@@ -1189,6 +1220,18 @@ def render_transcript(
     lines.append(
         f'<p class="secondary">{", ".join(meta_bits)}</p>'
     )
+
+    if use_utterances and speaker_to_class:
+        swatches: list[str] = []
+        for spk, cls in speaker_to_class.items():
+            label_html = _format_speaker(spk)
+            swatches.append(
+                f'<span class="speaker-swatch {cls}">{label_html}</span>'
+            )
+        lines.append(
+            '<p class="speakers-legend">Speakers: ' + "".join(swatches)
+            + "</p>"
+        )
 
     if not source_rows:
         lines.append('<p class="empty">Transcript has no rows.</p>')
@@ -1224,10 +1267,21 @@ def render_transcript(
                 f'data-start="{start_value}">'
                 f"<code>{_e(start)}</code></button>"
             )
-            row_open = f'<tr data-start="{start_value}">'
         else:
             time_cell = f"<code>{_e(start)}</code>"
-            row_open = "<tr>"
+
+        # Row attributes: speaker class (utterances path, valid speaker
+        # only) and data-start (video present only). Either, both, or
+        # neither can apply.
+        tr_attrs: list[str] = []
+        if use_utterances:
+            speaker_cls = speaker_to_class.get(row.get("speaker"))
+            if speaker_cls:
+                tr_attrs.append(f'class="{speaker_cls}"')
+        if has_video:
+            tr_attrs.append(f'data-start="{start_value}"')
+        row_open = "<tr>" if not tr_attrs else "<tr " + " ".join(tr_attrs) + ">"
+
         if use_utterances:
             spk_cell = _format_speaker(row.get("speaker"))
             lines.append(

@@ -631,6 +631,16 @@ framework. When `analysis.mp4` is absent (jobs mid-run, or imported
 without normalize), the player and buttons are silently omitted and
 the transcript renders exactly as before.
 
+Diarized transcripts (those whose data source is `utterances[]` with
+valid speaker ids) get a pale speaker-tint on each row and a small
+legend above the table. The palette has 8 colors; if a transcript has
+more than 8 distinct speakers, the classes cycle modulo 8. During
+playback the active-row yellow overrides the speaker tint so the
+reader can still tell which row is currently playing. Segments-only
+transcripts render unchanged, and segments-only pages never emit
+speaker classes or the legend. No JavaScript is added for this
+colouring — it's pure CSS + server-rendered class names.
+
 As the video plays, the transcript keeps up with it: the row whose
 `start` is the greatest value at or below `currentTime` is highlighted
 (soft background + a left-accent border so the cue is not color-only),
