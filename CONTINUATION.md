@@ -47,14 +47,23 @@ does and produces, read `HANDOFF.md`.
   speaker-filter chips on the speaker legend (click pill to
   hide/show, `aria-pressed` state, "Show all" reset when any
   hidden). Speaker rename still persists to `speaker_names.json`.
+- **Priority cloud providers:** Deepgram for transcription
+  (`--engine deepgram`, env `DEEPGRAM_API_KEY` / `DEEPGRAM_MODEL` /
+  `DEEPGRAM_BASE_URL`) and Groq for structured insights
+  (`recap insights --provider groq`, env `GROQ_API_KEY` /
+  `GROQ_MODEL` / `GROQ_BASE_URL`). Both providers have mock / offline
+  fallbacks and are never called by automated tests.
 - `scripts/verify_api.py` covers 15 API checks (listing + artifact
   flags + speaker-names contract + insights artifact flag + raw
-  insights.json serving). `scripts/verify_reports.py` covers 23
+  insights.json serving). `scripts/verify_reports.py` covers 29
   checks (selected-path / absent-path / four malformed-artifact
-  cases + the scenes-interrupt regression + four insights cases:
+  cases + the scenes-interrupt regression + ten insights cases:
   mock happy path, absent-insights compatibility, offline-mock
-  without Groq env, and Groq-missing-key fail-clean). The Vitest
-  suite has 22 specs across six files: `SpeakerRenameForm`,
+  without Groq env, Groq-missing-key fail-clean, the opt-in
+  static-source guard, validate_insights sources requirement,
+  speaker-names graceful-fallback, selected-frames graceful-fallback,
+  chapter-candidates fail-clean, and the Groq max_tokens cap). The
+  Vitest suite has 22 specs across six files: `SpeakerRenameForm`,
   `SpeakerLegend` filter chips, `JobCard`, `JobsIndexPage`,
   `TranscriptSearchBar`, `TranscriptTable` highlighting + empty
   states, and `lib/search` pure helpers. Legacy HTML routes remain
@@ -64,8 +73,18 @@ does and produces, read `HANDOFF.md`.
   bullets, per-chapter summaries, and action items. It is **not** in
   `job.STAGES` and **not** invoked by `recap run`. `recap/stages/
   insights.py` hosts both providers; the Groq provider uses stdlib
-  HTTP + `GROQ_API_KEY` / `GROQ_MODEL` / `GROQ_BASE_URL` and fails
-  cleanly on a missing key. `recap/stages/report_helpers.py` owns
+  HTTP + `GROQ_API_KEY` / `GROQ_MODEL` / `GROQ_BASE_URL`, sends a
+  bounded `max_tokens` (`GROQ_DEFAULT_MAX_TOKENS = 8_000`) alongside
+  the `MAX_RESPONSE_BYTES` client-side cap, and fails cleanly on a
+  missing key. Secrets discipline: no API key, prompt, transcript
+  body, or request body is ever logged or written to `job.json`.
+  Optional artifacts follow Recap's existing conventions —
+  `speaker_names.json` and `selected_frames.json` degrade gracefully
+  on malformed JSON (empty overlay / absent source), while malformed
+  `chapter_candidates.json` fails cleanly with the canonical
+  `chapter_candidates.json malformed: ...` prefix because insights
+  actually consumes its content. `validate_insights` enforces the
+  `sources` block shape. `recap/stages/report_helpers.py` owns
   `load_insights` / `insights_chapters_by_index`. `recap/stages/
   assemble.py`, `export_html.py`, and `export_docx.py` all render an
   `## Overview` section and enrich chapter headings/summaries when

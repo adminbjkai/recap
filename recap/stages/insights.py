@@ -92,9 +92,23 @@ GROQ_DEFAULT_BASE_URL = "https://api.groq.com"
 GROQ_CHAT_PATH = "/openai/v1/chat/completions"
 
 # Input-size safety rails for Groq. Mock provider ignores these.
+# MAX_TRANSCRIPT_CHARS / MAX_CHAPTER_TEXT_CHARS bound the *input* prompt.
+# GROQ_DEFAULT_MAX_TOKENS bounds the *output* the server is allowed to
+# generate, and is sent as ``max_tokens`` in the request body so the
+# provider stops cleanly instead of streaming past MAX_RESPONSE_BYTES.
+# MAX_RESPONSE_BYTES is a last-resort client-side cap on wire bytes.
 MAX_TRANSCRIPT_CHARS = 48_000
 MAX_CHAPTER_TEXT_CHARS = 2_000
 MAX_RESPONSE_BYTES = 512 * 1024
+GROQ_DEFAULT_MAX_TOKENS = 8_000
+
+# Secrets discipline: no ``GROQ_API_KEY``, transcript body, prompt, or
+# request body is ever logged, written to ``job.json``, or included in
+# exception messages. Error messages carry only HTTP status codes and a
+# short (<= 200 byte) snippet of the *response* body so provider
+# failures can be diagnosed without leaking inputs. Failed stage
+# records in ``job.json`` store ``{type}: {short message}`` via
+# ``update_stage(error=...)`` — never the api key or prompt.
 
 # Heuristic patterns the mock provider uses to find action-item
 # candidates. Case-insensitive, applied to segment text. Deliberately
@@ -163,6 +177,14 @@ def _require(data: dict, field: str) -> None:
         raise RuntimeError(f"insights.json malformed: missing '{field}'")
 
 
+_SOURCES_FIELDS: tuple[str, ...] = (
+    "transcript",
+    "chapters",
+    "speaker_names",
+    "selected_frames",
+)
+
+
 def validate_insights(data: object) -> dict:
     """Raise RuntimeError with ``insights.json malformed: ...`` prefix on
     any structural problem; return the validated dict on success."""
@@ -175,6 +197,7 @@ def validate_insights(data: object) -> dict:
         "provider",
         "model",
         "generated_at",
+        "sources",
         "overview",
         "chapters",
         "action_items",
@@ -198,6 +221,23 @@ def validate_insights(data: object) -> dict:
         raise RuntimeError(
             "insights.json malformed: generated_at must be a string"
         )
+
+    sources = data["sources"]
+    if not isinstance(sources, dict):
+        raise RuntimeError(
+            "insights.json malformed: 'sources' is not a JSON object"
+        )
+    for src_field in _SOURCES_FIELDS:
+        if src_field not in sources:
+            raise RuntimeError(
+                f"insights.json malformed: sources.{src_field} missing"
+            )
+        value = sources[src_field]
+        if value is not None and not isinstance(value, str):
+            raise RuntimeError(
+                f"insights.json malformed: sources.{src_field} must be a "
+                "string or null"
+            )
 
     overview = data["overview"]
     if not isinstance(overview, dict):
@@ -322,6 +362,44 @@ def _load_json_if_exists(path: Path) -> Any | None:
         return json.load(f)
 
 
+def _load_optional_json_graceful(path: Path) -> Any | None:
+    """Load an *optional* artifact that insights only uses for a source
+    pointer or a best-effort speaker overlay.
+
+    Returns ``None`` when the file is absent, unreadable, or holds
+    invalid JSON. Never raises. This matches the behavior ``recap ui``
+    already uses for ``speaker_names.json`` — a half-written overlay
+    must not block other surfaces.
+    """
+    if not path.is_file():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _load_required_json(path: Path, label: str) -> Any:
+    """Load an artifact whose contents insights will actually consume.
+
+    Raises RuntimeError with a ``<label> malformed: ...`` prefix on
+    missing file or invalid JSON. Used for ``chapter_candidates.json``
+    because insights reads its ``chapters[].text`` to produce real
+    output; falling back to an empty default would silently degrade
+    report quality.
+    """
+    if not path.is_file():
+        raise RuntimeError(f"{label} is required but was not found")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            f"{label} malformed: invalid JSON: {e.msg}"
+        ) from e
+
+
 def _iter_segments(transcript: dict) -> list[dict]:
     """Prefer diarized utterances when present so action-item heuristics
     can attach speaker info; fall back to segments."""
@@ -348,8 +426,21 @@ def _speaker_label(segment: dict, speaker_names: dict[str, str]) -> str | None:
 def _load_context(paths: JobPaths) -> dict:
     """Read transcript + optional artifacts into a single context dict.
 
-    Never raises on missing optional artifacts; raises RuntimeError when
-    the required transcript is absent or malformed.
+    Policy (aligned with existing Recap conventions):
+
+    - ``transcript.json``: required. Missing or malformed input fails
+      the stage with a ``transcript.json malformed: ...`` prefix.
+    - ``chapter_candidates.json``: semi-required. Absent is fine (we
+      fall back to a single virtual chapter), but malformed JSON fails
+      cleanly because insights reads its ``chapters[].text`` and a
+      half-parsed artifact would silently degrade every downstream
+      report. Mirrors ``recap assemble`` / ``recap export-*`` behavior.
+    - ``speaker_names.json``: fully optional. Absent, unreadable, or
+      malformed → empty mapping. Mirrors ``recap ui`` behavior so a
+      half-written overlay never blocks other surfaces.
+    - ``selected_frames.json``: fully optional. Insights only records
+      whether it exists; it does not parse its contents. Absent,
+      unreadable, or malformed → treated as absent.
     """
     if not paths.transcript_json.is_file():
         raise RuntimeError(
@@ -368,23 +459,36 @@ def _load_context(paths: JobPaths) -> dict:
             "transcript.json malformed: top-level is not a JSON object"
         )
 
-    chapters = _load_json_if_exists(paths.chapter_candidates_json)
-    if chapters is not None and not isinstance(chapters, dict):
-        chapters = None
+    chapters: dict | None = None
+    if paths.chapter_candidates_json.is_file():
+        loaded = _load_required_json(
+            paths.chapter_candidates_json, "chapter_candidates.json"
+        )
+        if isinstance(loaded, dict):
+            chapters = loaded
 
-    selected = _load_json_if_exists(paths.selected_frames_json)
-    if selected is not None and not isinstance(selected, dict):
+    # selected_frames.json: never consumed directly; only its presence
+    # matters for the sources block. Ignore parse errors.
+    selected = _load_optional_json_graceful(paths.selected_frames_json)
+    if not isinstance(selected, dict):
         selected = None
 
-    speaker_names_doc = _load_json_if_exists(paths.speaker_names_json) or {}
-    if isinstance(speaker_names_doc, dict):
-        raw_speakers = speaker_names_doc.get("speakers")
-    else:
-        raw_speakers = None
+    speaker_names_doc = _load_optional_json_graceful(
+        paths.speaker_names_json
+    )
+    raw_speakers = (
+        speaker_names_doc.get("speakers")
+        if isinstance(speaker_names_doc, dict)
+        else None
+    )
     speaker_names: dict[str, str] = {}
     if isinstance(raw_speakers, dict):
         for key, value in raw_speakers.items():
-            if isinstance(key, str) and isinstance(value, str) and value.strip():
+            if (
+                isinstance(key, str)
+                and isinstance(value, str)
+                and value.strip()
+            ):
                 speaker_names[key] = value.strip()
 
     return {
@@ -654,6 +758,7 @@ def _groq_http_call(
     body = json.dumps({
         "model": model,
         "temperature": 0.2,
+        "max_tokens": GROQ_DEFAULT_MAX_TOKENS,
         "response_format": {"type": "json_object"},
         "messages": [
             {"role": "system", "content": system},

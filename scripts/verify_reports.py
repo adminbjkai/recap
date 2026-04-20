@@ -529,6 +529,268 @@ def check_insights_groq_missing_key() -> None:
         shutil.rmtree(job.parent, ignore_errors=True)
 
 
+def check_insights_stage_remains_opt_in() -> None:
+    """Regression guard: the insights stage must NOT be part of
+    ``job.STAGES`` and must NOT be invoked by ``recap run``.
+
+    This is a static check against the source so a future refactor
+    that quietly adds 'insights' to the canonical stage tuple or
+    wires it into ``cmd_run`` composition fails this verifier even
+    on a machine without Groq credentials.
+    """
+    case = "insights-stage-remains-opt-in"
+    sys.path.insert(0, str(REPO_ROOT))
+    from recap import job as job_mod  # type: ignore
+
+    if "insights" in job_mod.STAGES:
+        fail(
+            case,
+            f"recap.job.STAGES must not include 'insights'; got "
+            f"{job_mod.STAGES!r}",
+        )
+
+    cli_text = (REPO_ROOT / "recap" / "cli.py").read_text(encoding="utf-8")
+    # Find the cmd_run body and check it does not reference insights.
+    start = cli_text.find("def cmd_run(")
+    end = cli_text.find("\ndef ", start + 1)
+    if start == -1 or end == -1:
+        fail(case, "could not locate cmd_run in recap/cli.py")
+    body = cli_text[start:end]
+    if "insights" in body:
+        fail(
+            case,
+            "cmd_run in recap/cli.py unexpectedly references "
+            "insights; insights must stay opt-in",
+        )
+    passed()
+
+
+def check_insights_validate_requires_sources() -> None:
+    """``validate_insights`` must reject documents that omit the
+    top-level ``sources`` block. We wrote the block into every output
+    artifact from day one; schema validation has to enforce that
+    future writers keep doing so."""
+    case = "insights-validate-requires-sources"
+    sys.path.insert(0, str(REPO_ROOT))
+    from recap.stages.insights import (  # type: ignore
+        INSIGHTS_VERSION,
+        validate_insights,
+    )
+
+    bad = {
+        "version": INSIGHTS_VERSION,
+        "provider": "mock",
+        "model": "mock-v1",
+        "generated_at": "2026-04-20T00:00:00Z",
+        "overview": {
+            "title": "t",
+            "short_summary": "s",
+            "detailed_summary": "s",
+            "quick_bullets": [],
+        },
+        "chapters": [],
+        "action_items": [],
+    }
+    raised = False
+    try:
+        validate_insights(bad)
+    except RuntimeError as e:
+        raised = True
+        if "sources" not in str(e):
+            fail(
+                case,
+                f"validate_insights error should mention sources; "
+                f"got {e!r}",
+            )
+    if not raised:
+        fail(case, "validate_insights accepted a doc missing 'sources'")
+
+    # And the schema must reject a bogus-shape sources block.
+    bad2 = dict(bad)
+    bad2["sources"] = {"transcript": 123}
+    raised = False
+    try:
+        validate_insights(bad2)
+    except RuntimeError as e:
+        raised = True
+        if "sources.transcript" not in str(e):
+            fail(case, f"expected sources.transcript error; got {e!r}")
+    if not raised:
+        fail(
+            case,
+            "validate_insights accepted sources.transcript of wrong type",
+        )
+    passed()
+
+
+def _insights_env_without_groq() -> dict:
+    import os
+    env = dict(os.environ)
+    env.pop("GROQ_API_KEY", None)
+    env.pop("GROQ_MODEL", None)
+    env.pop("GROQ_BASE_URL", None)
+    return env
+
+
+def check_insights_malformed_speaker_names_graceful() -> None:
+    """Policy: malformed ``speaker_names.json`` must NOT block insights
+    generation. Insights should silently fall back to an empty speaker
+    overlay (matches how ``recap ui`` handles a half-written overlay)."""
+    case = "insights-malformed-speaker-names-graceful"
+    job = copy_fixture()
+    try:
+        (job / "speaker_names.json").write_text("{not json", encoding="utf-8")
+        result = subprocess.run(
+            [
+                sys.executable, "-m", "recap", "insights",
+                "--job", str(job), "--provider", "mock", "--force",
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            env=_insights_env_without_groq(),
+        )
+        if result.returncode != 0:
+            fail(
+                case,
+                "insights should tolerate malformed speaker_names.json; "
+                f"stderr={result.stderr.strip()!r}",
+            )
+        if not (job / "insights.json").is_file():
+            fail(case, "insights.json missing after graceful fallback")
+        # The sources block should report speaker_names as absent when
+        # the overlay could not be parsed.
+        doc = json.loads(
+            (job / "insights.json").read_text(encoding="utf-8")
+        )
+        if doc.get("sources", {}).get("speaker_names") is not None:
+            fail(
+                case,
+                f"sources.speaker_names should be null on malformed "
+                f"overlay; got {doc.get('sources')!r}",
+            )
+        passed()
+    finally:
+        shutil.rmtree(job.parent, ignore_errors=True)
+
+
+def check_insights_malformed_selected_frames_graceful() -> None:
+    """Policy: insights never parses selected_frames.json content, so
+    malformed JSON must be tolerated with the artifact treated as
+    absent in the sources block."""
+    case = "insights-malformed-selected-frames-graceful"
+    job = copy_fixture()
+    try:
+        (job / "selected_frames.json").write_text(
+            "{not json", encoding="utf-8"
+        )
+        result = subprocess.run(
+            [
+                sys.executable, "-m", "recap", "insights",
+                "--job", str(job), "--provider", "mock", "--force",
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            env=_insights_env_without_groq(),
+        )
+        if result.returncode != 0:
+            fail(
+                case,
+                "insights should tolerate malformed selected_frames.json; "
+                f"stderr={result.stderr.strip()!r}",
+            )
+        if not (job / "insights.json").is_file():
+            fail(case, "insights.json missing after graceful fallback")
+        doc = json.loads(
+            (job / "insights.json").read_text(encoding="utf-8")
+        )
+        if doc.get("sources", {}).get("selected_frames") is not None:
+            fail(
+                case,
+                f"sources.selected_frames should be null on malformed "
+                f"artifact; got {doc.get('sources')!r}",
+            )
+        passed()
+    finally:
+        shutil.rmtree(job.parent, ignore_errors=True)
+
+
+def check_insights_malformed_chapter_candidates_fails_cleanly() -> None:
+    """Policy: insights reads chapter_candidates.json content, so
+    malformed JSON must FAIL CLEANLY with the canonical
+    ``chapter_candidates.json malformed: ...`` prefix rather than
+    silently fall back to a whole-transcript chapter. Mirrors
+    ``recap assemble`` / ``recap export-*`` behavior."""
+    case = "insights-malformed-chapter-candidates-fails-cleanly"
+    job = copy_fixture()
+    try:
+        (job / "chapter_candidates.json").write_text(
+            "{not json", encoding="utf-8"
+        )
+        result = subprocess.run(
+            [
+                sys.executable, "-m", "recap", "insights",
+                "--job", str(job), "--provider", "mock", "--force",
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            env=_insights_env_without_groq(),
+        )
+        if result.returncode == 0:
+            fail(
+                case,
+                "insights unexpectedly accepted malformed "
+                "chapter_candidates.json",
+            )
+        if "chapter_candidates.json malformed" not in result.stderr:
+            fail(
+                case,
+                "stderr must carry canonical "
+                "'chapter_candidates.json malformed' prefix; got "
+                f"{result.stderr.strip()!r}",
+            )
+        if (job / "insights.json").exists():
+            fail(
+                case,
+                "insights.json written despite failed chapter_candidates "
+                "parse",
+            )
+        if (job / "insights.json.tmp").exists():
+            fail(case, "leftover insights.json.tmp after failed run")
+        # Stage entry must be marked failed.
+        state = json.loads((job / "job.json").read_text(encoding="utf-8"))
+        sc = state.get("stages", {}).get("insights") or {}
+        if sc.get("status") != "failed":
+            fail(
+                case,
+                f"stages.insights.status={sc.get('status')!r}, "
+                "expected 'failed'",
+            )
+        passed()
+    finally:
+        shutil.rmtree(job.parent, ignore_errors=True)
+
+
+def check_insights_groq_max_tokens_is_bounded() -> None:
+    """Static check: the Groq request body must carry a bounded
+    ``max_tokens`` so responses are capped by the provider as well as
+    by the client-side ``MAX_RESPONSE_BYTES`` guard."""
+    case = "insights-groq-max-tokens-is-bounded"
+    src = (REPO_ROOT / "recap" / "stages" / "insights.py").read_text(
+        encoding="utf-8"
+    )
+    if '"max_tokens"' not in src:
+        fail(case, "insights.py Groq body is missing a 'max_tokens' cap")
+    if "GROQ_DEFAULT_MAX_TOKENS" not in src:
+        fail(
+            case,
+            "insights.py must define a GROQ_DEFAULT_MAX_TOKENS constant",
+        )
+    passed()
+
+
 def check_scenes_interrupt_marks_failed() -> None:
     """Regression guard: Ctrl-C during `recap scenes` must leave the
     stage as `failed`, not `running`, and remove partial
@@ -668,6 +930,12 @@ def main() -> int:
     check_insights_absent_still_exports()
     check_insights_mock_offline_no_key()
     check_insights_groq_missing_key()
+    check_insights_stage_remains_opt_in()
+    check_insights_validate_requires_sources()
+    check_insights_malformed_speaker_names_graceful()
+    check_insights_malformed_selected_frames_graceful()
+    check_insights_malformed_chapter_candidates_fails_cleanly()
+    check_insights_groq_max_tokens_is_bounded()
     check_scenes_interrupt_marks_failed()
 
     print(f"OK: {CHECKS_PASSED} checks passed")

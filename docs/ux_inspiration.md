@@ -10,6 +10,16 @@ verbatim.
 This file exists so each future slice can check "which inspiration does
 this map to?" and so we don't silently drift.
 
+## Scope of this document
+
+This file is about **UX / product patterns**. The concrete platform
+decisions (React/Vite under `/app/`, legacy HTML routes kept as
+fallback, **Deepgram** as the priority cloud transcription engine,
+**Groq** as the priority cloud insights provider, `insights.json`
+opt-in and consumed by exporters) live in
+[product_roadmap.md](product_roadmap.md). When a borrowed UX pattern
+depends on one of those, check the roadmap before implementing.
+
 ## Licensing posture
 
 - **Borrow product patterns, not code.** Layout ideas, interaction

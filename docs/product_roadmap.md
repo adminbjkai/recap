@@ -8,6 +8,28 @@ is scoped small enough to land cleanly without flag days.
 
 Slices marked **done** have already shipped on `main`.
 
+## Defaults and priority cloud providers
+
+- **Frontend:** React / Vite under `/app/` is the primary surface. The
+  legacy stdlib HTML dashboard at `/` remains live as a fallback while
+  the React migration continues — deleting or regressing a legacy route
+  requires an explicit user green-light.
+- **Transcription:** `faster-whisper` is the default (offline). When a
+  user opts into a cloud engine, **Deepgram** is the priority provider
+  (`--engine deepgram`, diarized utterances). `DEEPGRAM_API_KEY` +
+  `DEEPGRAM_MODEL` + `DEEPGRAM_BASE_URL` control it.
+- **Structured insights:** the `mock` provider is the default (offline,
+  deterministic). When a user opts into a cloud LLM, **Groq** is the
+  priority provider (`recap insights --provider groq`, strict JSON
+  mode). `GROQ_API_KEY` + `GROQ_MODEL` + `GROQ_BASE_URL` control it.
+- **Exporters:** `recap assemble` / `export-html` / `export-docx`
+  consume `insights.json` when present and stay byte-compatible with
+  earlier output when it is absent.
+- **Opt-in stages stay opt-in.** `insights`, `verify`, and every Phase
+  2/3 stage are entries inside `job.json#stages` but never inside
+  `recap/job.py::STAGES` or `recap run` composition. That is a hard
+  invariant; `scripts/verify_reports.py` has a static check for it.
+
 ## 1. React app shell + transcript workspace — **done**
 
 **Shipped in:**

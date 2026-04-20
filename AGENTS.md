@@ -1,266 +1,169 @@
 # AGENTS.md
 
-This file defines how an implementation agent should build Recap.
-
-`MASTER_BRIEF.md` is the source of truth. If this file conflicts with the brief, follow the brief. If this file appears to allow extra scope, do not take it.
-
-## Objective
-
-Build Recap in strict phases.
-
-Do not skip phases.
-Do not partially implement later phases "while you are here."
-Do not add speculative architecture, optional systems, or convenience features beyond the active phase.
-
-## Development Rule
-
-Implement only the current phase.
-
-Current allowed phase at project start:
-
-- Phase 1: Reliable Core
-
-Phase 1 includes only:
-
-- Stage 1: Ingest
-- Stage 2: Normalize
-- Stage 3: Transcribe
-- Stage 8: Basic Markdown assembly
-
-Stages 4 through 7 are part of the target architecture, but they are out of scope until Phase 1 is complete and explicitly approved to move forward.
-
-## Build Order
-
-Complete work in this order:
-
-1. Job model and job working directory
-2. Ingest input video and persist source artifact
-3. Extract metadata with `ffprobe`
-4. Normalize video to `analysis.mp4`
-5. Extract `audio.wav` as 16kHz mono WAV
-6. Run transcription with faster-whisper
-7. Persist transcript artifacts
-8. Generate basic `report.md`
-9. Validate end-to-end restartability for Phase 1
-
-Do not reorder this sequence unless a dependency forces it.
-
-## Phase 1 Required Outputs
-
-At minimum, a successful Phase 1 job must produce:
-
-- `original.ext`
-- `metadata.json`
-- `job.json`
-- `analysis.mp4`
-- `audio.wav`
-- `transcript.json`
-- `transcript.srt`
-- `report.md`
-
-`job.json` must reflect job identity, stage status, and failure or completion state.
-
-## Phase 1 Must Not Implement
-
-Do not implement any of the following in Phase 1:
-
-- Chapter proposal logic
-- Scene detection
-- Candidate frame extraction
-- Screenshot selection
-- pHash deduplication
-- SSIM scoring
-- OCR novelty scoring
-- OpenCLIP semantic alignment
-- VLM verification
-- Caption generation with VLMs
-- DOCX export
-- PDF export
-- HTML export beyond what is already explicitly required
-- Notion export
-- Full background capture integrations
-- Queue systems, distributed workers, or remote orchestration unless absolutely required for the minimal local build
-- Plugin systems, rule engines, or generalized pipeline frameworks
-
-If a feature belongs to Phase 2, Phase 3, or Phase 4, do not implement it in any form.
-
-## Constraints
-
-- Keep the implementation simple and local-first.
-- Prefer direct code over abstractions meant for hypothetical future phases.
-- Keep modules small and explicit.
-- Use clear stage boundaries and file outputs.
-- Persist artifacts to disk after each completed stage.
-- Make stages restartable from existing artifacts where practical.
-- Use Markdown as the primary output format.
-- Treat VLM usage as optional in the overall system and completely out of scope for Phase 1.
-- Preserve the staged pipeline design even if only part of it is implemented now.
-
-## Coding Style
-
-- Write simple, modular code.
-- Prefer straightforward functions over layered abstractions.
-- Avoid inheritance-heavy designs.
-- Avoid building a generic workflow engine.
-- Avoid adding interfaces solely for future flexibility.
-- Keep data structures explicit and easy to inspect.
-- Use plain JSON artifacts where the brief expects JSON artifacts.
-- Name code by stage and responsibility, not by vague platform language.
-
-Good style for this project:
-
-- A small module that runs `ffprobe` and writes `metadata.json`
-- A direct transcription module that reads `audio.wav` and writes `transcript.json`
-- A report builder that reads existing artifacts and writes `report.md`
-
-Bad style for this project:
-
-- A generalized media processing plugin framework
-- A registry for arbitrary pipeline stages before the real stages are built
-- Abstract scorer interfaces for OCR, CLIP, and VLM before those phases exist
-
-## Required Artifact Discipline
-
-After each implemented stage, write the expected artifact before moving on.
-
-### After Stage 1: Ingest
-
-Required:
-
-- job directory exists
-- source video stored as `original.ext`
-- `job.json` created
-
-Validation:
-
-- confirm the source file exists
-- confirm `job.json` contains a job ID and stage state
-
-### After Stage 2: Normalize
-
-Required:
-
-- `metadata.json`
-- `analysis.mp4`
-- `audio.wav`
-- updated `job.json`
-
-Validation:
-
-- confirm `ffprobe` metadata was captured
-- confirm `analysis.mp4` is playable and uses the normalized target format
-- confirm `audio.wav` exists and is 16kHz mono
-
-### After Stage 3: Transcribe
-
-Required:
-
-- `transcript.json`
-- `transcript.srt`
-- updated `job.json`
-
-Validation:
-
-- confirm transcript artifacts exist
-- confirm transcript segments contain timestamps
-- confirm the transcription step can be rerun or skipped based on existing artifacts
-
-### After Stage 8: Basic Markdown Assembly
-
-Required:
-
-- `report.md`
-- updated `job.json`
-
-Validation:
-
-- confirm `report.md` is readable Markdown
-- confirm it is built from actual artifacts, not placeholder text
-- confirm it does not claim screenshots, chapters, or VLM verification that do not yet exist
-
-## Progress Validation Rules
-
-After every implementation step:
-
-1. Run the smallest practical validation for that step.
-2. Confirm the expected artifact was written.
-3. Confirm the stage status is reflected in `job.json`.
-4. Confirm no later-phase feature was introduced as a side effect.
-
-Before marking Phase 1 complete:
-
-1. Run a sample recording through the full Phase 1 flow.
-2. Verify all Phase 1 artifacts exist.
-3. Verify the pipeline can resume without recomputing every step.
-4. Verify the output remains Markdown-first.
-
-## Stop Conditions
-
-Stop immediately when any of the following becomes true:
-
-- Phase 1 deliverables are complete and validated
-- The next task belongs to Phase 2 or later
-- The requested change would require inventing scope not present in `MASTER_BRIEF.md`
-- The implementation would require adding speculative abstractions for future phases
-- The implementation cannot proceed without a product decision not already documented
-
-When stopping, report:
-
-- what was completed
-- what artifacts were produced
-- what remains for the next approved phase
-- why work should not continue automatically
-
-Do not continue into Phase 2 on your own.
-
-## Anti-Patterns
-
-Do not do any of the following:
+This file tells an implementation agent how to work on Recap today.
+
+## Sources of truth
+
+- **Pipeline philosophy** — [MASTER_BRIEF.md](MASTER_BRIEF.md) is the
+  long-form description of the staged cascade: cheap deterministic
+  filters first, semantic alignment on a reduced set, expensive AI only
+  on a small shortlist, Markdown-first outputs. It is background
+  reading and still the north star for how stages behave.
+- **Active roadmap** — [docs/product_roadmap.md](docs/product_roadmap.md)
+  is the ordered list of slices in flight or planned. When a task maps
+  to a slice, use that number; when it does not, be honest about it.
+- **UX inspiration** — [docs/ux_inspiration.md](docs/ux_inspiration.md)
+  names the external repos (Cap5, CapSoftware/Cap, steipete/summarize)
+  whose product patterns we borrow and the "borrow patterns, not code"
+  rule. Do not vendor third-party code.
+
+If any document here conflicts with the user's most recent instruction
+in the conversation, the user's instruction wins. If the agent-level
+docs conflict with each other, the order above is authoritative.
+
+## Status
+
+- **Phase 1 (Reliable Core) is complete and shipped on `main`.** Every
+  Phase 1 stage (ingest / normalize / transcribe / assemble) runs,
+  persists artifacts, and is restartable.
+- **Phase 2 (Smart Visuals v1) is complete:** `recap scenes`, `recap
+  dedupe`, and all associated artifacts are live and covered by
+  `scripts/verify_reports.py` / `scripts/verify_ui.py`.
+- **Phase 3 (Semantic Alignment) slices are live:** `recap window`,
+  `recap similarity`, `recap chapters`, `recap rank`, and `recap
+  shortlist`.
+- **Phase 4 (Precision Polish) slices are live:** `recap verify`,
+  `recap export-html`, `recap export-docx`.
+- **Modern web app is live:** a React/Vite frontend under `/app/`
+  (polished visual system + transcript workspace + jobs index +
+  transcript search + speaker filter chips), plus a JSON API
+  (`/api/csrf`, `/api/jobs`, `/api/jobs/<id>`, `/api/jobs/<id>/
+  transcript`, `/api/jobs/<id>/speaker-names`). The legacy HTML
+  dashboard at `/` remains live as a fallback.
+- **Structured insights is live (opt-in):** `recap insights --provider
+  mock|groq` writes `insights.json`; `recap assemble` / `export-html` /
+  `export-docx` render an `## Overview` section and per-chapter
+  enrichments when it is present. `insights` is NOT in `job.STAGES`
+  and NOT invoked by `recap run`.
+
+`recap run` composition remains `ingest → normalize → transcribe →
+assemble` and `recap/job.py STAGES` remains `("ingest", "normalize",
+"transcribe", "assemble")`. Neither may change without an explicit
+green-light from the user.
+
+## Priority cloud providers
+
+Recap is local-first. When a slice needs a cloud provider, start with
+these:
+
+- **Deepgram** (`--engine deepgram`) for diarized transcription.
+  Reads `DEEPGRAM_API_KEY`, `DEEPGRAM_MODEL`, `DEEPGRAM_BASE_URL`.
+- **Groq** (`recap insights --provider groq`) for structured
+  summaries. Reads `GROQ_API_KEY`, `GROQ_MODEL`, `GROQ_BASE_URL`.
+
+Both providers must fail cleanly when their key is missing, must not
+be required for offline work (mock providers exist), and must not be
+called by automated tests.
+
+## What an implementation agent should do
+
+1. **Work one slice at a time.** Pick the smallest scope that
+   completes a task from `docs/product_roadmap.md` or a direct user
+   request. Bundling multiple slices into one commit is not allowed.
+2. **Keep Phase 1 invariants intact.** `recap run` composition and
+   `job.STAGES` are frozen. Opt-in stages add themselves as entries
+   inside `state["stages"]` (via `update_stage`) but must never be
+   added to `STAGES` or to `cmd_run`.
+3. **Preserve legacy HTML routes while the React migration continues.**
+   Deleting or regressing a legacy route requires an explicit user
+   green-light. Cross-reference `docs/product_roadmap.md` before any
+   such change.
+4. **Write artifacts to disk after each stage.** No in-memory-only
+   pipelines. Use an atomic `<file>.tmp` → replace write. Validate
+   the artifact shape on load.
+5. **Prefer direct code over abstractions.** No plugin registries, no
+   generic workflow frameworks, no interface hierarchies for
+   hypothetical future providers. If three similar cases appear,
+   refactor then; not before.
+6. **Keep data structures explicit and inspectable.** Plain JSON for
+   artifacts. No opaque binary state.
+7. **Never vendor third-party source.** Borrow product patterns from
+   the repos listed in `docs/ux_inspiration.md`; do not copy code,
+   icons, fonts, or prompts.
+8. **Secrets discipline.** API keys, prompt bodies, transcript text,
+   and request bodies must never be logged, written to `job.json`,
+   or included in exception messages. Error messages may carry HTTP
+   status codes and short (<= 200 byte) response snippets only.
+
+## Validation every slice must pass
+
+Before committing:
+
+- `git diff --check` must be clean.
+- `.venv/bin/python -m compileall -q recap`
+- `.venv/bin/python scripts/verify_reports.py` (twice, to catch
+  idempotency bugs)
+- `.venv/bin/python scripts/verify_ui.py` (twice)
+- `.venv/bin/python scripts/verify_api.py` (twice)
+- `cd web && npm run build` (typecheck + Vite bundle)
+- `cd web && npm test -- --run`
+- `cd web && npm audit --audit-level=moderate` must report 0
+  vulnerabilities.
+- `scripts/fixtures/*` must be byte-identical afterwards.
+- `git diff requirements.txt pyproject.toml` must be empty.
+- A secret scan over the changed source and docs (excluding
+  `web/node_modules`, `web/dist`, `web/package-lock.json`) must be
+  clean.
+
+## Artifact layout
+
+A completed job may contain any subset of:
+
+- `original.ext`, `metadata.json`, `job.json`
+- `analysis.mp4`, `audio.wav`
+- `transcript.json`, `transcript.srt`
+- `scenes.json`, `candidate_frames/`
+- `frame_scores.json`, `frame_windows.json`,
+  `frame_similarities.json`, `frame_ranks.json`,
+  `frame_shortlist.json`
+- `chapter_candidates.json`, `selected_frames.json`
+- `speaker_names.json` (overlay; mutates only via
+  `POST /api/jobs/<id>/speaker-names` or a future editor)
+- `insights.json` (opt-in)
+- `report.md`, `report.html`, `report.docx`
+
+Each file's writer lives in `recap/stages/<stage>.py` or `recap/ui.py`.
+Readers must validate shape before use.
+
+## Stop conditions
+
+Stop and ask before continuing when:
+
+- A request would change `job.STAGES` or `cmd_run` composition.
+- A request would add a new Python runtime dependency
+  (`requirements.txt` / `pyproject.toml` change).
+- A request would delete a legacy HTML route while the React migration
+  is still in progress.
+- A request would touch `scripts/fixtures/*` or any real job under
+  `jobs/*`.
+- A request would bypass the verifier suite or weaken a contract check.
+
+## Anti-patterns
 
 - Do not capture screenshots at fixed time intervals.
 - Do not feed entire raw videos to a VLM.
-- Do not build a vision-only system that ignores transcript context.
-- Do not build a transcript-only system that ignores later visual stages in the design.
-- Do not smuggle Phase 2 work into Phase 1 under names like "foundation," "prep," or "future-proofing."
-- Do not add export formats beyond the active phase.
-- Do not create abstractions for OCR, CLIP, scene detection, or VLMs before those phases are active.
-- Do not replace explicit artifacts with in-memory-only processing.
-- Do not skip writing intermediate outputs because "they can be recomputed."
+- Do not build a vision-only system that ignores transcript context,
+  or a transcript-only system that ignores the visual stages.
+- Do not add a new LLM provider without a matching `mock` provider
+  that works offline.
+- Do not introduce speculative abstractions for future slices. Land
+  one slice, then refactor if the next slice demands it.
+- Do not swallow errors silently. Opt-in stages fail cleanly with a
+  short one-line message and leave no `.tmp` files behind.
 
-## Good Task Example
+## Enforcement summary
 
-Good implementation task:
-
-"Implement Phase 1 Stage 2 normalization: read `original.ext`, run `ffprobe`, write `metadata.json`, transcode to `analysis.mp4`, extract `audio.wav` as 16kHz mono, update `job.json`, and validate the produced media artifacts."
-
-Why this is good:
-
-- It targets one allowed phase
-- It maps directly to required artifacts
-- It has a clear completion condition
-- It does not pull in later-stage systems
-
-## Bad Task Example
-
-Bad over-scoped task:
-
-"Build the end-to-end pipeline framework, including chapter detection interfaces, screenshot scoring hooks, optional CLIP and VLM providers, and a report exporter that can later support DOCX and Notion."
-
-Why this is bad:
-
-- It mixes multiple future phases
-- It introduces premature abstraction
-- It creates systems not needed for Phase 1
-- It increases complexity without producing the required minimal artifacts
-
-## Enforcement Summary
-
-If you are implementing Recap:
-
-- Build only Phase 1 first
-- Produce artifacts after each stage
-- Validate each step before moving on
-- Keep the code direct and minimal
-- Stop when Phase 1 is done
-
-No overbuilding. No skipping ahead. No silent expansion of scope.
+Treat `MASTER_BRIEF.md` as the pipeline philosophy, `docs/
+product_roadmap.md` as the live roadmap, and
+`docs/ux_inspiration.md` as the UX map. Pick one roadmap slice, land
+it with artifacts + validators + docs updates, and stop.
