@@ -1,58 +1,37 @@
-"""Local web dashboard for Recap jobs.
+"""Local web dashboard, JSON API, and SPA host for Recap jobs.
 
 Served via `recap ui --host 127.0.0.1 --port 8765 --jobs-root jobs
-[--sources-root sample_videos]`. Local-first and stdlib-based:
-`http.server.ThreadingHTTPServer` plus a custom
-`BaseHTTPRequestHandler`, no new runtime dependencies, no external
-CSS/JS, no network calls.
+[--sources-root sample_videos]`. The Python server remains local-first
+and stdlib-based: `http.server.ThreadingHTTPServer` plus a custom
+`BaseHTTPRequestHandler`. Existing server-rendered pages stay live,
+while `/api/*` exposes JSON for the new React app served from
+`web/dist` under `/app/*`.
 
-GET routes are strictly read-only. They render the jobs index and
-per-job detail pages, serve whitelisted artifacts (report.md /
-report.html / report.docx, job.json, transcript.*, the
-selected/chapter JSONs, and `candidate_frames/*.{jpg,jpeg,png}`)
-directly from disk, render a "start new job" page at `/new`, and
-render last-run result pages at `/job/<id>/run/<stage>/last` for
-stages in `_LAST_RESULT_STAGES`. Non-whitelisted filenames and any
-URL containing a `..` segment or resolving outside the jobs root
-return 404.
+GET routes render the legacy jobs index/detail/transcript pages, serve
+whitelisted artifacts from disk, expose the JSON API
+(`/api/csrf`, `/api/jobs/<id>`, `/api/jobs/<id>/transcript`,
+`/api/jobs/<id>/speaker-names`), and serve the React SPA from `/app/*`
+with client-side routing fallback. Non-whitelisted job artifacts and
+any URL containing a `..` segment or resolving outside the expected
+root return 404.
 
-Two narrow POST surfaces exist, both CSRF-protected and
-Host-pinned:
+POST surfaces are CSRF-protected and Host-pinned. Existing form POSTs
+cover exporter reruns, browser-started `recap run`, and the rich-report
+chain. The JSON API adds `POST /api/jobs/<id>/speaker-names`, which
+validates an `X-Recap-Token` header and writes a small
+`speaker_names.json` overlay atomically. The overlay never mutates
+`transcript.json`.
 
-1. `POST /job/<id>/run/<stage>` re-runs exactly one of three
-   exporters — `assemble`, `export-html`, `export-docx` — via
-   `subprocess.run([sys.executable, "-m", "recap", stage, "--job",
-   <dir>, "--force"], ...)`. Per-job `threading.Lock`, 60 s
-   subprocess timeout, 8 KiB UTF-8 stdout/stderr truncation.
-
-2. `POST /run` starts a new `recap run` from a video path under the
-   configured `sources_root`. The handler synchronously invokes
-   `python -m recap ingest` (120 s timeout), parses the new job
-   directory from its stdout, then spawns a daemon thread that
-   runs `python -m recap run --job <dir>` via `subprocess.Popen`
-   under a 1-hour `communicate(timeout=3600)` cap. A global
-   `threading.Semaphore(1)` caps concurrent runs at one across the
-   whole server. Results are cached in memory at
-   `_last_run[(job_id, "run")]`. On success the handler 303
-   redirects to the new job's detail page.
-
-Every POST is validated in this order: Host header matches one of
-the server's `allowed_hosts` via `secrets.compare_digest` (the
-bound `host:port` plus its loopback aliases — `127.0.0.1`,
-`localhost`, `[::1]` — when the server is bound to a loopback
-address; arbitrary `Host` headers are rejected), Content-Length
-required and ≤ 4096 bytes, CSRF token matched with
-`secrets.compare_digest`, then path- and semantic-specific
-validation. Rejected POSTs log one short reason to the server's
-log stream; the form body, CSRF token, env vars, and captured
-subprocess output are never logged.
+Every POST checks the `Host` header against the server's
+`allowed_hosts` via `secrets.compare_digest` (the bound `host:port`
+plus loopback aliases when applicable), enforces a body-size cap,
+validates CSRF, then performs path- and semantic-specific validation.
+Rejected POSTs log one short reason; request bodies, CSRF tokens, env
+vars, and captured subprocess output are never logged.
 
 `recap run` composition and `job.STAGES` are unchanged. This module
-imports no stage `run()` function — the module-under-test boundary
-stays at the CLI. `run` appears in `_LAST_RESULT_STAGES` for the
-read-only results route but is NOT in `_RUNNABLE_STAGES`, so there
-is no per-job POST surface for `recap run` beyond the single
-`POST /run` entry.
+imports no stage `run()` function; subprocess boundaries stay at
+`python -m recap ...`.
 """
 
 from __future__ import annotations
@@ -60,6 +39,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -71,6 +51,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import IO
 
+from .job import JobPaths
 from .stages.report_helpers import (
     collapse_whitespace,
     format_ts,
@@ -472,6 +453,96 @@ def _background_rich_report(
         _run_slot.release()
 
 
+_WEB_DIST_DIR: Path = REPO_ROOT / "web" / "dist"
+
+_API_SPEAKER_KEY_RE = re.compile(r"^\d+$")
+_API_SPEAKER_NAME_MAX_LEN = 80
+_API_POST_BODY_MAX = 8192
+
+
+def _speaker_name_contains_control(value: str) -> bool:
+    """Reject ASCII/Unicode control chars except plain tab."""
+    for ch in value:
+        if ch == "\t":
+            continue
+        if ord(ch) < 0x20 or ord(ch) == 0x7F:
+            return True
+    return False
+
+
+def _load_speaker_names(
+    paths: JobPaths, logger_stream: IO | None = None,
+) -> dict:
+    """Read the speaker_names.json overlay, or return the empty default.
+
+    Malformed files are logged once and reported as the empty default
+    so the transcript page never breaks.
+    """
+    default = {"version": 1, "updated_at": None, "speakers": {}}
+    path = paths.speaker_names_json
+    if not path.is_file():
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as e:
+        if logger_stream is not None:
+            logger_stream.write(
+                f"[recap-ui] speaker-names skipped: {e}\n"
+            )
+            logger_stream.flush()
+        return default
+    if not isinstance(data, dict):
+        if logger_stream is not None:
+            logger_stream.write(
+                "[recap-ui] speaker-names skipped: top-level not an object\n"
+            )
+            logger_stream.flush()
+        return default
+    speakers_raw = data.get("speakers") or {}
+    if not isinstance(speakers_raw, dict):
+        if logger_stream is not None:
+            logger_stream.write(
+                "[recap-ui] speaker-names skipped: 'speakers' not an object\n"
+            )
+            logger_stream.flush()
+        return default
+    # Keep only sane string:string entries.
+    clean: dict[str, str] = {}
+    for k, v in speakers_raw.items():
+        if not isinstance(k, str):
+            continue
+        if not isinstance(v, str):
+            continue
+        label = v.strip()
+        if not label:
+            continue
+        if len(label) > _API_SPEAKER_NAME_MAX_LEN:
+            continue
+        if _speaker_name_contains_control(label):
+            continue
+        clean[k] = label
+    updated_at = data.get("updated_at")
+    if not isinstance(updated_at, (str, type(None))):
+        updated_at = None
+    return {"version": 1, "updated_at": updated_at, "speakers": clean}
+
+
+def _write_speaker_names(paths: JobPaths, speakers: dict[str, str]) -> dict:
+    """Atomic write of speaker_names.json and return the stored doc."""
+    doc = {
+        "version": 1,
+        "updated_at": _now_iso(),
+        "speakers": dict(speakers),
+    }
+    tmp = paths.speaker_names_json.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(doc, f, indent=2, sort_keys=True)
+        f.write("\n")
+    tmp.replace(paths.speaker_names_json)
+    return doc
+
+
 def _any_stage_running(job_data: dict) -> bool:
     if (job_data.get("status") or "") == "running":
         return True
@@ -548,6 +619,7 @@ _JOB_ROOT_FILES: frozenset[str] = frozenset({
     "frame_scores.json",
     "scenes.json",
     "analysis.mp4",
+    "speaker_names.json",
 })
 
 _CANDIDATE_FRAME_EXTS: frozenset[str] = frozenset({".jpg", ".jpeg", ".png"})
@@ -560,6 +632,14 @@ _CONTENT_TYPES: dict[str, str] = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".png": "image/png",
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".ico": "image/x-icon",
+    ".txt": "text/plain; charset=utf-8",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
     ".docx": (
         "application/vnd.openxmlformats-officedocument"
         ".wordprocessingml.document"
@@ -603,6 +683,7 @@ _ARTIFACT_LABELS: dict[str, str] = {
     "frame_windows.json": "Frame windows",
     "frame_scores.json": "Frame scores",
     "scenes.json": "Scene boundaries",
+    "speaker_names.json": "Speaker names",
 }
 
 
@@ -1913,11 +1994,265 @@ def _make_handler(jobs_root: Path, sources_root: Path):
         def _not_found(self) -> None:
             self._send_html(HTTPStatus.NOT_FOUND, render_404(self.path))
 
+        # ---- JSON API helpers --------------------------------------
+
+        def _send_json(
+            self,
+            status: HTTPStatus,
+            payload: dict,
+            *,
+            extra_headers: dict[str, str] | None = None,
+        ) -> None:
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(status.value)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            for k, v in (extra_headers or {}).items():
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _reject_api(
+            self,
+            status: HTTPStatus,
+            reason: str,
+            message: str,
+            *,
+            extra_headers: dict[str, str] | None = None,
+        ) -> None:
+            self._send_json(
+                status,
+                {"error": message, "reason": reason},
+                extra_headers=extra_headers,
+            )
+            try:
+                self.server.logger_stream.write(
+                    f"[recap-ui] rejected API "
+                    f"from={self.address_string()} reason={reason}\n"
+                )
+                self.server.logger_stream.flush()
+            except Exception:
+                pass
+
+        def _api_job_summary(self, job_id: str, job_dir: Path) -> dict:
+            data = _read_job_json(job_dir) or {}
+            artifacts = {
+                "transcript_json": (job_dir / "transcript.json").is_file(),
+                "analysis_mp4": (job_dir / "analysis.mp4").is_file(),
+                "report_md": (job_dir / "report.md").is_file(),
+                "report_html": (job_dir / "report.html").is_file(),
+                "report_docx": (job_dir / "report.docx").is_file(),
+                "selected_frames_json": (
+                    job_dir / "selected_frames.json"
+                ).is_file(),
+                "chapter_candidates_json": (
+                    job_dir / "chapter_candidates.json"
+                ).is_file(),
+                "speaker_names_json": (
+                    job_dir / "speaker_names.json"
+                ).is_file(),
+            }
+            urls = {
+                "analysis_mp4": f"/job/{job_id}/analysis.mp4",
+                "transcript_json": f"/api/jobs/{job_id}/transcript",
+                "transcript": f"/api/jobs/{job_id}/transcript",
+                "speaker_names": f"/api/jobs/{job_id}/speaker-names",
+            }
+            return {
+                "job_id": data.get("job_id") or job_id,
+                "original_filename": data.get("original_filename"),
+                "source_path": data.get("source_path"),
+                "created_at": data.get("created_at"),
+                "updated_at": data.get("updated_at"),
+                "status": data.get("status"),
+                "error": data.get("error"),
+                "stages": data.get("stages") or {},
+                "artifacts": artifacts,
+                "urls": urls,
+            }
+
+        def _api_get(self, segments: list[str]) -> None:
+            # GET /api/csrf
+            if segments == ["api", "csrf"]:
+                token = getattr(self.server, "csrf_token", "") or ""
+                self._send_json(HTTPStatus.OK, {"token": token})
+                return
+
+            # GET /api/jobs/<id>
+            if (
+                len(segments) == 3
+                and segments[0] == "api"
+                and segments[1] == "jobs"
+            ):
+                job_id = segments[2]
+                job_dir = _safe_job_dir(root_resolved, job_id)
+                if job_dir is None:
+                    self._send_json(
+                        HTTPStatus.NOT_FOUND,
+                        {"error": "job not found", "reason": "no-such-job"},
+                    )
+                    return
+                self._send_json(
+                    HTTPStatus.OK, self._api_job_summary(job_id, job_dir),
+                )
+                return
+
+            # GET /api/jobs/<id>/transcript
+            if (
+                len(segments) == 4
+                and segments[0] == "api"
+                and segments[1] == "jobs"
+                and segments[3] == "transcript"
+            ):
+                job_id = segments[2]
+                job_dir = _safe_job_dir(root_resolved, job_id)
+                if job_dir is None:
+                    self._send_json(
+                        HTTPStatus.NOT_FOUND,
+                        {"error": "job not found", "reason": "no-such-job"},
+                    )
+                    return
+                t_path = job_dir / "transcript.json"
+                if not t_path.is_file():
+                    self._send_json(
+                        HTTPStatus.NOT_FOUND,
+                        {
+                            "error": "transcript.json missing",
+                            "reason": "no-transcript",
+                        },
+                    )
+                    return
+                try:
+                    with open(t_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                except (OSError, ValueError) as e:
+                    self._send_json(
+                        HTTPStatus.INTERNAL_SERVER_ERROR,
+                        {
+                            "error": f"transcript unreadable: {e}",
+                            "reason": "transcript-unreadable",
+                        },
+                    )
+                    return
+                self._send_json(HTTPStatus.OK, data)
+                return
+
+            # GET /api/jobs/<id>/speaker-names
+            if (
+                len(segments) == 4
+                and segments[0] == "api"
+                and segments[1] == "jobs"
+                and segments[3] == "speaker-names"
+            ):
+                job_id = segments[2]
+                job_dir = _safe_job_dir(root_resolved, job_id)
+                if job_dir is None:
+                    self._send_json(
+                        HTTPStatus.NOT_FOUND,
+                        {"error": "job not found", "reason": "no-such-job"},
+                    )
+                    return
+                paths = JobPaths(root=job_dir)
+                doc = _load_speaker_names(
+                    paths,
+                    logger_stream=getattr(
+                        self.server, "logger_stream", None,
+                    ),
+                )
+                self._send_json(HTTPStatus.OK, doc)
+                return
+
+            self._send_json(
+                HTTPStatus.NOT_FOUND,
+                {"error": "not found", "reason": "no-route"},
+            )
+
+        # ---- SPA serving -------------------------------------------
+
+        def _serve_spa(self, rel_parts: list[str]) -> None:
+            """Serve web/dist/<rel> or fall back to index.html.
+
+            Used by GET /app/* routes. Never writes HTML 404 for a
+            missing `index.html` — returns a helpful JSON-like text
+            error instead so `npm run build` is the obvious fix.
+            """
+            dist = _WEB_DIST_DIR
+            index_html = dist / "index.html"
+
+            if not index_html.is_file():
+                msg = (
+                    "<!doctype html><meta charset=utf-8>"
+                    "<title>Recap · /app</title>"
+                    "<h1>Recap · /app</h1>"
+                    "<p>The React frontend has not been built yet.</p>"
+                    "<p>Run <code>cd web &amp;&amp; npm install &amp;&amp; "
+                    "npm run build</code>, then reload this page.</p>"
+                    "<p>The legacy dashboard is live at "
+                    '<a href="/">/</a>.</p>'
+                )
+                body = msg.encode("utf-8")
+                self.send_response(HTTPStatus.NOT_FOUND.value)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
+            # If the requested sub-path is a real file under web/dist,
+            # serve it with its content type. Otherwise, serve
+            # index.html so React Router can handle the client-side
+            # route.
+            if rel_parts:
+                for seg in rel_parts:
+                    if seg == ".." or "\\" in seg or "/" in seg:
+                        # Shouldn't happen because `_split_path`
+                        # already rejected raw '..' but keep belt-
+                        # and-suspenders.
+                        self._serve_spa_index(index_html)
+                        return
+                target = (dist / Path(*rel_parts)).resolve()
+                try:
+                    target.relative_to(dist.resolve())
+                except ValueError:
+                    self._serve_spa_index(index_html)
+                    return
+                if target.is_file():
+                    ct = _content_type_for(target)
+                    self._send_bytes(target, ct)
+                    return
+
+            self._serve_spa_index(index_html)
+
+        def _serve_spa_index(self, index_path: Path) -> None:
+            try:
+                body = index_path.read_bytes()
+            except OSError:
+                self._not_found()
+                return
+            self.send_response(HTTPStatus.OK.value)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_GET(self) -> None:  # noqa: N802 - stdlib signature
             try:
                 segments = _split_path(self.path)
             except ValueError:
                 self._not_found()
+                return
+
+            # JSON API routes (handled first for a clean dispatch shape).
+            if segments and segments[0] == "api":
+                self._api_get(segments)
+                return
+
+            # SPA static assets + client-side routing fallback under /app/*.
+            if segments and segments[0] == "app":
+                self._serve_spa(segments[1:])
                 return
 
             if not segments:
@@ -2340,7 +2675,195 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                             pass
                     _run_slot.release()
 
+        def _handle_api_speaker_names_post(self, job_id: str) -> None:
+            """POST /api/jobs/<id>/speaker-names — JSON body."""
+            # 1. Host pinning (shared primitive).
+            allowed_hosts = getattr(self.server, "allowed_hosts", frozenset())
+            got_host = self.headers.get("Host") or ""
+            if not allowed_hosts or not any(
+                secrets.compare_digest(got_host, allowed)
+                for allowed in allowed_hosts
+            ):
+                self._reject_api(
+                    HTTPStatus.FORBIDDEN, "host",
+                    "Host header mismatch.",
+                )
+                return
+
+            # 2. Content-Type.
+            ct = (self.headers.get("Content-Type") or "").split(";")[0].strip()
+            if ct.lower() != "application/json":
+                self._reject_api(
+                    HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "content-type",
+                    "Content-Type must be application/json.",
+                )
+                return
+
+            # 3. Content-Length cap (API is stricter: 8192 bytes).
+            raw_len = self.headers.get("Content-Length")
+            try:
+                content_length = int(raw_len) if raw_len is not None else -1
+            except ValueError:
+                content_length = -1
+            if content_length < 0:
+                self._reject_api(
+                    HTTPStatus.LENGTH_REQUIRED, "content-length-missing",
+                    "Content-Length is required.",
+                )
+                return
+            if content_length > _API_POST_BODY_MAX:
+                self._reject_api(
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "body-too-large",
+                    f"Request body exceeds {_API_POST_BODY_MAX} bytes.",
+                )
+                return
+
+            # 4. CSRF via X-Recap-Token header.
+            expected_token = getattr(self.server, "csrf_token", "") or ""
+            got_token = self.headers.get("X-Recap-Token") or ""
+            if not expected_token or not secrets.compare_digest(
+                got_token, expected_token,
+            ):
+                self._reject_api(
+                    HTTPStatus.FORBIDDEN, "csrf",
+                    "CSRF token missing or invalid.",
+                )
+                return
+
+            # 5. Resolve job.
+            job_dir = _safe_job_dir(root_resolved, job_id)
+            if job_dir is None:
+                self._reject_api(
+                    HTTPStatus.NOT_FOUND, "no-such-job",
+                    "Job not found.",
+                )
+                return
+
+            # 6. Parse JSON body.
+            raw = (
+                self.rfile.read(content_length) if content_length > 0
+                else b""
+            )
+            try:
+                parsed = json.loads(raw.decode("utf-8", "replace"))
+            except ValueError:
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "bad-json",
+                    "Body is not valid JSON.",
+                )
+                return
+            if not isinstance(parsed, dict):
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "bad-json",
+                    "Top-level JSON must be an object.",
+                )
+                return
+            speakers_in = parsed.get("speakers")
+            if not isinstance(speakers_in, dict):
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "bad-schema",
+                    "Body must contain a 'speakers' object.",
+                )
+                return
+
+            # 7. Validate each key/value.
+            sanitized: dict[str, str] = {}
+            for k, v in speakers_in.items():
+                if not isinstance(k, str) or not _API_SPEAKER_KEY_RE.match(k):
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "bad-key-shape",
+                        "Speaker keys must be non-negative integer strings.",
+                    )
+                    return
+                if not isinstance(v, str):
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "bad-value",
+                        "Speaker values must be strings.",
+                    )
+                    return
+                name = v.strip()
+                if not name:
+                    # Empty means "delete this mapping" — just skip it.
+                    continue
+                if len(name) > _API_SPEAKER_NAME_MAX_LEN:
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "too-long",
+                        f"Speaker name exceeds "
+                        f"{_API_SPEAKER_NAME_MAX_LEN} characters.",
+                    )
+                    return
+                if _speaker_name_contains_control(name):
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "bad-value",
+                        "Speaker names must not contain control characters.",
+                    )
+                    return
+                sanitized[k] = name
+
+            # 8. Per-job lock, then atomic write.
+            lock = _get_job_lock(job_id)
+            if not lock.acquire(timeout=_LOCK_ACQUIRE_TIMEOUT):
+                self._reject_api(
+                    HTTPStatus.TOO_MANY_REQUESTS, "lock",
+                    "Another action is in progress for this job. "
+                    "Try again shortly.",
+                    extra_headers={"Retry-After": "2"},
+                )
+                return
+
+            try:
+                paths = JobPaths(root=job_dir)
+                try:
+                    doc = _write_speaker_names(paths, sanitized)
+                except OSError as e:
+                    self._reject_api(
+                        HTTPStatus.INTERNAL_SERVER_ERROR, "write-failed",
+                        f"Failed to write speaker_names.json: "
+                        f"{type(e).__name__}",
+                    )
+                    return
+            finally:
+                try:
+                    lock.release()
+                except RuntimeError:
+                    pass
+
+            try:
+                self.server.logger_stream.write(
+                    f"[recap-ui] saved speaker-names job={job_id}\n"
+                )
+                self.server.logger_stream.flush()
+            except Exception:
+                pass
+            self._send_json(HTTPStatus.OK, doc)
+
         def do_POST(self) -> None:  # noqa: N802
+            # Early API POST dispatch: any /api/* path uses the JSON
+            # validation pipeline and JSON error shape. All other
+            # POSTs fall through to the existing form-based pipeline.
+            try:
+                early_segments = _split_path(self.path)
+            except ValueError:
+                self._not_found()
+                return
+
+            if (
+                len(early_segments) == 4
+                and early_segments[0] == "api"
+                and early_segments[1] == "jobs"
+                and early_segments[3] == "speaker-names"
+            ):
+                self._handle_api_speaker_names_post(early_segments[2])
+                return
+
+            if early_segments and early_segments[0] == "api":
+                # Any other /api/* POST route is 404 JSON.
+                self._send_json(
+                    HTTPStatus.NOT_FOUND,
+                    {"error": "not found", "reason": "no-route"},
+                )
+                return
+
             # 1. Host pinning.
             allowed_hosts = getattr(self.server, "allowed_hosts", frozenset())
             got_host = self.headers.get("Host") or ""

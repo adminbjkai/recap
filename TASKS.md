@@ -66,6 +66,19 @@
 - [ ] Auth / API key management surface
 - [ ] Remote access (non-localhost binding with TLS and auth)
 
+## Modern web app
+
+- [x] Add JSON API scaffold and Vite/React transcript workspace at `/app/job/<id>/transcript` (React 18 + Vite + TypeScript + Vitest; Python serves `web/dist` under `/app/*`; API endpoints cover CSRF, job summary, transcript JSON, and speaker-name overlays; speaker names persist in `speaker_names.json`; `transcript.json` and exporters unchanged; old HTML routes remain live)
+- [ ] React jobs index page (`/app/`) backed by `/api/jobs`
+- [ ] React job detail page and rich-report progress page backed by JSON APIs
+- [ ] React new-job page with engine selector and browser upload
+- [ ] Exporter integration: assemble / export-html / export-docx read `speaker_names.json`
+- [ ] Chapter-title overlays and editable chapter sidebar
+- [ ] Speaker filter chips and selected-speaker playback ranges
+- [ ] Transcript text editing / correction overlay
+- [ ] Playwright browser coverage for the React workspace
+- [ ] Linux deployment docs and systemd unit sample
+
 ## Reliability
 
 - [x] Mark `recap scenes` as `failed` (not `running`) when Ctrl-C interrupts PySceneDetect/cv2 frame processing; clean up partial `candidate_frames/` for the interrupted attempt; re-raise `KeyboardInterrupt` so the CLI still exits like an interrupted command

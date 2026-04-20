@@ -525,7 +525,7 @@ Notion exports remain deferred.
 ### Local dashboard
 
 `recap ui --host 127.0.0.1 --port 8765 --jobs-root jobs` starts a
-read-only local web dashboard for existing jobs. It is not invoked by
+local web dashboard for existing jobs. It is not invoked by
 `recap run`. Defaults are `127.0.0.1:8765` with the repo-relative
 `jobs/` directory as the jobs root.
 
@@ -552,16 +552,75 @@ The dashboard:
   `candidate_frames/<file>` image references resolve correctly against
   the same path prefix.
 
-The server is strictly read-only. There are no POST routes, no forms
-that mutate state, no subprocess calls, and no stage execution. Users
-still create jobs and generate artifacts with the CLI (`recap run`,
-`recap export-html`, `recap export-docx`, etc.) and refresh the page
-to see updates. The server binds to `127.0.0.1` by default. Only a
-fixed whitelist of filenames under `jobs/<id>/` is served (reports,
-job/metadata/transcript JSONs, and JPEG/PNG images under
-`candidate_frames/`), and any URL containing a `..` segment or
-resolving outside `jobs/<id>/` returns 404. No new dependencies are
-required.
+The legacy dashboard now includes several guarded POST surfaces:
+browser-started `recap run`, exporter reruns, the rich-report chain,
+and API-backed speaker-name overlays. They are all Host-pinned,
+CSRF-protected, body-size capped, and serialized with the existing
+per-job locks / global run semaphore where appropriate. The server
+binds to `127.0.0.1` by default. Only a fixed whitelist of filenames
+under `jobs/<id>/` is served (reports, job/metadata/transcript JSONs,
+`speaker_names.json`, and JPEG/PNG images under `candidate_frames/`),
+and any URL containing a `..` segment or resolving outside
+`jobs/<id>/` returns 404.
+
+### Modern web app
+
+The first React/Vite surface lives beside the legacy dashboard at:
+
+```text
+/app/job/<job_id>/transcript
+```
+
+It is a modern transcript workspace: native video playback, active-row
+sync, speaker-colored rows, a speaker legend, and inline speaker-name
+renaming. The rename feature writes a small per-job
+`speaker_names.json` overlay:
+
+```json
+{
+  "version": 1,
+  "updated_at": "2026-04-20T12:34:56Z",
+  "speakers": {
+    "0": "Host",
+    "1": "Guest"
+  }
+}
+```
+
+The overlay never mutates `transcript.json`. The React page and API use
+the custom labels immediately, while Markdown/HTML/DOCX exporters still
+render `Speaker N` until the separate exporter-integration slice lands.
+
+Development workflow:
+
+```bash
+# terminal 1
+.venv/bin/python -m recap ui --jobs-root jobs --sources-root sample_videos
+
+# terminal 2
+cd web
+npm install
+npm run dev
+```
+
+Open `http://127.0.0.1:5173/app/job/<job_id>/transcript`. Vite proxies
+`/api/*` and `/job/*` to the Python server on `127.0.0.1:8765`.
+
+Production/local-hosted workflow:
+
+```bash
+cd web
+npm install
+npm run build
+cd ..
+.venv/bin/python -m recap ui --jobs-root jobs --sources-root sample_videos
+```
+
+The Python server then serves `web/dist/` from `/app/*` with SPA
+fallback routing. This slice does not port `/`, `/new`, job detail, or
+rich-report progress to React yet; the old HTML routes stay live.
+No Tailwind, Zustand, Playwright, auth, remote binding, or exporter
+integration is included in this first React slice.
 
 ### Start a new job from the browser
 
@@ -808,7 +867,7 @@ Python dependencies to be installed (in particular `python-docx`).
 Runtime is about one second on a modern laptop. The committed
 fixture is never mutated; each case runs in a fresh temp copy.
 
-A second script smoke-validates the read-only dashboard:
+A second script smoke-validates the legacy dashboard:
 
 ```bash
 .venv/bin/python scripts/verify_ui.py
@@ -825,6 +884,33 @@ referenced candidate-frame JPEG all serve correctly. Stdlib only, no
 network, no model downloads; runtime is about half a second. The
 UI server is terminated in a `finally` block and the scratch
 directory is cleaned up.
+
+The JSON API has its own stdlib verifier:
+
+```bash
+.venv/bin/python scripts/verify_api.py
+```
+
+It starts `recap ui` against a scratch copy of the fixture and checks
+`/api/csrf`, `/api/jobs/<id>`, `/api/jobs/<id>/transcript`, and
+`/api/jobs/<id>/speaker-names`, including CSRF rejection, forged-host
+rejection, malformed overlay fallback, key-shape validation, length
+validation, successful atomic writes, and clearing a speaker-name
+mapping. It does not mutate `scripts/fixtures/*`.
+
+The React workspace is validated with:
+
+```bash
+cd web
+npm install
+npm run build
+npm test -- --run
+```
+
+`npm run build` type-checks the TypeScript app and emits `web/dist/`
+for Python to serve under `/app/*`. The Vitest suite currently covers
+the speaker rename form. `npm audit --audit-level=moderate` should
+remain clean; runtime dependencies are intentionally small.
 
 ### Cloud transcription (Deepgram)
 

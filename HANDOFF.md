@@ -778,13 +778,15 @@ This slice is opt-in. `recap run` continues to compose only
 export, topic-shift chaptering, chapter titling, WhisperX,
 pyannote, Groq, and UI all remain deferred.
 
-## UI: read-only local web dashboard
+## UI: local dashboard, JSON API, and React transcript workspace
 
 `recap ui --host 127.0.0.1 --port 8765 --jobs-root jobs` starts a
 stdlib `http.server.ThreadingHTTPServer` bound to `127.0.0.1` by
-default and serves a small read-only dashboard for existing jobs.
-The module lives at `recap/ui.py` and adds no new runtime
-dependency. It exposes only `GET` routes:
+default and serves the legacy HTML dashboard, a small JSON API, and
+the built React app under `/app/*`. The Python module lives at
+`recap/ui.py`; the React source lives under `web/` and is built with
+Vite into `web/dist/`. Existing server-rendered routes remain live.
+Primary `GET` routes:
 
 - `GET /` — jobs index. Scans direct subdirectories of the
   configured jobs root, reads each `job.json`, sorts by
@@ -805,11 +807,25 @@ dependency. It exposes only `GET` routes:
   `transcript.srt`, `job.json`, `selected_frames.json`,
   `chapter_candidates.json`, `frame_shortlist.json`,
   `frame_ranks.json`, `frame_similarities.json`,
-  `frame_windows.json`, `frame_scores.json`, `scenes.json`.
+  `frame_windows.json`, `frame_scores.json`, `scenes.json`,
+  `speaker_names.json`.
 - `GET /job/<job_id>/candidate_frames/<filename>` — serves a
   single image under `candidate_frames/` with extension `.jpg`,
   `.jpeg`, or `.png`. Any other extension or any traversal
   attempt returns 404.
+- `GET /api/csrf` — returns the server CSRF token as JSON for the
+  React app.
+- `GET /api/jobs/<job_id>` — returns a job summary, artifact flags,
+  and canonical URLs for `analysis.mp4`, transcript JSON, and
+  speaker names.
+- `GET /api/jobs/<job_id>/transcript` — returns the raw
+  `transcript.json` payload as JSON.
+- `GET /api/jobs/<job_id>/speaker-names` — returns
+  `speaker_names.json` or the empty default document when absent or
+  malformed.
+- `GET /app/*` — serves `web/dist` assets when present, otherwise
+  falls back to `web/dist/index.html` so React Router owns
+  `/app/job/<id>/transcript`.
 - Anything else returns 404 with a tiny HTML error body.
 
 Path safety: the jobs root is resolved once at startup; URLs with
@@ -819,22 +835,40 @@ frame filenames must satisfy `Path(name).name == name` and carry
 a whitelisted image extension. No directory listing is ever
 emitted. Job IDs must map to a direct child of the jobs root.
 
-The dashboard is strictly read-only. There are **no** POST routes,
-**no** forms that mutate state, **no** subprocess calls, and **no**
-stage execution. It does not import any stage module, does not
-invoke any CLI subcommand, and does not add a new entry to
-`job.STAGES`. Users still run pipeline work via the CLI and
-refresh the page to see updates. Clicking `report.html` opens the
-rendered HTML in the same tab, and its relative
-`candidate_frames/<file>` image references resolve correctly
-against the same `/job/<id>/` path prefix.
+The dashboard is no longer read-only: guarded POST surfaces exist for
+exporter reruns, browser-started `recap run`, the rich-report chain,
+and `POST /api/jobs/<id>/speaker-names`. They all preserve the
+existing safety model: loopback Host pinning, CSRF, body-size caps,
+per-job locks where mutation occurs, and no request bodies / tokens /
+env vars in logs. The API speaker-name POST requires
+`Content-Type: application/json`, `X-Recap-Token`, body <= 8192
+bytes, top-level `{"speakers": {...}}`, numeric-string keys, string
+values trimmed to <= 80 chars, and no control chars except tab.
+It writes `speaker_names.json.tmp` and atomically replaces
+`speaker_names.json`. The overlay never mutates `transcript.json`;
+exporters still ignore it for now.
 
 Rendering uses direct string construction with stdlib
 `html.escape(..., quote=True)` on every content-bearing value, a
-small inline `<style>` block, and no external CSS/JS. Cache-Control
-is `no-store` on every response so reloads always reflect current
-disk state. `Ctrl-C` calls `server.server_close()` and exits 0
-cleanly.
+small inline `<style>` block for the legacy pages, and no external
+dependencies in the Python server. The React app is a separate
+`web/` package with React 18, Vite, TypeScript, and Vitest only:
+no Tailwind, Zustand, Playwright, auth, remote binding, or exporter
+integration in this slice. Cache-Control is `no-store` on dynamic
+responses so reloads always reflect current disk state. `Ctrl-C`
+calls `server.server_close()` and exits 0 cleanly.
+
+The first React page is `/app/job/<id>/transcript`. It fetches the
+job summary, transcript payload, and speaker-name overlay from
+`/api/*`; renders native video from `/job/<id>/analysis.mp4`; mirrors
+the legacy active-row sync in `useActiveRow`; renders speaker-colored
+rows and a legend; and lets the user rename speakers inline. The
+frontend fetch layer lazily calls `GET /api/csrf`, sends the token in
+`X-Recap-Token` on save, and refreshes once on a 403 before surfacing
+an error. The component test suite currently covers
+`SpeakerRenameForm`; `scripts/verify_api.py` covers the API contract
+against a scratch fixture and must remain green alongside
+`scripts/verify_ui.py`.
 
 The per-job detail page additionally renders two read-only sections
 introduced in a follow-up slice. **Errors**, hoisted to the top of
