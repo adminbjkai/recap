@@ -15,9 +15,14 @@ does and produces, read `HANDOFF.md`.
   dashboard. `recap/ui.py` exposes JSON endpoints `GET /api/csrf`,
   `GET /api/jobs`, `GET /api/jobs/<id>`,
   `GET /api/jobs/<id>/transcript`,
+  `GET /api/jobs/<id>/insights` (read-only; 404 when absent, 500 on
+  malformed),
   `GET /api/jobs/<id>/speaker-names`, and
   `POST /api/jobs/<id>/speaker-names`; it also serves the built React
-  app from `web/dist` under `/app/*` with SPA fallback routing.
+  app from `web/dist` under `/app/*` with SPA fallback routing. React
+  routes are now `/app/` (jobs index), `/app/job/<id>` (dashboard),
+  and `/app/job/<id>/transcript` (transcript workspace). The legacy
+  HTML pages at `/` and `/job/<id>/` remain live as a fallback.
   `GET /api/jobs` returns `{"jobs": [summary, ...]}` sorted by
   `created_at` descending; malformed `job.json` entries are dropped
   silently. Each summary's `urls` block includes `detail_html`,

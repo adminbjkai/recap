@@ -86,15 +86,42 @@ carry real, useful information, not just a transcript dump.
 
 ## 4. React job detail + rich-report progress
 
-Replace the HTML `/job/<id>/` detail page with a React surface that:
+**Status:** dashboard landing in this slice; rich-report / action
+streaming deferred to a follow-up slice (see "4b" below).
 
-- Shows stage-by-stage status, last error per stage, and artifact
-  presence at a glance.
-- Streams / polls progress while `recap run` or the rich-report chain
-  is executing.
-- Surfaces insights summary inline (overview + quick bullets) once
-  `insights.json` is present.
-- Keeps the legacy HTML detail page live as a fallback.
+Shipped in this slice:
+
+- `/app/job/:id` route backed by `GET /api/jobs/:id` plus a new
+  read-only `GET /api/jobs/:id/insights` endpoint.
+- Hero header with title, status badge, created/updated, engine and
+  segment-count chips, and primary/secondary CTAs (Open transcript,
+  Legacy detail, Open report in each format).
+- Stage timeline rendered from `job.json#stages` covering ingest,
+  normalize, transcribe, assemble, plus optional stages present in
+  the job record (scenes, insights, export_html, export_docx, etc.).
+  Failed stages surface their error text; completed / running /
+  pending stages carry explicit badges.
+- Artifact grid for transcript, analysis video, report.md/html/docx,
+  insights.json, chapter_candidates.json, selected_frames.json, and
+  speaker_names.json with open/download links when present and a
+  "not generated yet" affordance otherwise.
+- Insights preview: when `insights.json` exists it is fetched from
+  the API and rendered inline (overview title, short summary, quick
+  bullets, action items, chapter count). When absent, a strong empty
+  state explains the CLI commands to run. Malformed files surface a
+  clear error state.
+- Jobs index `JobCard` primary click now opens `/app/job/:id`, with
+  a secondary "Transcript" action routing to
+  `/app/job/:id/transcript`.
+- Legacy HTML detail page at `/job/:id/` remains live as a fallback.
+
+**4b. React rich-report progress + action endpoints (future):**
+
+- Streaming / polling progress while `recap run` or the rich-report
+  chain is executing.
+- React action endpoints for rich-report generation and
+  `recap insights` kick-offs. Until those land, users run the rich-
+  report action on the legacy HTML page or via CLI.
 
 ## 5. React `/app/new` upload and start flow
 

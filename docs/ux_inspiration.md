@@ -129,6 +129,48 @@ cache-aware reuse of expensive artifacts.
 - Chapter sidebar + editable chapter titles: **slice 8**.
 - Webhooks / streaming progress / SSE: **slice 11**.
 
+## Design-system references
+
+The surfaces below are *reference-only*. Recap's stack is intentionally
+small: stdlib Python HTTP server, React 18 / Vite / TypeScript, plain
+CSS with custom-property tokens in `web/src/index.css`. None of the
+libraries below are installed, imported, or vendored. We borrow
+patterns — spacing, hierarchy, badge/card shapes, form copy,
+information density — not code.
+
+- **[Tabler](https://tabler.io/)** — dashboard layouts, card stacks,
+  stat tiles, status badges, table density, toolbar patterns, form
+  field metadata. Use as visual inspiration for dashboard-style pages
+  like `/app/job/:id`. Do **not** install Tabler, Bootstrap, or any
+  Tabler-adjacent JS/CSS bundle.
+- **[ui-ux-pro-max](https://github.com/claude-skills/ui-ux-pro-max)** —
+  design-system / accessibility / anti-pattern checklist. Treat as a
+  prompting reference when a slice needs a hierarchy / spacing /
+  state-coverage pass. Do **not** vendor the skill; re-derive the
+  guidance into Recap's own CSS and copy.
+- **[Nord](https://www.nordtheme.com/)** — calm technical palette.
+  May inform a small accent-neutral choice but must not turn Recap
+  into a generic blue-gray clone. The primary palette stays warm
+  (ink / brand / accent tokens in `web/src/index.css`).
+- **[TW Elements](https://tw-elements.com/)** — deferred. Only
+  consider once Tailwind is formally adopted; right now Recap ships
+  plain CSS and TW Elements would be dead weight.
+- **[ClaudeSkills leaderboard](https://claude-skills.github.io/)** —
+  skill-discovery source for implementation agents (which skill to
+  reach for when). Not a product dependency and never embedded.
+
+Practical guardrails when pulling from any of the above:
+
+- Borrow shapes, not code. If a Tabler card has a clean header / body
+  / footer rhythm, re-implement it with Recap's tokens.
+- Keep accessibility real: visible focus ring, semantic buttons /
+  links, readable contrast, no color-only status communication, and
+  `prefers-reduced-motion` honored (we already ship the guard).
+- Responsive by default: every new dashboard page must work on
+  desktop and mobile without horizontal scroll.
+- No dark-mode-only design. A dark-mode slice, when it lands, ships
+  both themes.
+
 ## Rule of thumb
 
 When pulling a pattern from any of the above, write one sentence in the

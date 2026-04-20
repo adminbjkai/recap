@@ -95,9 +95,15 @@ export default function JobCard({ job }: Props) {
       <footer className="job-card-actions">
         <Link
           className="primary-button"
+          to={`/job/${encodeURIComponent(job.job_id)}`}
+        >
+          Open job dashboard
+        </Link>
+        <Link
+          className="ghost-button"
           to={`/job/${encodeURIComponent(job.job_id)}/transcript`}
         >
-          Open transcript workspace
+          Transcript
         </Link>
         <a className="ghost-button" href={detailHtml}>
           Legacy detail

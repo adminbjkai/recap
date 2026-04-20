@@ -587,6 +587,7 @@ routes:
 
 ```text
 /app/                            (jobs index)
+/app/job/<job_id>                (job dashboard)
 /app/job/<job_id>/transcript     (transcript workspace)
 ```
 
@@ -659,12 +660,13 @@ cd ..
 ```
 
 The Python server then serves `web/dist/` from `/app/*` with SPA
-fallback routing. The React slices so far port the jobs index (`/`)
-and the transcript workspace (`/job/<id>/transcript`), plus a visual
-polish + transcript-UX pass (search, speaker filter chips, sticky
-left rail, hero stats); job detail, `/new`, and rich-report progress
-still use the legacy HTML routes. No Tailwind, Zustand, Playwright,
-auth, remote binding, or exporter integration is included yet.
+fallback routing. The React slices so far port the jobs index (`/`),
+the transcript workspace (`/job/<id>/transcript`), and a dashboard
+job detail page (`/job/<id>`) that renders the hero, stage timeline,
+artifact grid, and an insights preview when `insights.json` is
+present. `/new` and rich-report progress still use the legacy HTML
+routes. No Tailwind, Zustand, Playwright, auth, remote binding, or
+exporter integration is included yet.
 
 The JSON API surface is:
 
@@ -673,6 +675,7 @@ GET  /api/csrf                       token for state-changing POSTs
 GET  /api/jobs                       jobs index listing
 GET  /api/jobs/<id>                  single-job summary
 GET  /api/jobs/<id>/transcript       raw transcript.json
+GET  /api/jobs/<id>/insights         parsed insights.json (404 if absent)
 GET  /api/jobs/<id>/speaker-names    current speaker-names overlay
 POST /api/jobs/<id>/speaker-names    update overlay (CSRF, Host-pinned)
 ```

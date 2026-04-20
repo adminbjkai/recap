@@ -49,8 +49,10 @@ describe("JobCard", () => {
     );
     expect(screen.getByText("meeting.mov")).toBeInTheDocument();
     expect(screen.getByText("completed")).toBeInTheDocument();
-    const link = screen.getByRole("link", { name: "Open transcript workspace" });
-    expect(link).toHaveAttribute("href", "/job/job_a/transcript");
+    const primary = screen.getByRole("link", { name: "Open job dashboard" });
+    expect(primary).toHaveAttribute("href", "/job/job_a");
+    const transcript = screen.getByRole("link", { name: "Transcript" });
+    expect(transcript).toHaveAttribute("href", "/job/job_a/transcript");
   });
 
   it("shows the error message when a job failed", () => {

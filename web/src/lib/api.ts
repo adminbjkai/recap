@@ -20,8 +20,50 @@ export type JobSummary = {
     analysis_mp4: string;
     transcript: string;
     speaker_names: string;
+    [key: string]: string | undefined;
   };
 };
+
+export type InsightsActionItem = {
+  text: string;
+  chapter_index?: number | null;
+  timestamp_seconds?: number | null;
+  owner?: string | null;
+  due?: string | null;
+};
+
+export type InsightsChapter = {
+  index: number;
+  start_seconds: number;
+  end_seconds: number;
+  title: string;
+  summary: string;
+  bullets: string[];
+  action_items: string[];
+  speaker_focus: string[];
+};
+
+export type InsightsDoc = {
+  version: number;
+  provider: string;
+  model: string;
+  generated_at: string;
+  sources: Record<string, string | null>;
+  overview: {
+    title: string;
+    short_summary: string;
+    detailed_summary: string;
+    quick_bullets: string[];
+  };
+  chapters: InsightsChapter[];
+  action_items: InsightsActionItem[];
+};
+
+export type InsightsLoadState =
+  | { status: "loading" }
+  | { status: "absent" }
+  | { status: "error"; message: string; reason?: string }
+  | { status: "loaded"; insights: InsightsDoc };
 
 export type TranscriptSegment = {
   id?: number;
@@ -105,6 +147,44 @@ export function getTranscript(id: string): Promise<TranscriptPayload> {
   return requestJson<TranscriptPayload>(
     `/api/jobs/${encodeURIComponent(id)}/transcript`,
   );
+}
+
+export type InsightsFetchResult =
+  | { kind: "loaded"; insights: InsightsDoc }
+  | { kind: "absent" }
+  | { kind: "error"; message: string; reason?: string };
+
+export async function getInsights(id: string): Promise<InsightsFetchResult> {
+  const response = await fetch(
+    `/api/jobs/${encodeURIComponent(id)}/insights`,
+    {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+    },
+  );
+  const body = await parseJson<InsightsDoc | ApiErrorBody>(response);
+  if (response.status === 404) {
+    const reason = (body as ApiErrorBody).reason;
+    if (reason === "no-insights") {
+      return { kind: "absent" };
+    }
+    return {
+      kind: "error",
+      message:
+        (body as ApiErrorBody).error ||
+        `${response.status} ${response.statusText}`,
+      reason,
+    };
+  }
+  if (!response.ok) {
+    const apiBody = body as ApiErrorBody;
+    return {
+      kind: "error",
+      message: apiBody.error || `${response.status} ${response.statusText}`,
+      reason: apiBody.reason,
+    };
+  }
+  return { kind: "loaded", insights: body as InsightsDoc };
 }
 
 export function getSpeakerNames(id: string): Promise<SpeakerNamesDoc> {

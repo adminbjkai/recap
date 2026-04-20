@@ -2062,12 +2062,15 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                 "transcript": f"/api/jobs/{job_id}/transcript",
                 "speaker_names": f"/api/jobs/{job_id}/speaker-names",
                 "detail_html": f"/job/{job_id}/",
+                "legacy_detail": f"/job/{job_id}/",
                 "legacy_transcript": f"/job/{job_id}/transcript",
+                "react_detail": f"/app/job/{job_id}",
                 "react_transcript": f"/app/job/{job_id}/transcript",
                 "report_md": f"/job/{job_id}/report.md",
                 "report_html": f"/job/{job_id}/report.html",
                 "report_docx": f"/job/{job_id}/report.docx",
                 "insights_json": f"/job/{job_id}/insights.json",
+                "insights": f"/api/jobs/{job_id}/insights",
             }
             return {
                 "job_id": data.get("job_id") or job_id,
@@ -2191,6 +2194,46 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                     ),
                 )
                 self._send_json(HTTPStatus.OK, doc)
+                return
+
+            # GET /api/jobs/<id>/insights — read-only. Never generates.
+            if (
+                len(segments) == 4
+                and segments[0] == "api"
+                and segments[1] == "jobs"
+                and segments[3] == "insights"
+            ):
+                job_id = segments[2]
+                job_dir = _safe_job_dir(root_resolved, job_id)
+                if job_dir is None:
+                    self._send_json(
+                        HTTPStatus.NOT_FOUND,
+                        {"error": "job not found", "reason": "no-such-job"},
+                    )
+                    return
+                i_path = job_dir / "insights.json"
+                if not i_path.is_file():
+                    self._send_json(
+                        HTTPStatus.NOT_FOUND,
+                        {
+                            "error": "insights.json missing",
+                            "reason": "no-insights",
+                        },
+                    )
+                    return
+                try:
+                    with open(i_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                except (OSError, ValueError) as e:
+                    self._send_json(
+                        HTTPStatus.INTERNAL_SERVER_ERROR,
+                        {
+                            "error": f"insights unreadable: {e}",
+                            "reason": "insights-unreadable",
+                        },
+                    )
+                    return
+                self._send_json(HTTPStatus.OK, data)
                 return
 
             self._send_json(

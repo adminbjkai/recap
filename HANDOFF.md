@@ -832,6 +832,13 @@ Primary `GET` routes:
   section and enrich the existing `## Chapters` rendering with titles,
   summaries, bullets, action items, and speaker focus. When absent,
   exports stay byte-compatible with prior behavior.
+- The React surface now has three pages: `/app/` (jobs index),
+  `/app/job/<id>` (job dashboard — hero, stage timeline, artifact
+  grid, insights preview), and `/app/job/<id>/transcript` (transcript
+  workspace). The legacy HTML detail page at `/job/<id>/` remains
+  live as a fallback. Jobs-index `JobCard` primary click now opens
+  the React dashboard; the secondary "Transcript" action still
+  routes to the transcript workspace.
 - `GET /api/csrf` — returns the server CSRF token as JSON for the
   React app.
 - `GET /api/jobs` — returns the jobs index listing as
@@ -840,16 +847,24 @@ Primary `GET` routes:
   always receives parseable summaries.
 - `GET /api/jobs/<job_id>` — returns a single job summary. Summaries
   include artifact flags and canonical URLs for `analysis.mp4`,
-  transcript JSON, speaker names, the legacy detail/transcript pages,
-  the React transcript workspace, and the three report formats.
+  transcript JSON, speaker names, the legacy detail/transcript pages
+  (`detail_html` / `legacy_detail` / `legacy_transcript`), the React
+  dashboard + transcript workspace (`react_detail` / `react_transcript`),
+  the three report formats, and the insights artifact + API endpoint
+  (`insights_json` / `insights`).
 - `GET /api/jobs/<job_id>/transcript` — returns the raw
   `transcript.json` payload as JSON.
+- `GET /api/jobs/<job_id>/insights` — returns parsed
+  `insights.json` (read-only). 404 with reason `no-insights` when
+  absent; 500 with reason `insights-unreadable` when malformed.
+  Never generates insights.
 - `GET /api/jobs/<job_id>/speaker-names` — returns
   `speaker_names.json` or the empty default document when absent or
   malformed.
 - `GET /app/*` — serves `web/dist` assets when present, otherwise
   falls back to `web/dist/index.html` so React Router owns `/` (jobs
-  index) and `/job/<id>/transcript` (transcript workspace).
+  index), `/job/<id>` (dashboard), and `/job/<id>/transcript`
+  (transcript workspace).
 - Anything else returns 404 with a tiny HTML error body.
 
 Path safety: the jobs root is resolved once at startup; URLs with

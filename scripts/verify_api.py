@@ -206,17 +206,24 @@ def main() -> int:
         urls = entry.get("urls", {})
         for url_key in (
             "detail_html",
+            "legacy_detail",
             "legacy_transcript",
+            "react_detail",
             "react_transcript",
             "report_md",
             "report_html",
             "report_docx",
             "insights_json",
+            "insights",
         ):
             if url_key not in urls:
                 fail(case, f"urls missing {url_key!r}: {urls!r}")
         if urls["react_transcript"] != "/app/job/minimal_job/transcript":
             fail(case, f"react_transcript url wrong: {urls!r}")
+        if urls["react_detail"] != "/app/job/minimal_job":
+            fail(case, f"react_detail url wrong: {urls!r}")
+        if urls["insights"] != "/api/jobs/minimal_job/insights":
+            fail(case, f"insights url wrong: {urls!r}")
         artifacts = entry.get("artifacts", {})
         if "insights_json" not in artifacts:
             fail(case, f"artifacts missing insights_json: {artifacts!r}")
@@ -374,6 +381,16 @@ def main() -> int:
             fail(case, f"empty value did not clear mapping: {got!r}")
         passed()
 
+        case = "api-insights-endpoint-404-when-absent"
+        i_path = job_dir / "insights.json"
+        if i_path.exists():
+            i_path.unlink()
+        got = get_json(
+            case, port, "/api/jobs/minimal_job/insights", want=404,
+        )
+        expect_reason(case, got, "no-insights")
+        passed()
+
         case = "api-insights-artifact-flag-and-raw-file"
         insights_doc = {
             "version": 1,
@@ -419,6 +436,25 @@ def main() -> int:
         parsed = json.loads(body.decode("utf-8"))
         if parsed.get("overview", {}).get("title") != "Check":
             fail(case, f"raw insights.json content mismatch: {parsed!r}")
+        passed()
+
+        case = "api-insights-endpoint-returns-doc"
+        payload = get_json(case, port, "/api/jobs/minimal_job/insights")
+        if payload.get("overview", {}).get("title") != "Check":
+            fail(case, f"insights endpoint content mismatch: {payload!r}")
+        if payload.get("provider") != "mock":
+            fail(case, f"insights provider wrong: {payload!r}")
+        passed()
+
+        case = "api-insights-endpoint-malformed-gives-clean-error"
+        (job_dir / "insights.json").write_text(
+            "{not json", encoding="utf-8",
+        )
+        got = get_json(
+            case, port, "/api/jobs/minimal_job/insights", want=500,
+        )
+        expect_reason(case, got, "insights-unreadable")
+        (job_dir / "insights.json").unlink()
         passed()
 
         print(f"OK: {CHECKS_PASSED} API checks passed")
