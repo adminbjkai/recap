@@ -286,16 +286,36 @@ is kept separate to avoid report byte-compat regressions.
 **Deferred to slice 9:** exporters honoring `frame_review.json`
 (kept separate to avoid report byte-compat regressions).
 
-## 9. Exports honor overlays fully
+## 9. Exports honor overlays fully — **done**
 
-- `recap assemble` / `export-html` / `export-docx` render
-  `speaker_names.json` labels (not fallback `Speaker N`), chapter-
-  title overlay titles (not `chapter_candidates.json#title`), and
-  filter / annotate frames per `frame_review.json` from slice 8.
-- Static check in `scripts/verify_reports.py` proves exports stay
-  byte-compatible when no overlay is present.
-- Exports still run from both the CLI and the legacy rich-report
-  form; no new runtime dep.
+**Shipped in:**
+- `Make exports honor review overlays`
+
+**What it gives users:**
+- `recap assemble` / `recap export-html` / `recap export-docx` now
+  render custom speaker labels from `speaker_names.json`, custom
+  chapter headings from `chapter_titles.json`, and filter / promote
+  frames according to `frame_review.json` — the React workspaces
+  and the exported report finally stay in sync.
+- Precedence: `chapter_titles > insights title > Chapter N` for
+  headings; `frame_review reject` suppresses a hero or supporting
+  frame; `frame_review keep` on a `vlm_rejected` frame promotes it
+  into the supporting list (sorted by `scene_index`);
+  `speaker_names` substitutes the `Speaker N` prefix when the
+  transcript carries `utterances[]`.
+- Segments-only transcripts (the faster-whisper fixture path) stay
+  byte-compatible with prior output — the overlay layer is a
+  read-only pure-function layer sitting on top of the existing
+  render path.
+- Missing or malformed overlays degrade to empty overlays with no
+  behavior; no exception leaks, no log spam, and the export byte
+  output matches the no-overlay baseline.
+- `scripts/verify_reports.py` grows from 29 → 48 checks covering
+  every overlay × exporter combination plus byte-compat, malformed-
+  overlay graceful fallback, and the "frame_review wins over
+  selected_frames" contract.
+- No runtime dependency changes; `recap run` composition and
+  `recap/job.py STAGES` are untouched.
 
 ## 10. Selected-speaker playback
 

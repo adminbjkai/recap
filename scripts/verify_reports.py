@@ -791,6 +791,423 @@ def check_insights_groq_max_tokens_is_bounded() -> None:
     passed()
 
 
+def _docx_paragraphs_text(path: Path) -> list[str]:
+    return [p.text for p in Document(str(path)).paragraphs]
+
+
+def check_overlays_no_op_preserves_byte_output() -> None:
+    """Overlay files that resolve to nothing (empty / malformed) must
+    leave every exporter's output byte-identical to the no-overlay
+    baseline. Guards against accidentally inlining overlay hooks in
+    ways that rewrite output even on empty overlays.
+    """
+    case = "overlays-no-op-byte-compat"
+    baseline = copy_fixture()
+    try:
+        for cmd in EXPORT_CMDS:
+            expect_ok(case, baseline, cmd)
+        baseline_md = (baseline / "report.md").read_bytes()
+        baseline_html = (baseline / "report.html").read_bytes()
+    finally:
+        pass
+
+    modified = copy_fixture()
+    try:
+        # Empty overlays.
+        (modified / "speaker_names.json").write_text(
+            json.dumps({"version": 1, "updated_at": None, "speakers": {}}),
+            encoding="utf-8",
+        )
+        (modified / "chapter_titles.json").write_text(
+            json.dumps({"version": 1, "updated_at": None, "titles": {}}),
+            encoding="utf-8",
+        )
+        (modified / "frame_review.json").write_text(
+            json.dumps({"version": 1, "updated_at": None, "frames": {}}),
+            encoding="utf-8",
+        )
+        for cmd in EXPORT_CMDS:
+            expect_ok(case, modified, cmd)
+        if (modified / "report.md").read_bytes() != baseline_md:
+            fail(case, "report.md differs from no-overlay baseline "
+                       "when overlays are empty")
+        if (modified / "report.html").read_bytes() != baseline_html:
+            fail(case, "report.html differs from no-overlay baseline "
+                       "when overlays are empty")
+        # DOCX package is non-deterministic (zip timestamps) so we
+        # check structural invariants instead.
+        docx = modified / "report.docx"
+        if docx_inline_shapes(docx) != 2:
+            fail(case, "empty overlays must leave DOCX inline shapes at 2")
+        passed()
+    finally:
+        shutil.rmtree(baseline.parent, ignore_errors=True)
+        shutil.rmtree(modified.parent, ignore_errors=True)
+
+
+def check_chapter_titles_overlay_applied() -> None:
+    """chapter_titles.json changes the rendered chapter heading across
+    report.md, report.html, and report.docx — beating the default
+    ``Chapter N`` heading and the insights-provided title.
+    """
+    case = "chapter-titles-overlay-applied"
+    job = copy_fixture()
+    try:
+        (job / "chapter_titles.json").write_text(
+            json.dumps({
+                "version": 1,
+                "updated_at": "2026-04-20T00:00:00Z",
+                "titles": {"1": "User-chosen Kickoff"},
+            }),
+            encoding="utf-8",
+        )
+        for cmd in EXPORT_CMDS:
+            expect_ok(case, job, cmd)
+
+        md = job / "report.md"
+        assert_contains(
+            case, md, "### Chapter 1 — User-chosen Kickoff",
+        )
+        passed()
+
+        html = job / "report.html"
+        assert_contains(
+            case, html, "Chapter 1 — User-chosen Kickoff",
+        )
+        passed()
+
+        docx = job / "report.docx"
+        headings = docx_headings(docx)
+        if not any(
+            "Chapter 1 — User-chosen Kickoff" in h for h in headings
+        ):
+            fail(
+                case,
+                f"report.docx chapter heading missing overlay title; "
+                f"got {headings}",
+            )
+        passed()
+    finally:
+        shutil.rmtree(job.parent, ignore_errors=True)
+
+
+def check_chapter_titles_overlay_beats_insights() -> None:
+    """When both insights.title and chapter_titles overlay are set, the
+    overlay wins.
+    """
+    case = "chapter-titles-overlay-beats-insights"
+    job = copy_fixture()
+    try:
+        run_cmd(case, job, "insights", extra=("--provider", "mock"))
+        (job / "chapter_titles.json").write_text(
+            json.dumps({
+                "version": 1,
+                "updated_at": "2026-04-20T00:00:00Z",
+                "titles": {"1": "Custom beats insights"},
+            }),
+            encoding="utf-8",
+        )
+        for cmd in EXPORT_CMDS:
+            expect_ok(case, job, cmd)
+        md = job / "report.md"
+        assert_contains(
+            case, md, "### Chapter 1 — Custom beats insights",
+        )
+        # The insights-provided title must NOT be shown for chapter 1
+        # when the overlay is present.
+        text = md.read_text(encoding="utf-8")
+        if "### Chapter 1 — Welcome" in text:
+            fail(
+                case,
+                "chapter_titles overlay did not override insights title",
+            )
+        passed()
+    finally:
+        shutil.rmtree(job.parent, ignore_errors=True)
+
+
+def check_frame_review_reject_removes_hero() -> None:
+    """frame_review.json with decision=reject on the chapter hero must
+    suppress the hero image from every exporter without replacing it.
+    """
+    case = "frame-review-reject-hero"
+    job = copy_fixture()
+    try:
+        (job / "frame_review.json").write_text(
+            json.dumps({
+                "version": 1,
+                "updated_at": "2026-04-20T00:00:00Z",
+                "frames": {
+                    "scene-001.jpg": {
+                        "decision": "reject",
+                        "note": "out of focus",
+                    },
+                },
+            }),
+            encoding="utf-8",
+        )
+        for cmd in EXPORT_CMDS:
+            expect_ok(case, job, cmd)
+
+        md = job / "report.md"
+        assert_not_contains(case, md, "candidate_frames/scene-001.jpg")
+        assert_contains(case, md, "candidate_frames/scene-003.jpg")
+        passed()
+
+        html = job / "report.html"
+        assert_not_contains(case, html, "scene-001.jpg")
+        assert_contains(case, html, 'src="candidate_frames/scene-003.jpg"')
+        passed()
+
+        docx = job / "report.docx"
+        # With hero rejected, only one supporting image remains.
+        shapes = docx_inline_shapes(docx)
+        if shapes != 1:
+            fail(
+                case,
+                f"report.docx inline_shapes={shapes}, expected 1 after "
+                "rejecting the hero (one supporting frame should remain)",
+            )
+        passed()
+    finally:
+        shutil.rmtree(job.parent, ignore_errors=True)
+
+
+def check_frame_review_keep_promotes_vlm_rejected() -> None:
+    """frame_review.json with decision=keep on a vlm_rejected frame
+    must add it to the exported output as an extra supporting image.
+    """
+    case = "frame-review-keep-promotes"
+    job = copy_fixture()
+    try:
+        (job / "frame_review.json").write_text(
+            json.dumps({
+                "version": 1,
+                "updated_at": "2026-04-20T00:00:00Z",
+                "frames": {
+                    "scene-002.jpg": {
+                        "decision": "keep",
+                        "note": "user override",
+                    },
+                },
+            }),
+            encoding="utf-8",
+        )
+        for cmd in EXPORT_CMDS:
+            expect_ok(case, job, cmd)
+
+        md = job / "report.md"
+        # All three images should appear now: hero, default supporting,
+        # and the user-kept previously-rejected frame.
+        assert_contains(case, md, "candidate_frames/scene-001.jpg")
+        assert_contains(case, md, "candidate_frames/scene-002.jpg")
+        assert_contains(case, md, "candidate_frames/scene-003.jpg")
+        passed()
+
+        html = job / "report.html"
+        assert_contains(case, html, 'src="candidate_frames/scene-001.jpg"')
+        assert_contains(case, html, 'src="candidate_frames/scene-002.jpg"')
+        assert_contains(case, html, 'src="candidate_frames/scene-003.jpg"')
+        passed()
+
+        docx = job / "report.docx"
+        shapes = docx_inline_shapes(docx)
+        if shapes != 3:
+            fail(
+                case,
+                f"report.docx inline_shapes={shapes}, expected 3 after "
+                "promoting a user-kept vlm_rejected frame",
+            )
+        passed()
+    finally:
+        shutil.rmtree(job.parent, ignore_errors=True)
+
+
+def check_speaker_names_overlay_applied() -> None:
+    """When the transcript carries utterances with speaker ids, the
+    overlay substitutes the ``Speaker N`` prefix with the user's
+    custom label across all three exports.
+
+    The fixture transcript is segments-only, so we scratch-seed
+    utterances inside the copied fixture only (the committed fixture
+    is never touched) and verify that export output reflects both the
+    utterance rendering path AND the overlay substitution.
+    """
+    case = "speaker-names-overlay-applied"
+    job = copy_fixture()
+    try:
+        # Seed a small utterances[] list + a matching overlay in the
+        # scratch job copy. This exercises the exporters' utterance
+        # rendering path (only taken when utterances exist) and the
+        # overlay substitution.
+        tpath = job / "transcript.json"
+        tdata = json.loads(tpath.read_text(encoding="utf-8"))
+        tdata["utterances"] = [
+            {
+                "start": 0.0,
+                "end": 8.5,
+                "text": "Welcome to the demo recording.",
+                "speaker": 0,
+            },
+            {
+                "start": 8.5,
+                "end": 15.0,
+                "text": "I'll walk through the pipeline.",
+                "speaker": 1,
+            },
+        ]
+        tpath.write_text(json.dumps(tdata), encoding="utf-8")
+        (job / "speaker_names.json").write_text(
+            json.dumps({
+                "version": 1,
+                "updated_at": "2026-04-20T00:00:00Z",
+                "speakers": {"0": "Host", "1": "Guest"},
+            }),
+            encoding="utf-8",
+        )
+
+        for cmd in EXPORT_CMDS:
+            expect_ok(case, job, cmd)
+
+        md = job / "report.md"
+        assert_contains(case, md, "### Utterances")
+        assert_contains(case, md, "Host: Welcome to the demo")
+        assert_contains(case, md, "Guest: I'll walk through the pipeline.")
+        # Default `Speaker 0` / `Speaker 1` must not appear when an
+        # overlay covers both speakers.
+        assert_not_contains(case, md, "Speaker 0:")
+        assert_not_contains(case, md, "Speaker 1:")
+        passed()
+
+        html = job / "report.html"
+        assert_contains(case, html, "<h3>Utterances</h3>")
+        assert_contains(case, html, "<strong>Host:</strong>")
+        assert_contains(case, html, "<strong>Guest:</strong>")
+        passed()
+
+        docx = job / "report.docx"
+        headings = docx_headings(docx)
+        if "Utterances" not in headings:
+            fail(
+                case,
+                f"report.docx missing 'Utterances' heading; got {headings}",
+            )
+        paragraphs = _docx_paragraphs_text(docx)
+        if not any("Host: Welcome to the demo" in p for p in paragraphs):
+            fail(
+                case,
+                "report.docx did not carry the custom 'Host' speaker label",
+            )
+        if not any("Guest: I'll walk through" in p for p in paragraphs):
+            fail(
+                case,
+                "report.docx did not carry the custom 'Guest' speaker label",
+            )
+        passed()
+    finally:
+        shutil.rmtree(job.parent, ignore_errors=True)
+
+
+def check_speaker_names_overlay_partial_falls_back() -> None:
+    """When the overlay covers only some speakers, uncovered ones fall
+    back to ``Speaker N``.
+    """
+    case = "speaker-names-overlay-partial"
+    job = copy_fixture()
+    try:
+        tpath = job / "transcript.json"
+        tdata = json.loads(tpath.read_text(encoding="utf-8"))
+        tdata["utterances"] = [
+            {"start": 0.0, "end": 4.0, "text": "Hi.", "speaker": 0},
+            {"start": 4.0, "end": 8.0, "text": "Hello.", "speaker": 1},
+        ]
+        tpath.write_text(json.dumps(tdata), encoding="utf-8")
+        (job / "speaker_names.json").write_text(
+            json.dumps({
+                "version": 1,
+                "updated_at": None,
+                "speakers": {"0": "Host"},
+            }),
+            encoding="utf-8",
+        )
+        expect_ok(case, job, "assemble")
+        md_text = (job / "report.md").read_text(encoding="utf-8")
+        if "Host: Hi." not in md_text:
+            fail(case, "overlay label not applied to speaker 0")
+        if "Speaker 1: Hello." not in md_text:
+            fail(
+                case,
+                "uncovered speaker 1 did not fall back to 'Speaker 1:'",
+            )
+        passed()
+    finally:
+        shutil.rmtree(job.parent, ignore_errors=True)
+
+
+def check_malformed_overlays_ignored() -> None:
+    """Malformed overlays degrade to empty overlays — no exporter
+    should raise, and no overlay behavior should apply.
+    """
+    case = "overlays-malformed-ignored"
+    for overlay_name in (
+        "speaker_names.json", "chapter_titles.json", "frame_review.json",
+    ):
+        job = copy_fixture()
+        try:
+            (job / overlay_name).write_text("{not json", encoding="utf-8")
+            for cmd in EXPORT_CMDS:
+                expect_ok(case, job, cmd)
+            # Default output still includes hero + supporting and no
+            # custom chapter title.
+            md = job / "report.md"
+            assert_contains(case, md, "candidate_frames/scene-001.jpg")
+            assert_contains(case, md, "candidate_frames/scene-003.jpg")
+            assert_not_contains(case, md, "candidate_frames/scene-002.jpg")
+            assert_not_contains(case, md, "User-chosen Kickoff")
+            passed()
+        finally:
+            shutil.rmtree(job.parent, ignore_errors=True)
+
+
+def check_frame_review_reject_wins_over_selection() -> None:
+    """When a frame appears as selected_hero AND is rejected by the
+    overlay, the overlay wins and the hero is suppressed. This is the
+    "frame_review overlay wins for user intent" contract.
+    """
+    case = "frame-review-reject-overrides-selection"
+    job = copy_fixture()
+    try:
+        # The fixture's chapter 1 hero is scene-001.jpg. Reject it.
+        (job / "frame_review.json").write_text(
+            json.dumps({
+                "version": 1,
+                "updated_at": None,
+                "frames": {
+                    "scene-001.jpg": {
+                        "decision": "reject", "note": "",
+                    },
+                },
+            }),
+            encoding="utf-8",
+        )
+        expect_ok(case, job, "assemble")
+        md_text = (job / "report.md").read_text(encoding="utf-8")
+        if "scene-001.jpg" in md_text:
+            fail(
+                case,
+                "frame_review 'reject' did not override the algorithm's "
+                "selected_hero in the exported report",
+            )
+        if "scene-003.jpg" not in md_text:
+            fail(
+                case,
+                "supporting frame scene-003.jpg unexpectedly dropped",
+            )
+        passed()
+    finally:
+        shutil.rmtree(job.parent, ignore_errors=True)
+
+
 def check_scenes_interrupt_marks_failed() -> None:
     """Regression guard: Ctrl-C during `recap scenes` must leave the
     stage as `failed`, not `running`, and remove partial
@@ -936,6 +1353,15 @@ def main() -> int:
     check_insights_malformed_selected_frames_graceful()
     check_insights_malformed_chapter_candidates_fails_cleanly()
     check_insights_groq_max_tokens_is_bounded()
+    check_overlays_no_op_preserves_byte_output()
+    check_chapter_titles_overlay_applied()
+    check_chapter_titles_overlay_beats_insights()
+    check_frame_review_reject_removes_hero()
+    check_frame_review_keep_promotes_vlm_rejected()
+    check_speaker_names_overlay_applied()
+    check_speaker_names_overlay_partial_falls_back()
+    check_malformed_overlays_ignored()
+    check_frame_review_reject_wins_over_selection()
     check_scenes_interrupt_marks_failed()
 
     print(f"OK: {CHECKS_PASSED} checks passed")

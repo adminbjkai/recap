@@ -20,13 +20,20 @@ from pathlib import Path
 
 from ..job import COMPLETED, FAILED, RUNNING, JobPaths, read_job, update_stage
 from .report_helpers import (
+    apply_frame_review_to_chapter as _apply_frame_review_to_chapter,
     caption_for as _caption_for,
     check_hero_coherence as _check_hero_coherence,
     check_supporting_coherence as _check_supporting_coherence,
     collapse_whitespace as _collapse_whitespace,
     format_ts as _format_ts,
     insights_chapters_by_index as _insights_chapters_by_index,
+    iter_transcript_utterances as _iter_transcript_utterances,
+    load_chapter_titles_overlay as _load_chapter_titles_overlay,
+    load_frame_review_overlay as _load_frame_review_overlay,
     load_insights as _load_insights,
+    load_speaker_names_overlay as _load_speaker_names_overlay,
+    resolve_chapter_title as _resolve_chapter_title,
+    resolve_speaker_label as _resolve_speaker_label,
     summarize_metadata as _summarize_metadata,
     validate_chapter_candidates as _validate_chapter_candidates,
     validate_selected_frames as _validate_selected_frames,
@@ -110,20 +117,30 @@ def _insights_chapter_block(ch: dict) -> list[str]:
     return out
 
 
-def _insights_only_chapters_section_lines(insights: dict) -> list[str]:
+def _insights_only_chapters_section_lines(
+    insights: dict,
+    chapter_titles_overlay: dict[int, str] | None = None,
+) -> list[str]:
     out: list[str] = []
     out.append("## Chapters")
     out.append("")
+    overlay = chapter_titles_overlay or {}
     for ch in insights.get("chapters") or []:
         if not isinstance(ch, dict):
             continue
         idx = ch.get("index")
         start = _format_ts(ch.get("start_seconds"))
         end = _format_ts(ch.get("end_seconds"))
-        title = (ch.get("title") or "").strip()
         heading = f"### Chapter {idx}"
-        if title:
-            heading += f" — {title}"
+        effective_title = None
+        if isinstance(idx, int):
+            effective_title = _resolve_chapter_title(
+                idx,
+                custom_by_idx=overlay,
+                insights_title=ch.get("title") if isinstance(ch.get("title"), str) else None,
+            )
+        if effective_title:
+            heading += f" — {effective_title}"
         heading += f" [{start} – {end}]"
         out.append(heading)
         out.append("")
@@ -136,10 +153,15 @@ def _chapter_section_lines(
     chapter_text_by_index: dict[int, str],
     frames_dir: Path,
     insights_by_idx: dict[int, dict] | None = None,
+    chapter_titles_overlay: dict[int, str] | None = None,
+    frame_review_overlay: dict[str, dict] | None = None,
 ) -> list[str]:
     lines: list[str] = []
     lines.append("## Chapters")
     lines.append("")
+
+    title_overlay = chapter_titles_overlay or {}
+    review_overlay = frame_review_overlay or {}
 
     for ch in selected["chapters"]:
         ch_idx = ch["chapter_index"]
@@ -152,40 +174,33 @@ def _chapter_section_lines(
         end = _format_ts(ch.get("end_seconds") or 0.0)
         heading = f"### Chapter {ch_idx}"
         insight = (insights_by_idx or {}).get(ch_idx)
-        if insight and (insight.get("title") or "").strip():
-            heading += f" — {insight['title'].strip()}"
+        effective_title = _resolve_chapter_title(
+            ch_idx,
+            custom_by_idx=title_overlay,
+            insights_title=(insight or {}).get("title") if insight else None,
+        )
+        if effective_title:
+            heading += f" — {effective_title}"
         heading += f" [{start} – {end}]"
         lines.append(heading)
         lines.append("")
         if insight is not None:
             lines.extend(_insights_chapter_block(insight))
 
-        frames_by_scene: dict[int, dict] = {}
-        for fr in ch["frames"]:
-            frames_by_scene[fr["scene_index"]] = fr
-
-        # Coherence checks run before rendering so a corrupted artifact
-        # cannot silently omit or reorder frames.
-        _check_hero_coherence(ch)
+        # Coherence checks run on the raw artifact before rendering so
+        # a corrupted artifact cannot silently omit or reorder frames.
+        # The overlay is then applied to the validated output.
+        hero_frame_raw = _check_hero_coherence(ch)
         _check_supporting_coherence(ch)
-        hero = ch.get("hero")
 
-        hero_scene_index: int | None = None
-        if hero is not None:
-            if not isinstance(hero, dict) or "scene_index" not in hero:
-                raise RuntimeError(
-                    "selected_frames.json malformed: chapter hero missing "
-                    "'scene_index'"
-                )
-            hero_scene_index = hero["scene_index"]
-            hero_frame = frames_by_scene.get(hero_scene_index)
-            if hero_frame is None or hero_frame.get("decision") != "selected_hero":
-                raise RuntimeError(
-                    f"selected_frames.json malformed: chapter {ch_idx} hero "
-                    f"scene_index {hero_scene_index} has no matching "
-                    "'selected_hero' frame"
-                )
-            frame_file = hero_frame["frame_file"]
+        effective_hero, effective_supporting = (
+            _apply_frame_review_to_chapter(
+                ch, hero_frame_raw, review_overlay,
+            )
+        )
+
+        if effective_hero is not None:
+            frame_file = effective_hero["frame_file"]
             image_path = frames_dir / frame_file
             if not image_path.exists():
                 raise RuntimeError(
@@ -195,22 +210,12 @@ def _chapter_section_lines(
                 f"![Chapter {ch_idx} hero](candidate_frames/{frame_file})"
             )
             lines.append("")
-            caption = _caption_for(hero_frame)
+            caption = _caption_for(effective_hero)
             if caption:
                 lines.append(f"*{caption}*")
                 lines.append("")
 
-        for si in ch["supporting_scene_indices"]:
-            support_frame = frames_by_scene.get(si)
-            if (
-                support_frame is None
-                or support_frame.get("decision") != "selected_supporting"
-            ):
-                raise RuntimeError(
-                    f"selected_frames.json malformed: chapter {ch_idx} "
-                    f"supporting_scene_indices references scene_index {si} "
-                    "without a matching 'selected_supporting' frame"
-                )
+        for support_frame in effective_supporting:
             frame_file = support_frame["frame_file"]
             image_path = frames_dir / frame_file
             if not image_path.exists():
@@ -240,6 +245,8 @@ def build_markdown(
     transcript: dict | None,
     chapters_section: list[str] | None = None,
     insights: dict | None = None,
+    chapter_titles_overlay: dict[int, str] | None = None,
+    speaker_names_overlay: dict[str, str] | None = None,
 ) -> str:
     lines: list[str] = []
     title = job.get("original_filename") or job.get("job_id")
@@ -261,7 +268,12 @@ def build_markdown(
     if chapters_section is None and insights is not None and (
         insights.get("chapters") or []
     ):
-        lines.extend(_insights_only_chapters_section_lines(insights))
+        lines.extend(
+            _insights_only_chapters_section_lines(
+                insights,
+                chapter_titles_overlay=chapter_titles_overlay,
+            )
+        )
 
     lines.append("## Media")
     dur = meta_summary.get("duration_seconds")
@@ -294,6 +306,36 @@ def build_markdown(
     )
     if transcript.get("language"):
         lines.append(f"- Detected language: `{transcript['language']}`")
+
+    # When the transcript carries utterances with valid speaker ids
+    # (Deepgram), render them so exports carry speaker context and the
+    # `speaker_names.json` overlay can substitute custom labels. When
+    # there are no utterances (or no valid speakers) fall through to
+    # the legacy segments rendering so this stage stays byte-compatible
+    # with the faster-whisper path.
+    utterances = _iter_transcript_utterances(transcript)
+    speaker_labels = speaker_names_overlay or {}
+    if utterances:
+        lines.append(f"- Utterances: {len(utterances)}")
+        lines.append("")
+        lines.append("### Utterances")
+        lines.append("")
+        for u in utterances:
+            if not isinstance(u, dict):
+                continue
+            start = _format_ts(u.get("start") or 0.0)
+            end = _format_ts(u.get("end") or 0.0)
+            text = (u.get("text") or "").strip()
+            if not text:
+                continue
+            label = _resolve_speaker_label(
+                u.get("speaker"), speaker_labels,
+            )
+            prefix = f"{label}: " if label else ""
+            lines.append(f"- **[{start} – {end}]** {prefix}{text}")
+        lines.append("")
+        return "\n".join(lines)
+
     segs = transcript.get("segments", []) or []
     lines.append(f"- Segments: {len(segs)}")
     lines.append("")
@@ -336,6 +378,19 @@ def run(paths: JobPaths, force: bool = False) -> Path:
             _insights_chapters_by_index(insights) if insights else {}
         )
 
+        # Read-time overlays. Missing or malformed overlays degrade to
+        # empty — report output stays byte-compatible with prior runs
+        # when none of the React workspaces have saved anything.
+        speaker_overlay = _load_speaker_names_overlay(
+            paths.speaker_names_json,
+        )
+        chapter_title_overlay = _load_chapter_titles_overlay(
+            paths.chapter_titles_json,
+        )
+        frame_review_overlay = _load_frame_review_overlay(
+            paths.frame_review_json,
+        )
+
         chapters_section: list[str] | None = None
         if paths.selected_frames_json.exists():
             try:
@@ -368,6 +423,8 @@ def run(paths: JobPaths, force: bool = False) -> Path:
                 chapter_text_by_index,
                 paths.candidate_frames_dir,
                 insights_by_idx=insights_by_idx,
+                chapter_titles_overlay=chapter_title_overlay,
+                frame_review_overlay=frame_review_overlay,
             )
 
         md = build_markdown(
@@ -376,6 +433,8 @@ def run(paths: JobPaths, force: bool = False) -> Path:
             transcript,
             chapters_section,
             insights=insights,
+            chapter_titles_overlay=chapter_title_overlay,
+            speaker_names_overlay=speaker_overlay,
         )
         tmp.write_text(md, encoding="utf-8")
         tmp.replace(paths.report_md)
@@ -385,6 +444,11 @@ def run(paths: JobPaths, force: bool = False) -> Path:
             "bytes": paths.report_md.stat().st_size,
             "embedded_selected_frames": chapters_section is not None,
             "embedded_insights": insights is not None,
+            "overlays": {
+                "speaker_names": bool(speaker_overlay),
+                "chapter_titles": bool(chapter_title_overlay),
+                "frame_review": bool(frame_review_overlay),
+            },
         }
         update_stage(paths, "assemble", COMPLETED, extra=extra)
         return paths.report_md

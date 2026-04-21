@@ -988,6 +988,37 @@ Primary `GET` routes:
   (`recap assemble` / `export-html` / `export-docx` reading the
   overlay) is a deferred follow-up — today the overlay only affects
   the React surface.
+- **Exporters honor overlays (slice 9).** `recap assemble`,
+  `recap export-html`, and `recap export-docx` now read
+  `speaker_names.json`, `chapter_titles.json`, and
+  `frame_review.json` at render time and apply them to
+  `report.md` / `report.html` / `report.docx`. The canonical read
+  helpers live in `recap/stages/report_helpers.py` as
+  `load_speaker_names_overlay`, `load_chapter_titles_overlay`,
+  `load_frame_review_overlay`, `resolve_chapter_title`,
+  `resolve_speaker_label`, `apply_frame_review_to_chapter`, and
+  `iter_transcript_utterances`. Overlay precedence:
+  `chapter_titles.json > insights.json#chapters[].title > Chapter N`
+  for chapter headings; `frame_review.json > selected_frames.json`
+  for frame inclusion (`reject` suppresses, `keep` on a
+  `vlm_rejected` frame promotes it to supporting sorted by
+  `scene_index`, `keep` on a selected frame is a no-op);
+  `speaker_names.json > Speaker N` when the transcript carries
+  `utterances[]` with valid speaker ids. Segments-only transcripts
+  (no utterances) continue to render the "Segments" section
+  unchanged — the speaker overlay has no effect on that path, which
+  preserves byte-compat for the faster-whisper fixture.
+  **Malformed-overlay policy:** missing or malformed overlay JSON
+  (invalid JSON, wrong top-level shape, per-entry bad shape) is
+  treated as an empty overlay — no exception leaks to the caller,
+  no behavior applies, and export output is byte-identical to the
+  no-overlay baseline. The canonical coherence checks on
+  `selected_frames.json` / `chapter_candidates.json` still run
+  before the overlay is applied so a corrupted upstream artifact
+  still fails loudly with the existing `... malformed: ...`
+  prefixes. Exporters never mutate the upstream artifacts. The
+  `run()` `extra` dict now carries an `overlays` sub-dict recording
+  which overlays resolved to non-empty state for the run.
 - `GET /api/jobs/<id>/frames` — merged visual-artifact view.
   Enumerates every image in `candidate_frames/` (the ground truth for
   what's reviewable) and enriches each with `frame_scores.json`

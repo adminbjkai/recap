@@ -51,6 +51,25 @@ does and produces, read `HANDOFF.md`.
   removing the mapping; notes trimmed and capped at 300 chars with
   control chars rejected; overlay never mutates
   `selected_frames.json` or `frame_scores.json`), and
+  **the three exporters (`recap assemble` / `export-html` /
+  `export-docx`) now honor all three React-surface overlays at
+  render time.** `speaker_names.json` substitutes custom labels
+  when the transcript carries `utterances[]` with valid speaker ids
+  (uncovered speakers fall back to `Speaker N`; segments-only
+  transcripts stay byte-compatible); `chapter_titles.json` beats
+  the insights title beats `Chapter N` for chapter headings;
+  `frame_review.json` beats `selected_frames.json` for frame
+  inclusion (`reject` suppresses including the hero, `keep` on a
+  `vlm_rejected` frame promotes it to the supporting list sorted by
+  `scene_index`). Malformed / missing overlays degrade to empty and
+  byte-identical output. Coherence checks on
+  `selected_frames.json` / `chapter_candidates.json` still run
+  before the overlay is applied. The overlay helpers live in
+  `recap/stages/report_helpers.py`:
+  `load_speaker_names_overlay`, `load_chapter_titles_overlay`,
+  `load_frame_review_overlay`, `resolve_chapter_title`,
+  `resolve_speaker_label`, `apply_frame_review_to_chapter`,
+  `iter_transcript_utterances`.
   `POST /api/recordings` (accept a browser-recorded screen clip
   streamed to `<sources-root>/recording-<UTC>-<hex>.<ext>` under a
   server-picked filename, Host-pinned, CSRF-guarded, 2 GiB cap,
@@ -149,10 +168,18 @@ does and produces, read `HANDOFF.md`.
   The stubs are **only** enabled when `scripts/verify_api.py`
   sets the env vars on its own subprocess — neither is reachable
   in normal dev/prod operation.
-  `scripts/verify_reports.py` covers 29
-  checks (selected-path / absent-path / four malformed-artifact
-  cases + the scenes-interrupt regression + ten insights cases:
-  mock happy path, absent-insights compatibility, offline-mock
+  `scripts/verify_reports.py` covers 48 checks (selected-path /
+  absent-path / four malformed-artifact cases + the scenes-interrupt
+  regression + ten insights cases + nine overlay-export cases:
+  empty-overlay byte-compat, chapter_titles applied across MD/HTML/
+  DOCX, chapter_titles beats insights title, frame_review reject
+  removes hero across MD/HTML/DOCX, frame_review keep promotes a
+  `vlm_rejected` frame across MD/HTML/DOCX, speaker_names overlay
+  applied to utterances-based transcripts across MD/HTML/DOCX,
+  partial speaker overlay falls back to `Speaker N`, all three
+  malformed overlay files ignored gracefully, `frame_review.json`
+  reject wins over `selected_frames.json` hero: mock happy path,
+  absent-insights compatibility, offline-mock
   without Groq env, Groq-missing-key fail-clean, the opt-in
   static-source guard, validate_insights sources requirement,
   speaker-names graceful-fallback, selected-frames graceful-fallback,

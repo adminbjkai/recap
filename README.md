@@ -730,10 +730,54 @@ Empty / `unset` decisions remove the mapping. Keys must pass
 chars, control chars rejected (tab allowed). The overlay file uses
 the same atomic `<file>.tmp` → `os.replace` write and the same
 per-job lock as the other overlays, and malformed overlays degrade
-silently to the empty default on read. Exporters still render the
-algorithm's output — honoring the review overlay in
-`recap assemble` / `export-html` / `export-docx` is deferred to the
-exporter-overlays slice.
+silently to the empty default on read. The three exporters honor
+the overlay at read time — see "Exports honor overlays" below.
+
+### Exports honor overlays
+
+`recap assemble` / `recap export-html` / `recap export-docx` all
+read the review overlays at render time and apply them to the
+exported `report.md` / `report.html` / `report.docx`:
+
+- **`speaker_names.json`** — when the transcript carries an
+  `utterances[]` array with valid speaker ids (Deepgram), the
+  exporter renders an "Utterances" section where each row is
+  prefixed with the overlay's custom speaker label. Uncovered
+  speakers fall back to `Speaker N`. Segments-only transcripts
+  (faster-whisper fixture) continue to render the existing
+  "Segments" section unchanged, so no overlay on that path has any
+  visible effect.
+- **`chapter_titles.json`** — chapter headings read
+  `Chapter N — <display_title> [start – end]`, where
+  `display_title` prefers the overlay's `titles[<idx>]` over the
+  insights-provided title over nothing.
+- **`frame_review.json`** — `decision: reject` suppresses that
+  frame from the export (including the chapter hero; the chapter
+  still renders, just without a hero image). `decision: keep` on a
+  `vlm_rejected` frame promotes it into the supporting list
+  (appended by `scene_index`) so user-affirmed visuals aren't lost.
+  `keep` on an already-selected frame is a no-op. `unset` is never
+  persisted; clearing an overlay entry upstream removes it.
+- **`insights.json`** integration is unchanged — the overlay layer
+  only adjusts the read-time precedence of chapter titles.
+
+Precedence (highest first):
+
+1. `chapter_titles.json` overlay beats
+2. `insights.json` chapter title beats
+3. the generic `Chapter N` heading.
+
+4. `frame_review.json` beats `selected_frames.json` for user intent
+   (reject wins over selection, keep promotes a rejected candidate).
+5. `speaker_names.json` beats the generated `Speaker N` label.
+
+**Malformed-overlay policy:** all three overlays follow the same
+"missing or malformed → empty overlay" read policy as the React
+workspace. No exception leaks to the caller, no log spam, and no
+overlay behavior applies — the export byte output is identical to
+the no-overlay baseline. The upstream artifacts
+(`transcript.json`, `chapter_candidates.json`, `insights.json`,
+`selected_frames.json`) are never mutated.
 
 ### Chapter sidebar + editable chapter titles (slice 7)
 

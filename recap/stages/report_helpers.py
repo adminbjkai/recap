@@ -359,3 +359,314 @@ def check_supporting_coherence(ch: dict) -> None:
             "'supporting_scene_indices' does not match the ordered "
             "scene_index values of its 'selected_supporting' frames"
         )
+
+
+# ----------------------------------------------------------------------
+# Read-time overlay helpers.
+#
+# Overlays (`speaker_names.json`, `chapter_titles.json`,
+# `frame_review.json`) capture user intent from the React workspace.
+# Exporters read them at render time only — they never mutate the
+# upstream artifacts (`transcript.json`, `chapter_candidates.json`,
+# `insights.json`, `selected_frames.json`).
+#
+# Read policy (mirrors `recap/ui.py`):
+#   - missing file → empty overlay (no effect).
+#   - malformed JSON / wrong-shape top-level / per-entry bad shape →
+#     empty overlay (no effect). The React app and the exporters
+#     apply the same "degrade silently on bad overlay" rule so the
+#     workspace preview and the exported file stay in sync.
+#
+# This is deliberately a read-only convenience layer. Writers still
+# live in `recap/ui.py` under atomic tmp + os.replace.
+# ----------------------------------------------------------------------
+
+_OVERLAY_SPEAKER_NAME_MAX_LEN = 80
+_OVERLAY_CHAPTER_TITLE_MAX_LEN = 120
+_OVERLAY_FRAME_NOTE_MAX_LEN = 300
+_FRAME_REVIEW_DECISIONS: frozenset[str] = frozenset({"keep", "reject"})
+
+
+def _overlay_contains_control(value: str) -> bool:
+    for ch in value:
+        if ch == "\t":
+            continue
+        if ord(ch) < 0x20 or ord(ch) == 0x7F:
+            return True
+    return False
+
+
+def _read_overlay_json(path: Path) -> dict | None:
+    """Read a JSON overlay file. Returns None if absent / malformed."""
+    if not path.is_file():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def load_speaker_names_overlay(path: Path) -> dict[str, str]:
+    """Return ``{speaker_id: custom_label}`` from the overlay.
+
+    Graceful read policy: every bad-entry case returns no mapping
+    for that key rather than raising.
+    """
+    data = _read_overlay_json(path)
+    if data is None:
+        return {}
+    speakers = data.get("speakers")
+    if not isinstance(speakers, dict):
+        return {}
+    out: dict[str, str] = {}
+    for k, v in speakers.items():
+        if not isinstance(k, str):
+            continue
+        if not isinstance(v, str):
+            continue
+        label = v.strip()
+        if not label:
+            continue
+        if len(label) > _OVERLAY_SPEAKER_NAME_MAX_LEN:
+            continue
+        if _overlay_contains_control(label):
+            continue
+        out[k] = label
+    return out
+
+
+def load_chapter_titles_overlay(path: Path) -> dict[int, str]:
+    """Return ``{chapter_index: custom_title}`` from the overlay.
+
+    Keys are integer-string in the JSON file; this helper normalizes
+    them to integers so callers can match against
+    ``selected_frames.json#chapter_index``.
+    """
+    data = _read_overlay_json(path)
+    if data is None:
+        return {}
+    titles = data.get("titles")
+    if not isinstance(titles, dict):
+        return {}
+    out: dict[int, str] = {}
+    for k, v in titles.items():
+        if not isinstance(k, str):
+            continue
+        try:
+            idx = int(k)
+        except ValueError:
+            continue
+        if not isinstance(v, str):
+            continue
+        title = v.strip()
+        if not title:
+            continue
+        if len(title) > _OVERLAY_CHAPTER_TITLE_MAX_LEN:
+            continue
+        if _overlay_contains_control(title):
+            continue
+        out[idx] = title
+    return out
+
+
+def load_frame_review_overlay(path: Path) -> dict[str, dict]:
+    """Return ``{frame_file: {"decision": "keep"|"reject", "note": str}}``.
+
+    Only ``keep`` and ``reject`` are persisted; the UI's ``unset``
+    pseudo-decision removes the mapping upstream.
+    """
+    data = _read_overlay_json(path)
+    if data is None:
+        return {}
+    frames = data.get("frames")
+    if not isinstance(frames, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for fname, entry in frames.items():
+        if not isinstance(fname, str) or not is_safe_frame_file(fname):
+            continue
+        if not isinstance(entry, dict):
+            continue
+        decision = entry.get("decision")
+        if decision not in _FRAME_REVIEW_DECISIONS:
+            continue
+        note_raw = entry.get("note", "")
+        if not isinstance(note_raw, str):
+            note_raw = ""
+        note = note_raw.strip()
+        if len(note) > _OVERLAY_FRAME_NOTE_MAX_LEN:
+            note = note[:_OVERLAY_FRAME_NOTE_MAX_LEN]
+        if _overlay_contains_control(note):
+            note = ""
+        out[fname] = {"decision": decision, "note": note}
+    return out
+
+
+def resolve_chapter_title(
+    ch_idx: int,
+    *,
+    custom_by_idx: dict[int, str],
+    insights_title: str | None,
+) -> str | None:
+    """Effective chapter display title.
+
+    Precedence: ``chapter_titles.json`` overlay beats insights title
+    beats the generic ``Chapter N`` heading. Returns None when no
+    title is available (callers should fall back to just
+    ``Chapter {idx}``).
+    """
+    custom = custom_by_idx.get(ch_idx)
+    if isinstance(custom, str) and custom.strip():
+        return custom.strip()
+    if isinstance(insights_title, str) and insights_title.strip():
+        return insights_title.strip()
+    return None
+
+
+def resolve_speaker_label(
+    speaker: object,
+    labels: dict[str, str],
+) -> str | None:
+    """Return the effective speaker label for a speaker id.
+
+    Falls back to ``Speaker {id}`` (integer ids) or the raw string id
+    when no custom label applies. Returns None when ``speaker`` is
+    not a valid speaker reference so the caller can skip the prefix
+    entirely.
+    """
+    if isinstance(speaker, bool):
+        return None
+    if isinstance(speaker, int):
+        key = str(speaker)
+        custom = labels.get(key)
+        if isinstance(custom, str) and custom.strip():
+            return custom.strip()
+        return f"Speaker {speaker}"
+    if isinstance(speaker, str) and speaker.strip():
+        key = speaker.strip()
+        custom = labels.get(key)
+        if isinstance(custom, str) and custom.strip():
+            return custom.strip()
+        # Raw numeric-string id → `Speaker N` for consistency with the
+        # React transcript workspace.
+        if key.isdigit():
+            return f"Speaker {key}"
+        return key
+    return None
+
+
+def apply_frame_review_to_chapter(
+    chapter: dict,
+    hero_frame_raw: dict | None,
+    overlay: dict[str, dict],
+) -> tuple[dict | None, list[dict]]:
+    """Return ``(effective_hero, effective_supporting_frames)``.
+
+    - ``effective_hero`` is the validated ``selected_hero`` frame
+      unless its ``frame_file`` has ``decision="reject"`` in the
+      overlay, in which case it's ``None`` (no replacement — the
+      exporter just skips the hero image for that chapter).
+    - ``effective_supporting`` is the chapter's ``selected_supporting``
+      frames in ``supporting_scene_indices`` order, **minus** any
+      whose ``frame_file`` has ``decision="reject"``, plus any
+      ``vlm_rejected`` frames in the chapter whose overlay decision
+      is ``"keep"`` appended at the end (sorted by ``scene_index``).
+
+    ``keep`` on an already-selected frame is a no-op (the user's
+    affirmation is preserved, but no re-ordering happens).
+    ``unset`` is never persisted in the overlay, so it does not
+    appear here.
+
+    This function does not mutate ``chapter`` or ``overlay``.
+    """
+    frames_by_scene: dict[int, dict] = {}
+    for fr in chapter.get("frames") or []:
+        if isinstance(fr, dict) and is_int(fr.get("scene_index")):
+            frames_by_scene[fr["scene_index"]] = fr
+
+    effective_hero: dict | None = hero_frame_raw
+    if hero_frame_raw is not None:
+        hero_file = hero_frame_raw.get("frame_file")
+        entry = overlay.get(hero_file) if isinstance(hero_file, str) else None
+        if isinstance(entry, dict) and entry.get("decision") == "reject":
+            effective_hero = None
+
+    effective_supporting: list[dict] = []
+    included_files: set[str] = set()
+    if effective_hero is not None:
+        file_ = effective_hero.get("frame_file")
+        if isinstance(file_, str):
+            included_files.add(file_)
+    for si in chapter.get("supporting_scene_indices") or []:
+        fr = frames_by_scene.get(si)
+        if fr is None or fr.get("decision") != "selected_supporting":
+            continue
+        fname = fr.get("frame_file")
+        if not isinstance(fname, str):
+            continue
+        entry = overlay.get(fname)
+        if isinstance(entry, dict) and entry.get("decision") == "reject":
+            continue
+        effective_supporting.append(fr)
+        included_files.add(fname)
+
+    # Promote any vlm_rejected frames the user marked as "keep" —
+    # appended at the end in scene_index order so MD/HTML/DOCX all
+    # produce stable, matching output.
+    promotions: list[dict] = []
+    for fr in chapter.get("frames") or []:
+        if not isinstance(fr, dict):
+            continue
+        if fr.get("decision") != "vlm_rejected":
+            continue
+        fname = fr.get("frame_file")
+        if not isinstance(fname, str) or fname in included_files:
+            continue
+        entry = overlay.get(fname)
+        if isinstance(entry, dict) and entry.get("decision") == "keep":
+            promotions.append(fr)
+    promotions.sort(
+        key=lambda f: (
+            f.get("scene_index")
+            if is_int(f.get("scene_index"))
+            else 10**9
+        ),
+    )
+    effective_supporting.extend(promotions)
+
+    return effective_hero, effective_supporting
+
+
+def iter_transcript_utterances(
+    transcript: dict,
+) -> list[dict]:
+    """Return the non-empty, speaker-valid utterance list, else ``[]``.
+
+    Mirrors the legacy transcript-viewer policy (see ``recap/ui.py``):
+    we only switch the exporter's transcript rendering over to
+    ``utterances[]`` when at least one utterance has a speaker id that
+    is either a non-negative integer or a non-empty string. Otherwise
+    the exporter falls through to ``segments[]`` and its current
+    byte-compatible output.
+    """
+    utterances = transcript.get("utterances")
+    if not isinstance(utterances, list) or not utterances:
+        return []
+    any_valid = False
+    for u in utterances:
+        if not isinstance(u, dict):
+            continue
+        sp = u.get("speaker")
+        if isinstance(sp, bool):
+            continue
+        if isinstance(sp, int):
+            any_valid = True
+            break
+        if isinstance(sp, str) and sp.strip():
+            any_valid = True
+            break
+    return utterances if any_valid else []
