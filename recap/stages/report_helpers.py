@@ -385,6 +385,15 @@ _OVERLAY_SPEAKER_NAME_MAX_LEN = 80
 _OVERLAY_CHAPTER_TITLE_MAX_LEN = 120
 _OVERLAY_FRAME_NOTE_MAX_LEN = 300
 _FRAME_REVIEW_DECISIONS: frozenset[str] = frozenset({"keep", "reject"})
+# Transcript-notes overlay bounds and key shape. The React
+# workspace emits `utt-<n>` for utterance-based rows (Deepgram) and
+# `seg-<n>` for segment-based rows (faster-whisper); the exporters
+# look up the same row ids. Corrections allow longer text than the
+# other overlays because they replace a full transcript line; notes
+# are reviewer prose.
+_OVERLAY_TRANSCRIPT_CORRECTION_MAX_LEN = 2000
+_OVERLAY_TRANSCRIPT_NOTE_MAX_LEN = 1000
+_TRANSCRIPT_NOTE_KEY_RE = re.compile(r"^(utt|seg)-\d+$")
 
 
 def _overlay_contains_control(value: str) -> bool:
@@ -504,6 +513,135 @@ def load_frame_review_overlay(path: Path) -> dict[str, dict]:
             note = ""
         out[fname] = {"decision": decision, "note": note}
     return out
+
+
+def _overlay_contains_line_control(value: str) -> bool:
+    """Reject ASCII/Unicode control chars except tab, newline, CR.
+
+    Matches the server-side transcript-notes read policy: freeform
+    reviewer text is allowed to carry line breaks, so only the
+    non-printable control chars outside `\\t`, `\\n`, `\\r` are
+    rejected.
+    """
+    for ch in value:
+        if ch in ("\t", "\n", "\r"):
+            continue
+        if ord(ch) < 0x20 or ord(ch) == 0x7F:
+            return True
+    return False
+
+
+def load_transcript_notes_overlay(path: Path) -> dict[str, dict]:
+    """Return ``{row_id: {"correction"?: str, "note"?: str}}``.
+
+    Mirrors the server-side ``recap/ui.py::_load_transcript_notes``
+    read policy: keys must match ``^(utt|seg)-\\d+$``; corrections
+    are bounded at 2000 chars, notes at 1000 chars; control chars
+    other than tab/newline/CR drop the field; empty fields drop;
+    items with no remaining fields drop entirely. Missing or
+    malformed overlay files return an empty dict — the exporters
+    fall back to byte-compatible no-overlay output in that case.
+    """
+    data = _read_overlay_json(path)
+    if data is None:
+        return {}
+    items = data.get("items")
+    if not isinstance(items, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for key, entry in items.items():
+        if (
+            not isinstance(key, str)
+            or not _TRANSCRIPT_NOTE_KEY_RE.match(key)
+        ):
+            continue
+        if not isinstance(entry, dict):
+            continue
+        cleaned: dict[str, str] = {}
+        raw_corr = entry.get("correction")
+        if isinstance(raw_corr, str):
+            corr = raw_corr.strip()
+            if (
+                corr
+                and len(corr) <= _OVERLAY_TRANSCRIPT_CORRECTION_MAX_LEN
+                and not _overlay_contains_line_control(corr)
+            ):
+                cleaned["correction"] = corr
+        raw_note = entry.get("note")
+        if isinstance(raw_note, str):
+            note = raw_note.strip()
+            if (
+                note
+                and len(note) <= _OVERLAY_TRANSCRIPT_NOTE_MAX_LEN
+                and not _overlay_contains_line_control(note)
+            ):
+                cleaned["note"] = note
+        if cleaned:
+            out[key] = cleaned
+    return out
+
+
+def transcript_row_id(source: str, index: int) -> str:
+    """Return the stable row id used by the transcript-notes overlay.
+
+    ``source`` is ``"utt"`` or ``"seg"``; ``index`` is the row's
+    0-based ordinal in the chosen source array. The format matches
+    the keys the React workspace emits so a correction saved in the
+    UI lines up with the exporter's render pass without any
+    translation layer.
+    """
+    if source not in ("utt", "seg"):
+        raise ValueError(f"transcript_row_id: unknown source {source!r}")
+    if not isinstance(index, int) or index < 0:
+        raise ValueError(
+            f"transcript_row_id: index must be a non-negative int, "
+            f"got {index!r}"
+        )
+    return f"{source}-{index}"
+
+
+def resolve_transcript_row(
+    source: str,
+    index: int,
+    canonical_text: str,
+    overlay: dict[str, dict] | None,
+) -> tuple[str, bool, str | None]:
+    """Apply a transcript-notes overlay entry to a single row.
+
+    Returns ``(display_text, is_corrected, note_or_none)``:
+
+    - ``display_text`` is the overlay's ``correction`` when set,
+      otherwise the canonical transcript text.
+    - ``is_corrected`` is ``True`` iff the correction replaced the
+      canonical text (empty / whitespace-only canonical still counts
+      as corrected if the overlay provides non-empty text).
+    - ``note_or_none`` is the overlay's reviewer note (non-empty
+      string) or ``None``.
+
+    When ``overlay`` is empty / absent, this function is the identity
+    — it returns ``(canonical_text, False, None)`` so exporters stay
+    byte-compatible with the no-overlay baseline.
+    """
+    if not overlay:
+        return canonical_text, False, None
+    try:
+        key = transcript_row_id(source, index)
+    except ValueError:
+        return canonical_text, False, None
+    entry = overlay.get(key)
+    if not isinstance(entry, dict):
+        return canonical_text, False, None
+    corrected = False
+    text = canonical_text
+    corr = entry.get("correction")
+    if isinstance(corr, str) and corr.strip():
+        text = corr
+        corrected = True
+    note_raw = entry.get("note")
+    note: str | None = None
+    if isinstance(note_raw, str) and note_raw.strip():
+        note = note_raw
+    return text, corrected, note
 
 
 def resolve_chapter_title(

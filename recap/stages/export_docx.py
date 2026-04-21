@@ -41,8 +41,10 @@ from .report_helpers import (
     load_frame_review_overlay as _load_frame_review_overlay,
     load_insights as _load_insights,
     load_speaker_names_overlay as _load_speaker_names_overlay,
+    load_transcript_notes_overlay as _load_transcript_notes_overlay,
     resolve_chapter_title as _resolve_chapter_title,
     resolve_speaker_label as _resolve_speaker_label,
+    resolve_transcript_row as _resolve_transcript_row,
     summarize_metadata as _summarize_metadata,
     validate_chapter_candidates as _validate_chapter_candidates,
     validate_selected_frames as _validate_selected_frames,
@@ -240,6 +242,43 @@ def _render_chapters(
             doc.add_paragraph(body_text)
 
 
+def _add_transcript_row(
+    doc,
+    *,
+    start: str,
+    end: str,
+    prefix: str,
+    display_text: str,
+    corrected: bool,
+    note: str | None,
+) -> None:
+    """Render one transcript row + optional '(edited)' marker + note.
+
+    Uses ``List Bullet`` for the row paragraph to match the existing
+    byte-compatible baseline, and follows up with an italic note
+    paragraph when the reviewer added one. Newlines inside a note
+    become paragraph breaks so long reviewer notes stay readable in
+    DOCX consumers.
+    """
+    p = doc.add_paragraph(style="List Bullet")
+    p.add_run(f"[{start} – {end}] {prefix}{display_text}")
+    if corrected:
+        edit_run = p.add_run(" (edited)")
+        edit_run.italic = True
+    if note:
+        for segment in (note.split("\n") or [""]):
+            stripped = segment.strip()
+            if not stripped:
+                continue
+            np = doc.add_paragraph()
+            np.paragraph_format.left_indent = Inches(0.35)
+            label_run = np.add_run("Note: ")
+            label_run.italic = True
+            label_run.bold = True
+            body_run = np.add_run(stripped)
+            body_run.italic = True
+
+
 def build_document(
     job: dict,
     meta_summary: dict,
@@ -251,6 +290,7 @@ def build_document(
     chapter_titles_overlay: dict[int, str] | None = None,
     speaker_names_overlay: dict[str, str] | None = None,
     frame_review_overlay: dict[str, dict] | None = None,
+    transcript_notes_overlay: dict[str, dict] | None = None,
 ):
     doc = Document()
     title = job.get("original_filename") or job.get("job_id") or "Recap"
@@ -321,23 +361,33 @@ def build_document(
 
     utterances = _iter_transcript_utterances(transcript)
     speaker_labels = speaker_names_overlay or {}
+    notes_overlay = transcript_notes_overlay or {}
     if utterances:
         doc.add_paragraph(f"Utterances: {len(utterances)}")
         doc.add_heading("Utterances", level=3)
-        for u in utterances:
+        for idx, u in enumerate(utterances):
             if not isinstance(u, dict):
                 continue
             start = _format_ts(u.get("start") or 0.0)
             end = _format_ts(u.get("end") or 0.0)
-            text = (u.get("text") or "").strip()
-            if not text:
+            canonical = (u.get("text") or "").strip()
+            if not canonical:
                 continue
             label = _resolve_speaker_label(
                 u.get("speaker"), speaker_labels,
             )
             prefix = f"{label}: " if label else ""
-            doc.add_paragraph(
-                f"[{start} – {end}] {prefix}{text}", style="List Bullet"
+            display_text, corrected, note = _resolve_transcript_row(
+                "utt", idx, canonical, notes_overlay,
+            )
+            _add_transcript_row(
+                doc,
+                start=start,
+                end=end,
+                prefix=prefix,
+                display_text=display_text,
+                corrected=corrected,
+                note=note,
             )
         return doc
 
@@ -345,14 +395,23 @@ def build_document(
     doc.add_paragraph(f"Segments: {len(segs)}")
 
     doc.add_heading("Segments", level=3)
-    for seg in segs:
+    for idx, seg in enumerate(segs):
         start = _format_ts(seg.get("start") or 0.0)
         end = _format_ts(seg.get("end") or 0.0)
-        text = (seg.get("text") or "").strip()
-        if not text:
+        canonical = (seg.get("text") or "").strip()
+        if not canonical:
             continue
-        doc.add_paragraph(
-            f"[{start} – {end}] {text}", style="List Bullet"
+        display_text, corrected, note = _resolve_transcript_row(
+            "seg", idx, canonical, notes_overlay,
+        )
+        _add_transcript_row(
+            doc,
+            start=start,
+            end=end,
+            prefix="",
+            display_text=display_text,
+            corrected=corrected,
+            note=note,
         )
 
     return doc
@@ -390,6 +449,9 @@ def run(paths: JobPaths, force: bool = False) -> Path:
         )
         frame_review_overlay = _load_frame_review_overlay(
             paths.frame_review_json,
+        )
+        transcript_notes_overlay = _load_transcript_notes_overlay(
+            paths.transcript_notes_json,
         )
 
         selected: dict | None = None
@@ -433,6 +495,7 @@ def run(paths: JobPaths, force: bool = False) -> Path:
             chapter_titles_overlay=chapter_title_overlay,
             speaker_names_overlay=speaker_overlay,
             frame_review_overlay=frame_review_overlay,
+            transcript_notes_overlay=transcript_notes_overlay,
         )
 
         doc.save(str(tmp))
@@ -447,6 +510,7 @@ def run(paths: JobPaths, force: bool = False) -> Path:
                 "speaker_names": bool(speaker_overlay),
                 "chapter_titles": bool(chapter_title_overlay),
                 "frame_review": bool(frame_review_overlay),
+                "transcript_notes": bool(transcript_notes_overlay),
             },
         }
         update_stage(paths, "export_docx", COMPLETED, extra=extra)

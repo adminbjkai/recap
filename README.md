@@ -749,10 +749,17 @@ malformed files degrade to empty):
 }
 ```
 
-Exporter integration (`recap assemble` / `export-html` /
-`export-docx` rendering corrections/notes) is tracked as a follow-up
-slice and deferred from this one to avoid report byte-compat
-regressions.
+Exporter integration lands alongside the overlay:
+`recap assemble` / `recap export-html` / `recap export-docx` read
+`transcript_notes.json` at render time. Rows with a `correction`
+replace the canonical transcript line with the corrected text
+(followed by an `*(edited)*` / `(edited)` marker so downstream
+readers can still tell the line was user-corrected). Rows with a
+`note` emit an italic `Note:` block underneath the transcript row
+— an indented bullet in Markdown, a styled `<p class="transcript-
+note">` in HTML, and an italic indented paragraph in DOCX. Missing
+or malformed overlay files fall back to the no-overlay baseline
+byte-for-byte (`scripts/verify_reports.py` guards this).
 
 ### Screenshot / frame review (slice 8)
 

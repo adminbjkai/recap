@@ -1208,6 +1208,304 @@ def check_frame_review_reject_wins_over_selection() -> None:
         shutil.rmtree(job.parent, ignore_errors=True)
 
 
+def _write_transcript_notes(job: Path, items: dict) -> None:
+    (job / "transcript_notes.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "updated_at": "2026-04-21T00:00:00Z",
+                "items": items,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _seed_utterances(job: Path) -> None:
+    """Inject a minimal utterances[] section into the scratch
+    transcript so the exporters take the Utterances render path. Only
+    mutates the *scratch copy* of the fixture; `scripts/fixtures/*`
+    stays byte-identical.
+    """
+    tpath = job / "transcript.json"
+    tdata = json.loads(tpath.read_text(encoding="utf-8"))
+    tdata["utterances"] = [
+        {
+            "start": 0.0,
+            "end": 6.0,
+            "text": "Welcome to the demo recording.",
+            "speaker": 0,
+        },
+        {
+            "start": 6.0,
+            "end": 14.0,
+            "text": "We will walk through the Recap pipeline today.",
+            "speaker": 1,
+        },
+    ]
+    tpath.write_text(json.dumps(tdata), encoding="utf-8")
+
+
+def check_transcript_notes_segment_correction() -> None:
+    """``transcript_notes.json`` correction replaces the canonical
+    segment text in all three exporter outputs and marks the row as
+    edited without mutating ``transcript.json``.
+    """
+    case = "transcript-notes-segment-correction"
+    job = copy_fixture()
+    try:
+        canonical_transcript = (
+            (job / "transcript.json").read_bytes()
+        )
+        _write_transcript_notes(
+            job,
+            {
+                "seg-0": {
+                    "correction": "Clarified opening line.",
+                    "note": "Rewrote for clarity.",
+                },
+            },
+        )
+        for cmd in EXPORT_CMDS:
+            expect_ok(case, job, cmd)
+
+        md = job / "report.md"
+        # Corrected text replaces canonical for this segment.
+        assert_contains(case, md, "Clarified opening line. *(edited)*")
+        # The note renders as an italic _Note:_ bullet beneath.
+        assert_contains(case, md, "_Note:_ Rewrote for clarity.")
+        # Canonical seg-0 text must not appear in the Transcript
+        # section — it only lives in the original transcript.json and
+        # the chapter body text (which comes from
+        # chapter_candidates.json, unrelated to this overlay).
+        md_text = md.read_text(encoding="utf-8")
+        transcript_section = md_text[md_text.find("## Transcript"):]
+        if (
+            "Welcome to the demo recording for the Recap pipeline."
+            in transcript_section
+        ):
+            fail(
+                case,
+                "canonical seg-0 text leaked into the Transcript "
+                "section after correction",
+            )
+        passed()
+
+        html = job / "report.html"
+        assert_contains(case, html, "Clarified opening line.")
+        assert_contains(
+            case,
+            html,
+            '<small class="transcript-edited">(edited)</small>',
+        )
+        assert_contains(
+            case,
+            html,
+            'class="transcript-note"',
+        )
+        assert_contains(case, html, "Rewrote for clarity.")
+        passed()
+
+        docx = job / "report.docx"
+        paragraphs = _docx_paragraphs_text(docx)
+        if not any("Clarified opening line." in p for p in paragraphs):
+            fail(case, f"DOCX missing correction: {paragraphs!r}")
+        if not any("(edited)" in p for p in paragraphs):
+            fail(case, "DOCX missing (edited) marker")
+        if not any("Rewrote for clarity." in p for p in paragraphs):
+            fail(case, "DOCX missing reviewer note")
+        passed()
+
+        # Upstream transcript.json must be untouched.
+        if (job / "transcript.json").read_bytes() != canonical_transcript:
+            fail(case, "transcript.json was mutated by exporter")
+        passed()
+    finally:
+        shutil.rmtree(job.parent, ignore_errors=True)
+
+
+def check_transcript_notes_note_only_preserves_canonical() -> None:
+    """A row with a note but no correction keeps the canonical
+    transcript text verbatim and appends the note.
+    """
+    case = "transcript-notes-note-only"
+    job = copy_fixture()
+    try:
+        _write_transcript_notes(
+            job,
+            {"seg-2": {"note": "Revisit this point with the team."}},
+        )
+        for cmd in EXPORT_CMDS:
+            expect_ok(case, job, cmd)
+
+        md = job / "report.md"
+        # Canonical text for seg-2 survives verbatim.
+        assert_contains(
+            case,
+            md,
+            "Next we walk through configuration details.",
+        )
+        # Note renders under the row.
+        assert_contains(
+            case, md, "_Note:_ Revisit this point with the team.",
+        )
+        # No (edited) marker for note-only rows.
+        assert_not_contains(case, md, "*(edited)*")
+        passed()
+
+        html = job / "report.html"
+        assert_contains(case, html, "Revisit this point with the team.")
+        assert_not_contains(
+            case,
+            html,
+            '<small class="transcript-edited">(edited)</small>',
+        )
+        passed()
+    finally:
+        shutil.rmtree(job.parent, ignore_errors=True)
+
+
+def check_transcript_notes_utterance_correction() -> None:
+    """On utterance-based transcripts the correction replaces the
+    text while the speaker-label prefix stays intact, and the note
+    renders beneath the utterance row.
+    """
+    case = "transcript-notes-utterance-correction"
+    job = copy_fixture()
+    try:
+        _seed_utterances(job)
+        # Also seed a speaker-names overlay so we exercise the
+        # combined `speaker_names + transcript_notes` path.
+        (job / "speaker_names.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "updated_at": None,
+                    "speakers": {"0": "Host", "1": "Guest"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        _write_transcript_notes(
+            job,
+            {
+                "utt-0": {
+                    "correction": "Hello and welcome to the demo.",
+                    "note": "Keep it short.",
+                },
+            },
+        )
+        for cmd in EXPORT_CMDS:
+            expect_ok(case, job, cmd)
+
+        md = job / "report.md"
+        assert_contains(
+            case,
+            md,
+            "Host: Hello and welcome to the demo. *(edited)*",
+        )
+        assert_contains(case, md, "_Note:_ Keep it short.")
+        # Uncovered speaker fallback + canonical text for utt-1.
+        assert_contains(
+            case,
+            md,
+            "Guest: We will walk through the Recap pipeline today.",
+        )
+        passed()
+
+        html = job / "report.html"
+        assert_contains(case, html, "<h3>Utterances</h3>")
+        assert_contains(case, html, "<strong>Host:</strong>")
+        assert_contains(
+            case, html, "Hello and welcome to the demo.",
+        )
+        assert_contains(
+            case,
+            html,
+            '<small class="transcript-edited">(edited)</small>',
+        )
+        passed()
+
+        docx = job / "report.docx"
+        paragraphs = _docx_paragraphs_text(docx)
+        if not any(
+            "Host: Hello and welcome to the demo." in p for p in paragraphs
+        ):
+            fail(case, f"DOCX missing utterance correction: {paragraphs!r}")
+        if not any("Keep it short." in p for p in paragraphs):
+            fail(case, "DOCX missing utterance note")
+        passed()
+    finally:
+        shutil.rmtree(job.parent, ignore_errors=True)
+
+
+def check_transcript_notes_malformed_ignored() -> None:
+    """A malformed ``transcript_notes.json`` degrades to an empty
+    overlay: the exporters still succeed, no correction / note
+    renders, and the canonical transcript text survives intact.
+    """
+    case = "transcript-notes-malformed-ignored"
+    job = copy_fixture()
+    try:
+        (job / "transcript_notes.json").write_text(
+            "{not json", encoding="utf-8",
+        )
+        for cmd in EXPORT_CMDS:
+            expect_ok(case, job, cmd)
+
+        md = job / "report.md"
+        assert_not_contains(case, md, "*(edited)*")
+        assert_not_contains(case, md, "_Note:_")
+        assert_contains(
+            case,
+            md,
+            "Welcome to the demo recording for the Recap pipeline.",
+        )
+        passed()
+
+        html = job / "report.html"
+        assert_not_contains(
+            case,
+            html,
+            '<small class="transcript-edited">(edited)</small>',
+        )
+        assert_not_contains(case, html, 'class="transcript-note"')
+        passed()
+    finally:
+        shutil.rmtree(job.parent, ignore_errors=True)
+
+
+def check_transcript_notes_empty_overlay_byte_compat() -> None:
+    """An empty ``transcript_notes.json`` (valid shape, no items)
+    must leave exporter output byte-identical to the no-overlay
+    baseline — the "overlay layer is a pure function of its input"
+    contract.
+    """
+    case = "transcript-notes-empty-byte-compat"
+    baseline = copy_fixture()
+    try:
+        for cmd in EXPORT_CMDS:
+            expect_ok(case, baseline, cmd)
+        baseline_md = (baseline / "report.md").read_bytes()
+        baseline_html = (baseline / "report.html").read_bytes()
+    finally:
+        pass
+
+    modified = copy_fixture()
+    try:
+        _write_transcript_notes(modified, {})
+        for cmd in EXPORT_CMDS:
+            expect_ok(case, modified, cmd)
+        if (modified / "report.md").read_bytes() != baseline_md:
+            fail(case, "report.md differs from no-overlay baseline")
+        if (modified / "report.html").read_bytes() != baseline_html:
+            fail(case, "report.html differs from no-overlay baseline")
+        passed()
+    finally:
+        shutil.rmtree(baseline.parent, ignore_errors=True)
+        shutil.rmtree(modified.parent, ignore_errors=True)
+
+
 def check_scenes_interrupt_marks_failed() -> None:
     """Regression guard: Ctrl-C during `recap scenes` must leave the
     stage as `failed`, not `running`, and remove partial
@@ -1362,6 +1660,11 @@ def main() -> int:
     check_speaker_names_overlay_partial_falls_back()
     check_malformed_overlays_ignored()
     check_frame_review_reject_wins_over_selection()
+    check_transcript_notes_segment_correction()
+    check_transcript_notes_note_only_preserves_canonical()
+    check_transcript_notes_utterance_correction()
+    check_transcript_notes_malformed_ignored()
+    check_transcript_notes_empty_overlay_byte_compat()
     check_scenes_interrupt_marks_failed()
 
     print(f"OK: {CHECKS_PASSED} checks passed")

@@ -378,13 +378,17 @@ is kept separate to avoid report byte-compat regressions.
 - Dashboard meta line carries a `Transcript notes` chip when the
   overlay file is present.
 
-**Deferred to slice 9b:** exporter integration for
-`transcript_notes.json`. Current exports still render canonical
-transcript segments regardless of the overlay; adding it to
-`recap assemble` / `export-html` / `export-docx` is a follow-up
-task so report byte-compat stays protected (static regression
-checks in `scripts/verify_reports.py` should be extended when that
-slice lands).
+**Follow-up slice 9b — done.** Exporter integration for
+`transcript_notes.json` shipped in `Make exports honor transcript
+notes`. `recap assemble` / `export-html` / `export-docx` now read
+the overlay at render time, swap in corrections with an
+`*(edited)*` / `(edited)` marker, render reviewer notes as an
+italic `Note:` block subordinate to the transcript row, and fall
+back to byte-identical no-overlay output when the file is missing
+or malformed. `scripts/verify_reports.py` grew with five
+regression cases covering segment correction, note-only,
+utterance correction via speaker label, malformed-overlay graceful
+fallback, and empty-overlay byte-compat.
 
 ## 12. Folders / projects / archive
 

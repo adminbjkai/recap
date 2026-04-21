@@ -36,8 +36,10 @@ from .report_helpers import (
     load_frame_review_overlay as _load_frame_review_overlay,
     load_insights as _load_insights,
     load_speaker_names_overlay as _load_speaker_names_overlay,
+    load_transcript_notes_overlay as _load_transcript_notes_overlay,
     resolve_chapter_title as _resolve_chapter_title,
     resolve_speaker_label as _resolve_speaker_label,
+    resolve_transcript_row as _resolve_transcript_row,
     summarize_metadata as _summarize_metadata,
     validate_chapter_candidates as _validate_chapter_candidates,
     validate_selected_frames as _validate_selected_frames,
@@ -63,6 +65,11 @@ p.chapter-summary { margin: 0.3rem 0 0.6rem; }
 p.chapter-speakers em { color: #555; }
 ul.segments li { margin: 0.2rem 0; }
 p em { color: #444; }
+.transcript-edited { color: #8a4a00; font-style: italic; margin-left: 0.3rem; }
+p.transcript-note { margin: 0.2rem 0 0.4rem 0.4rem;
+                    padding: 0.3rem 0.5rem; border-left: 3px solid #b2471a;
+                    background: #fff4e6; color: #3a2a1a; font-size: 0.95em; }
+p.transcript-note em { color: #7a3a12; }
 """.strip()
 
 
@@ -273,6 +280,28 @@ def _chapters_section_html(
     return out
 
 
+def _render_note_html(note: str) -> list[str]:
+    """Render a reviewer note inside a transcript <li>.
+
+    The note becomes a muted italic paragraph; newlines in the note
+    are preserved by splitting into a stack of <span> elements so
+    the HTML reads with the same line structure as the React
+    workspace.
+    """
+    parts: list[str] = ['<p class="transcript-note"><em>Note:</em> ']
+    first = True
+    for line in note.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if not first:
+            parts.append("<br>")
+        parts.append(_e(stripped))
+        first = False
+    parts.append("</p>")
+    return ["".join(parts)]
+
+
 def build_html(
     job: dict,
     meta_summary: dict,
@@ -281,6 +310,7 @@ def build_html(
     insights: dict | None = None,
     chapter_titles_overlay: dict[int, str] | None = None,
     speaker_names_overlay: dict[str, str] | None = None,
+    transcript_notes_overlay: dict[str, dict] | None = None,
 ) -> str:
     title = job.get("original_filename") or job.get("job_id") or "Recap"
     doc_title = f"Recap: {title}"
@@ -370,18 +400,19 @@ def build_html(
 
     utterances = _iter_transcript_utterances(transcript)
     speaker_labels = speaker_names_overlay or {}
+    notes_overlay = transcript_notes_overlay or {}
     if utterances:
         lines.append(f"<li>Utterances: {_e(len(utterances))}</li>")
         lines.append("</ul>")
         lines.append("<h3>Utterances</h3>")
         lines.append('<ul class="segments">')
-        for u in utterances:
+        for idx, u in enumerate(utterances):
             if not isinstance(u, dict):
                 continue
             start = _format_ts(u.get("start") or 0.0)
             end = _format_ts(u.get("end") or 0.0)
-            text = (u.get("text") or "").strip()
-            if not text:
+            canonical = (u.get("text") or "").strip()
+            if not canonical:
                 continue
             label = _resolve_speaker_label(
                 u.get("speaker"), speaker_labels,
@@ -389,10 +420,22 @@ def build_html(
             prefix = (
                 f"<strong>{_e(label)}:</strong> " if label else ""
             )
-            lines.append(
-                f"<li><strong>[{_e(start)} – {_e(end)}]</strong> "
-                f"{prefix}{_e(text)}</li>"
+            display_text, corrected, note = _resolve_transcript_row(
+                "utt", idx, canonical, notes_overlay,
             )
+            suffix = (
+                ' <small class="transcript-edited">(edited)</small>'
+                if corrected
+                else ""
+            )
+            row_parts = [
+                f"<li><strong>[{_e(start)} – {_e(end)}]</strong> ",
+                f"{prefix}{_e(display_text)}{suffix}",
+            ]
+            if note:
+                row_parts.append("".join(_render_note_html(note)))
+            row_parts.append("</li>")
+            lines.append("".join(row_parts))
         lines.append("</ul>")
 
         lines.append("</body>")
@@ -405,15 +448,28 @@ def build_html(
 
     lines.append("<h3>Segments</h3>")
     lines.append('<ul class="segments">')
-    for seg in segs:
+    for idx, seg in enumerate(segs):
         start = _format_ts(seg.get("start") or 0.0)
         end = _format_ts(seg.get("end") or 0.0)
-        text = (seg.get("text") or "").strip()
-        if not text:
+        canonical = (seg.get("text") or "").strip()
+        if not canonical:
             continue
-        lines.append(
-            f"<li><strong>[{_e(start)} – {_e(end)}]</strong> {_e(text)}</li>"
+        display_text, corrected, note = _resolve_transcript_row(
+            "seg", idx, canonical, notes_overlay,
         )
+        suffix = (
+            ' <small class="transcript-edited">(edited)</small>'
+            if corrected
+            else ""
+        )
+        row_parts = [
+            f"<li><strong>[{_e(start)} – {_e(end)}]</strong> ",
+            f"{_e(display_text)}{suffix}",
+        ]
+        if note:
+            row_parts.append("".join(_render_note_html(note)))
+        row_parts.append("</li>")
+        lines.append("".join(row_parts))
     lines.append("</ul>")
 
     lines.append("</body>")
@@ -456,6 +512,9 @@ def run(paths: JobPaths, force: bool = False) -> Path:
         )
         frame_review_overlay = _load_frame_review_overlay(
             paths.frame_review_json,
+        )
+        transcript_notes_overlay = _load_transcript_notes_overlay(
+            paths.transcript_notes_json,
         )
 
         chapters_section: list[str] | None = None
@@ -504,6 +563,7 @@ def run(paths: JobPaths, force: bool = False) -> Path:
             insights=insights,
             chapter_titles_overlay=chapter_title_overlay,
             speaker_names_overlay=speaker_overlay,
+            transcript_notes_overlay=transcript_notes_overlay,
         )
         tmp.write_text(doc, encoding="utf-8")
         tmp.replace(paths.report_html)
@@ -517,6 +577,7 @@ def run(paths: JobPaths, force: bool = False) -> Path:
                 "speaker_names": bool(speaker_overlay),
                 "chapter_titles": bool(chapter_title_overlay),
                 "frame_review": bool(frame_review_overlay),
+                "transcript_notes": bool(transcript_notes_overlay),
             },
         }
         update_stage(paths, "export_html", COMPLETED, extra=extra)

@@ -109,6 +109,28 @@ does and produces, read `HANDOFF.md`.
   `X-Recap-Token`, body-size caps, and the existing per-job lock.
   The overlay never mutates `transcript.json`, and exporters do not
   read it yet.
+- **2026-04-21 exports honor transcript notes (slice 9b).**
+  `recap assemble`, `recap export-html`, and `recap export-docx`
+  now read `transcript_notes.json` at render time and apply it per
+  row (`utt-<n>` / `seg-<n>`). Corrections replace the canonical
+  transcript line with an inline `*(edited)*` / `(edited)` marker;
+  notes render as an italic `Note:` block subordinate to the row
+  (indented bullet in Markdown, `<p class="transcript-note">` in
+  HTML, italic indented paragraph in DOCX). Missing / malformed
+  overlays degrade to the no-overlay baseline byte-for-byte.
+  New read-side helpers live in
+  `recap/stages/report_helpers.py`:
+  `load_transcript_notes_overlay`, `transcript_row_id`, and
+  `resolve_transcript_row` — the three exporters call these in the
+  same shape they already use for speaker / chapter / frame-review
+  overlays. Verifier grows with 12 new regression checks
+  (segment correction across MD/HTML/DOCX + upstream transcript
+  bytes unchanged, note-only keeps canonical text, utterance
+  correction via speaker label, malformed-overlay graceful, empty-
+  overlay byte-compat); `scripts/verify_reports.py` is now 60
+  checks. No new runtime deps; `recap/job.py STAGES` and `recap
+  run` composition unchanged; `recap/stages/scenes.py` etc. are
+  untouched.
 - **2026-04-21 transcript notes overlay.** React transcript
   workspace gains a per-row correction + private-note flow backed
   by a new `transcript_notes.json` overlay and

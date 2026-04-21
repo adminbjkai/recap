@@ -32,8 +32,10 @@ from .report_helpers import (
     load_frame_review_overlay as _load_frame_review_overlay,
     load_insights as _load_insights,
     load_speaker_names_overlay as _load_speaker_names_overlay,
+    load_transcript_notes_overlay as _load_transcript_notes_overlay,
     resolve_chapter_title as _resolve_chapter_title,
     resolve_speaker_label as _resolve_speaker_label,
+    resolve_transcript_row as _resolve_transcript_row,
     summarize_metadata as _summarize_metadata,
     validate_chapter_candidates as _validate_chapter_candidates,
     validate_selected_frames as _validate_selected_frames,
@@ -239,6 +241,25 @@ def _chapter_section_lines(
     return lines
 
 
+def _render_note_block_md(note: str) -> list[str]:
+    """Render a reviewer note as Markdown lines under a transcript row.
+
+    The note is rendered as an italic indented block-quote so it
+    reads as secondary context instead of competing with the
+    transcript line. Newlines in the note become soft line breaks.
+    """
+    out: list[str] = []
+    for idx, ln in enumerate(note.splitlines() or [""]):
+        stripped = ln.strip()
+        if not stripped:
+            continue
+        if idx == 0:
+            out.append(f"  - _Note:_ {stripped}")
+        else:
+            out.append(f"    {stripped}")
+    return out
+
+
 def build_markdown(
     job: dict,
     meta_summary: dict,
@@ -247,6 +268,7 @@ def build_markdown(
     insights: dict | None = None,
     chapter_titles_overlay: dict[int, str] | None = None,
     speaker_names_overlay: dict[str, str] | None = None,
+    transcript_notes_overlay: dict[str, dict] | None = None,
 ) -> str:
     lines: list[str] = []
     title = job.get("original_filename") or job.get("job_id")
@@ -315,24 +337,33 @@ def build_markdown(
     # with the faster-whisper path.
     utterances = _iter_transcript_utterances(transcript)
     speaker_labels = speaker_names_overlay or {}
+    notes_overlay = transcript_notes_overlay or {}
     if utterances:
         lines.append(f"- Utterances: {len(utterances)}")
         lines.append("")
         lines.append("### Utterances")
         lines.append("")
-        for u in utterances:
+        for idx, u in enumerate(utterances):
             if not isinstance(u, dict):
                 continue
             start = _format_ts(u.get("start") or 0.0)
             end = _format_ts(u.get("end") or 0.0)
-            text = (u.get("text") or "").strip()
-            if not text:
+            canonical = (u.get("text") or "").strip()
+            if not canonical:
                 continue
             label = _resolve_speaker_label(
                 u.get("speaker"), speaker_labels,
             )
             prefix = f"{label}: " if label else ""
-            lines.append(f"- **[{start} – {end}]** {prefix}{text}")
+            display_text, corrected, note = _resolve_transcript_row(
+                "utt", idx, canonical, notes_overlay,
+            )
+            suffix = " *(edited)*" if corrected else ""
+            lines.append(
+                f"- **[{start} – {end}]** {prefix}{display_text}{suffix}"
+            )
+            if note:
+                lines.extend(_render_note_block_md(note))
         lines.append("")
         return "\n".join(lines)
 
@@ -342,13 +373,21 @@ def build_markdown(
 
     lines.append("### Segments")
     lines.append("")
-    for seg in segs:
+    for idx, seg in enumerate(segs):
         start = _format_ts(seg.get("start") or 0.0)
         end = _format_ts(seg.get("end") or 0.0)
-        text = (seg.get("text") or "").strip()
-        if not text:
+        canonical = (seg.get("text") or "").strip()
+        if not canonical:
             continue
-        lines.append(f"- **[{start} – {end}]** {text}")
+        display_text, corrected, note = _resolve_transcript_row(
+            "seg", idx, canonical, notes_overlay,
+        )
+        suffix = " *(edited)*" if corrected else ""
+        lines.append(
+            f"- **[{start} – {end}]** {display_text}{suffix}"
+        )
+        if note:
+            lines.extend(_render_note_block_md(note))
     lines.append("")
     return "\n".join(lines)
 
@@ -389,6 +428,9 @@ def run(paths: JobPaths, force: bool = False) -> Path:
         )
         frame_review_overlay = _load_frame_review_overlay(
             paths.frame_review_json,
+        )
+        transcript_notes_overlay = _load_transcript_notes_overlay(
+            paths.transcript_notes_json,
         )
 
         chapters_section: list[str] | None = None
@@ -435,6 +477,7 @@ def run(paths: JobPaths, force: bool = False) -> Path:
             insights=insights,
             chapter_titles_overlay=chapter_title_overlay,
             speaker_names_overlay=speaker_overlay,
+            transcript_notes_overlay=transcript_notes_overlay,
         )
         tmp.write_text(md, encoding="utf-8")
         tmp.replace(paths.report_md)
@@ -448,6 +491,7 @@ def run(paths: JobPaths, force: bool = False) -> Path:
                 "speaker_names": bool(speaker_overlay),
                 "chapter_titles": bool(chapter_title_overlay),
                 "frame_review": bool(frame_review_overlay),
+                "transcript_notes": bool(transcript_notes_overlay),
             },
         }
         update_stage(paths, "assemble", COMPLETED, extra=extra)

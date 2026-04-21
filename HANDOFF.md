@@ -1015,6 +1015,35 @@ Primary `GET` routes:
   (`recap assemble` / `export-html` / `export-docx` reading the
   overlay) is a deferred follow-up — today the overlay only affects
   the React surface.
+- **Exporters honor transcript notes (slice 9b).**
+  `recap assemble`, `recap export-html`, and `recap export-docx`
+  now read `transcript_notes.json` at render time via the new
+  `load_transcript_notes_overlay` + `resolve_transcript_row` +
+  `transcript_row_id` helpers in
+  `recap/stages/report_helpers.py`. The render pass walks the
+  transcript's `utterances[]` (when present with valid speaker
+  ids) or `segments[]` (faster-whisper fallback) and looks each row
+  up by its stable id (`utt-<n>` / `seg-<n>`). A row with a
+  `correction` renders the corrected text in place of the canonical
+  line, followed by an `*(edited)*` / `(edited)` marker so
+  downstream readers still see that the row was user-corrected; a
+  row with a `note` emits a subordinate italic `Note: ...` block
+  (Markdown: indented `_Note:_` bullet; HTML: styled
+  `<p class="transcript-note">`; DOCX: italic indented paragraph).
+  A correction-only row just rewrites the text; a note-only row
+  keeps the canonical text and appends the note; an empty / missing
+  item is a no-op. **Malformed-overlay policy:** missing file,
+  invalid JSON, wrong top-level shape, bad per-item shape, bad key
+  shape (`^(utt|seg)-\d+$`), overlength fields
+  (correction > 2000 / note > 1000 chars), or non-printable control
+  chars other than tab / newline / CR all degrade to "no overlay
+  entry for that field" — the exporter falls back to canonical
+  text and no `Note:` block. The overlay never mutates
+  `transcript.json`; `scripts/verify_reports.py` statically checks
+  the canonical transcript bytes are untouched after running all
+  three exporters. The three `run()` functions now record
+  `overlays.transcript_notes` in the `job.json#stages[...].extra`
+  dict alongside the other overlay flags.
 - **Exporters honor overlays (slice 9).** `recap assemble`,
   `recap export-html`, and `recap export-docx` now read
   `speaker_names.json`, `chapter_titles.json`, and
