@@ -310,6 +310,22 @@ export type FrameListPayload = {
   overlay: FrameReviewDoc;
 };
 
+export type TranscriptNoteEntry = {
+  correction?: string;
+  note?: string;
+};
+
+export type TranscriptNotesDoc = {
+  version: 1;
+  updated_at: string | null;
+  items: Record<string, TranscriptNoteEntry>;
+};
+
+export type TranscriptNoteDraft = {
+  correction: string;
+  note: string;
+};
+
 export type SpeakerNamesDoc = {
   version: 1;
   updated_at: string | null;
@@ -707,6 +723,56 @@ export async function saveFrameReview(
     );
   }
   return body as FrameReviewDoc;
+}
+
+export function getTranscriptNotes(
+  id: string,
+): Promise<TranscriptNotesDoc> {
+  return requestJson<TranscriptNotesDoc>(
+    `/api/jobs/${encodeURIComponent(id)}/transcript-notes`,
+  );
+}
+
+async function postTranscriptNotes(
+  id: string,
+  items: Record<string, TranscriptNoteEntry>,
+  token: string,
+): Promise<Response> {
+  return fetch(
+    `/api/jobs/${encodeURIComponent(id)}/transcript-notes`,
+    {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-Recap-Token": token,
+      },
+      body: JSON.stringify({ items }),
+    },
+  );
+}
+
+export async function saveTranscriptNotes(
+  id: string,
+  items: Record<string, TranscriptNoteEntry>,
+): Promise<TranscriptNotesDoc> {
+  let token = await getCsrf();
+  let response = await postTranscriptNotes(id, items, token);
+  if (response.status === 403) {
+    token = await getCsrf(true);
+    response = await postTranscriptNotes(id, items, token);
+  }
+  const body = await parseJson<TranscriptNotesDoc | ApiErrorBody>(
+    response,
+  );
+  if (!response.ok) {
+    const apiBody = body as ApiErrorBody;
+    throw new Error(
+      apiBody.error || `${response.status} ${response.statusText}`,
+    );
+  }
+  return body as TranscriptNotesDoc;
 }
 
 export function getSpeakerNames(id: string): Promise<SpeakerNamesDoc> {

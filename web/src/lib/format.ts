@@ -138,11 +138,17 @@ export function resolveSpeakerLabel(
 export function buildTranscriptRows(
   transcript: TranscriptPayload,
 ): TranscriptRow[] {
+  const useUtterances =
+    Array.isArray(transcript.utterances) &&
+    transcript.utterances.length > 0;
   const source = (
-    Array.isArray(transcript.utterances) && transcript.utterances.length > 0
-      ? transcript.utterances
-      : transcript.segments
+    useUtterances ? transcript.utterances : transcript.segments
   ) || [];
+  // Row ids match the backend's `transcript_notes.json` key scheme
+  // (`utt-<n>` / `seg-<n>`) so the overlay survives transcript re-
+  // renders. The `<n>` is the row's 0-based ordinal in the chosen
+  // source array.
+  const prefix = useUtterances ? "utt" : "seg";
 
   return source
     .filter((row): row is TranscriptSegment => {
@@ -154,7 +160,7 @@ export function buildTranscriptRows(
       );
     })
     .map((row, index) => ({
-      id: `${index}-${row.start}`,
+      id: `${prefix}-${index}`,
       start: row.start,
       end: typeof row.end === "number" ? row.end : undefined,
       text: row.text,

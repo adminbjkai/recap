@@ -350,12 +350,41 @@ is kept separate to avoid report byte-compat regressions.
 - Driven entirely client-side from the existing transcript + speaker
   overlay. No API changes.
 
-## 11. Transcript correction / notes overlay
+## 11. Transcript correction / notes overlay — **done**
 
-- Per-segment note / correction field stored as a new overlay file
-  next to `speaker_names.json`.
-- Exports optionally include the corrected text (gated on slice 9
-  landing).
+**Shipped in:**
+- `Add transcript notes overlay`
+
+**What it gives users:**
+- Per-row correction + private note directly from the transcript
+  workspace. Hovering a row reveals a small **Note** button; the
+  inline editor opens beneath the row with a correction textarea
+  (≤ 2000 chars), a private note (≤ 1000 chars), and a reminder
+  that the canonical `transcript.json` stays untouched.
+- A `Show corrections` toggle in the transcript card header flips
+  rendered rows between the corrected overlay text and the
+  canonical transcript. Reviewed rows carry an `edited` or `note`
+  badge; any saved note shows up as a small preview paragraph.
+- New `transcript_notes.json` overlay keyed by stable row ids
+  (`utt-<n>` / `seg-<n>`). Empty fields clear just that field;
+  clearing both fields drops the mapping. Merge-on-server
+  semantics so single-row saves don't disturb other rows.
+- New `GET /api/jobs/:id/transcript-notes` and
+  `POST /api/jobs/:id/transcript-notes` endpoints reuse the shared
+  overlay safety model (Host pinning, `X-Recap-Token` CSRF,
+  per-job lock, atomic `<file>.tmp` → `os.replace`, malformed-on-
+  read degrades to empty). Dedicated 64 KiB body cap so batched
+  saves stay within bounds.
+- Dashboard meta line carries a `Transcript notes` chip when the
+  overlay file is present.
+
+**Deferred to slice 9b:** exporter integration for
+`transcript_notes.json`. Current exports still render canonical
+transcript segments regardless of the overlay; adding it to
+`recap assemble` / `export-html` / `export-docx` is a follow-up
+task so report byte-compat stays protected (static regression
+checks in `scripts/verify_reports.py` should be extended when that
+slice lands).
 
 ## 12. Folders / projects / archive
 

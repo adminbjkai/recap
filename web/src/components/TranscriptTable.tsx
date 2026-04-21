@@ -1,4 +1,5 @@
-import { ReactNode, RefObject, useEffect, useRef } from "react";
+import { Fragment, ReactNode, RefObject, useEffect, useRef } from "react";
+import type { TranscriptNoteEntry } from "../lib/api";
 import { useActiveRow } from "../hooks/useActiveRow";
 import {
   formatTimestamp,
@@ -16,6 +17,12 @@ type TranscriptTableProps = {
   hiddenSpeakers: Set<string>;
   totalRowCount: number;
   toolbar?: ReactNode;
+  notes?: Record<string, TranscriptNoteEntry>;
+  editingRowId?: string | null;
+  onOpenNoteEditor?: (rowId: string) => void;
+  showCorrections?: boolean;
+  onToggleCorrections?: () => void;
+  renderRowEditor?: (rowId: string) => ReactNode;
 };
 
 export default function TranscriptTable({
@@ -27,10 +34,18 @@ export default function TranscriptTable({
   hiddenSpeakers,
   totalRowCount,
   toolbar,
+  notes,
+  editingRowId,
+  onOpenNoteEditor,
+  showCorrections = true,
+  onToggleCorrections,
+  renderRowEditor,
 }: TranscriptTableProps) {
   const activeIndex = useActiveRow(videoRef, rows);
   const showSpeakers = rows.some((row) => row.speakerKey);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const noteMap = notes || {};
+  const noteCount = Object.keys(noteMap).length;
 
   const jumpTo = (start: number) => {
     const video = videoRef.current;
@@ -93,6 +108,8 @@ export default function TranscriptTable({
     );
   }
 
+  const colSpan = showSpeakers ? 3 : 2;
+
   return (
     <section className="transcript-card" aria-label="Transcript">
       <div className="transcript-card-header">
@@ -108,9 +125,32 @@ export default function TranscriptTable({
             {hiddenSpeakers.size > 0
               ? `${rows.length.toLocaleString()} of ${totalRowCount.toLocaleString()} shown`
               : `${totalRowCount.toLocaleString()} total`}
+            {noteCount > 0 ? (
+              <>
+                {" · "}
+                <span
+                  className="transcript-card-notes-chip"
+                  aria-label={`${noteCount} rows have corrections or notes`}
+                >
+                  {noteCount} note{noteCount === 1 ? "" : "s"}
+                </span>
+              </>
+            ) : null}
           </span>
         </div>
         {toolbar}
+        {noteCount > 0 && onToggleCorrections ? (
+          <div className="transcript-card-toggles">
+            <label className="transcript-card-toggle">
+              <input
+                type="checkbox"
+                checked={showCorrections}
+                onChange={onToggleCorrections}
+              />
+              <span>Show corrections</span>
+            </label>
+          </div>
+        ) : null}
       </div>
       <div className="table-scroll" ref={scrollRef}>
         <table className="transcript-table">
@@ -124,64 +164,121 @@ export default function TranscriptTable({
           <tbody>
             {rows.map((row, index) => {
               const active = index === activeIndex;
+              const editing = editingRowId === row.id;
+              const entry = noteMap[row.id];
+              const hasNote =
+                !!(entry && (entry.correction || entry.note));
               const className = [
                 row.speakerClassName,
                 active ? "active" : null,
+                hasNote ? "has-note" : null,
+                editing ? "is-editing" : null,
               ]
                 .filter(Boolean)
                 .join(" ");
               const rowMatches = matches.byRow.get(row.id);
-              const segments = splitTextWithMatches(row.text, rowMatches);
+              const showCorrection =
+                showCorrections &&
+                entry?.correction &&
+                entry.correction.length > 0;
+              const displayText = showCorrection
+                ? entry!.correction!
+                : row.text;
+              const segments = splitTextWithMatches(displayText, rowMatches);
               return (
-                <tr
-                  key={row.id}
-                  className={className}
-                  aria-current={active ? "true" : undefined}
-                >
-                  <td>
-                    <button
-                      type="button"
-                      className="timestamp-button"
-                      onClick={() => jumpTo(row.start)}
-                      aria-label={`Jump to ${formatTimestamp(row.start)}`}
-                    >
-                      {formatTimestamp(row.start)}
-                    </button>
-                  </td>
-                  {showSpeakers ? (
-                    <td className={`speaker-cell ${row.speakerClassName ?? ""}`}>
-                      {row.speakerKey ? (
-                        <>
-                          <span className="speaker-swatch" aria-hidden />
-                          {resolveSpeakerLabel(row.speaker, speakerLabels)}
-                        </>
-                      ) : (
-                        "-"
-                      )}
+                <Fragment key={row.id}>
+                  <tr
+                    className={className}
+                    data-row-id={row.id}
+                    aria-current={active ? "true" : undefined}
+                  >
+                    <td>
+                      <button
+                        type="button"
+                        className="timestamp-button"
+                        onClick={() => jumpTo(row.start)}
+                        aria-label={`Jump to ${formatTimestamp(row.start)}`}
+                      >
+                        {formatTimestamp(row.start)}
+                      </button>
                     </td>
+                    {showSpeakers ? (
+                      <td className={`speaker-cell ${row.speakerClassName ?? ""}`}>
+                        {row.speakerKey ? (
+                          <>
+                            <span className="speaker-swatch" aria-hidden />
+                            {resolveSpeakerLabel(row.speaker, speakerLabels)}
+                          </>
+                        ) : (
+                          "-"
+                        )}
+                      </td>
+                    ) : null}
+                    <td className="transcript-text">
+                      <div className="transcript-row-body">
+                        <span className="transcript-row-text">
+                          {segments.map((seg, segIdx) => {
+                            if (seg.kind === "text") {
+                              return <span key={segIdx}>{seg.text}</span>;
+                            }
+                            const isActive =
+                              seg.globalIndex === activeMatchIndex;
+                            return (
+                              <mark
+                                key={segIdx}
+                                className={`transcript-highlight ${
+                                  isActive ? "active" : ""
+                                }`}
+                                data-match-index={seg.globalIndex}
+                              >
+                                {seg.text}
+                              </mark>
+                            );
+                          })}
+                        </span>
+                        <span className="transcript-row-flags">
+                          {hasNote ? (
+                            <span
+                              className="transcript-row-badge"
+                              title={
+                                entry?.correction
+                                  ? "This row has a correction and may have a note"
+                                  : "This row has a reviewer note"
+                              }
+                            >
+                              {entry?.correction ? "edited" : "note"}
+                            </span>
+                          ) : null}
+                          {onOpenNoteEditor ? (
+                            <button
+                              type="button"
+                              className="transcript-row-note-button"
+                              onClick={() => onOpenNoteEditor(row.id)}
+                              aria-expanded={editing}
+                              aria-label={
+                                hasNote
+                                  ? `Edit note for row ${row.id}`
+                                  : `Add note to row ${row.id}`
+                              }
+                            >
+                              {hasNote ? "Edit" : "Note"}
+                            </button>
+                          ) : null}
+                        </span>
+                      </div>
+                      {hasNote && entry?.note && showCorrections ? (
+                        <p className="transcript-row-note-preview">
+                          {entry.note}
+                        </p>
+                      ) : null}
+                    </td>
+                  </tr>
+                  {editing && renderRowEditor ? (
+                    <tr className="transcript-row-editor-row">
+                      <td colSpan={colSpan}>{renderRowEditor(row.id)}</td>
+                    </tr>
                   ) : null}
-                  <td className="transcript-text">
-                    {segments.map((seg, segIdx) => {
-                      if (seg.kind === "text") {
-                        return (
-                          <span key={segIdx}>{seg.text}</span>
-                        );
-                      }
-                      const isActive = seg.globalIndex === activeMatchIndex;
-                      return (
-                        <mark
-                          key={segIdx}
-                          className={`transcript-highlight ${
-                            isActive ? "active" : ""
-                          }`}
-                          data-match-index={seg.globalIndex}
-                        >
-                          {seg.text}
-                        </mark>
-                      );
-                    })}
-                  </td>
-                </tr>
+                </Fragment>
               );
             })}
           </tbody>

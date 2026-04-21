@@ -593,6 +593,17 @@ _API_FRAME_REVIEW_DECISIONS: frozenset[str] = frozenset({
 # Per-frame review note cap — a sentence or two, not a journal entry.
 _API_FRAME_REVIEW_NOTE_MAX_LEN = 300
 
+# Transcript-notes overlay (per-row correction + private note).
+# Keys follow the React workspace's row-id convention:
+#   ``utt-<n>`` for utterance-based rows (Deepgram)
+#   ``seg-<n>`` for segment-based rows (faster-whisper)
+# where ``<n>`` is the row's 0-based ordinal in the chosen source.
+_API_TRANSCRIPT_ROW_KEY_RE = re.compile(r"^(utt|seg)-\d+$")
+# Corrections can hold a revised line; notes are freeform per-row
+# reviewer text. Both are conservative but practical caps.
+_API_TRANSCRIPT_CORRECTION_MAX_LEN = 2000
+_API_TRANSCRIPT_NOTE_MAX_LEN = 1000
+
 # Maximum bytes accepted by POST /api/recordings. 2 GiB matches the
 # upper bound for a reasonable one-sitting browser screen recording and
 # keeps resource usage bounded per request. The value is streamed to
@@ -1061,6 +1072,118 @@ def _write_frame_review(
     return doc
 
 
+def _transcript_notes_contains_control(value: str) -> bool:
+    """Reject ASCII/Unicode control chars except plain tab and newline.
+
+    Corrections and notes are freeform text so line breaks are
+    allowed, but anything else non-printable is rejected to keep the
+    overlay safe to render directly into the transcript workspace.
+    """
+    for ch in value:
+        if ch == "\t" or ch == "\n" or ch == "\r":
+            continue
+        if ord(ch) < 0x20 or ord(ch) == 0x7F:
+            return True
+    return False
+
+
+def _load_transcript_notes(
+    paths: JobPaths, logger_stream: IO | None = None,
+) -> dict:
+    """Read the transcript_notes.json overlay, or return empty default.
+
+    Malformed files are logged once and reported as the empty default
+    so the transcript workspace never breaks on a bad overlay. Follows
+    the same read policy as ``speaker_names.json`` /
+    ``chapter_titles.json`` / ``frame_review.json``.
+    """
+    default = {"version": 1, "updated_at": None, "items": {}}
+    path = paths.transcript_notes_json
+    if not path.is_file():
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as e:
+        if logger_stream is not None:
+            logger_stream.write(
+                f"[recap-ui] transcript-notes skipped: {e}\n"
+            )
+            logger_stream.flush()
+        return default
+    if not isinstance(data, dict):
+        if logger_stream is not None:
+            logger_stream.write(
+                "[recap-ui] transcript-notes skipped: "
+                "top-level not an object\n"
+            )
+            logger_stream.flush()
+        return default
+    items_raw = data.get("items") or {}
+    if not isinstance(items_raw, dict):
+        if logger_stream is not None:
+            logger_stream.write(
+                "[recap-ui] transcript-notes skipped: "
+                "'items' not an object\n"
+            )
+            logger_stream.flush()
+        return default
+    clean: dict[str, dict] = {}
+    for k, v in items_raw.items():
+        if not isinstance(k, str) or not _API_TRANSCRIPT_ROW_KEY_RE.match(k):
+            continue
+        if not isinstance(v, dict):
+            continue
+        correction_raw = v.get("correction")
+        correction: str | None = None
+        if isinstance(correction_raw, str):
+            text = correction_raw.strip()
+            if (
+                text
+                and len(text) <= _API_TRANSCRIPT_CORRECTION_MAX_LEN
+                and not _transcript_notes_contains_control(text)
+            ):
+                correction = text
+        note_raw = v.get("note")
+        note: str | None = None
+        if isinstance(note_raw, str):
+            text = note_raw.strip()
+            if (
+                text
+                and len(text) <= _API_TRANSCRIPT_NOTE_MAX_LEN
+                and not _transcript_notes_contains_control(text)
+            ):
+                note = text
+        entry: dict[str, str] = {}
+        if correction is not None:
+            entry["correction"] = correction
+        if note is not None:
+            entry["note"] = note
+        if entry:
+            clean[k] = entry
+    updated_at = data.get("updated_at")
+    if not isinstance(updated_at, (str, type(None))):
+        updated_at = None
+    return {"version": 1, "updated_at": updated_at, "items": clean}
+
+
+def _write_transcript_notes(
+    paths: JobPaths, items: dict[str, dict],
+) -> dict:
+    """Atomic write of transcript_notes.json; returns the stored doc."""
+    doc = {
+        "version": 1,
+        "updated_at": _now_iso(),
+        "items": dict(items),
+    }
+    tmp = paths.transcript_notes_json.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(doc, f, indent=2, sort_keys=True)
+        f.write("\n")
+    tmp.replace(paths.transcript_notes_json)
+    return doc
+
+
 def _build_frame_list(
     job_dir: Path,
     logger_stream: IO | None = None,
@@ -1456,6 +1579,7 @@ _JOB_ROOT_FILES: frozenset[str] = frozenset({
     "insights.json",
     "chapter_titles.json",
     "frame_review.json",
+    "transcript_notes.json",
 })
 
 _CANDIDATE_FRAME_EXTS: frozenset[str] = frozenset({".jpg", ".jpeg", ".png"})
@@ -1523,6 +1647,7 @@ _ARTIFACT_LABELS: dict[str, str] = {
     "insights.json": "Structured insights",
     "chapter_titles.json": "Chapter titles (overlay)",
     "frame_review.json": "Frame review (overlay)",
+    "transcript_notes.json": "Transcript notes (overlay)",
 }
 
 
@@ -2898,6 +3023,9 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                 "frame_review_json": (
                     job_dir / "frame_review.json"
                 ).is_file(),
+                "transcript_notes_json": (
+                    job_dir / "transcript_notes.json"
+                ).is_file(),
             }
             urls = {
                 "analysis_mp4": f"/job/{job_id}/analysis.mp4",
@@ -2925,6 +3053,12 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                     f"/job/{job_id}/frame_review.json"
                 ),
                 "react_frames": f"/app/job/{job_id}/frames",
+                "transcript_notes": (
+                    f"/api/jobs/{job_id}/transcript-notes"
+                ),
+                "transcript_notes_json": (
+                    f"/job/{job_id}/transcript_notes.json"
+                ),
             }
             return {
                 "job_id": data.get("job_id") or job_id,
@@ -3235,6 +3369,31 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                     return
                 paths = JobPaths(root=job_dir)
                 doc = _load_frame_review(
+                    paths,
+                    logger_stream=getattr(
+                        self.server, "logger_stream", None,
+                    ),
+                )
+                self._send_json(HTTPStatus.OK, doc)
+                return
+
+            # GET /api/jobs/<id>/transcript-notes — overlay read.
+            if (
+                len(segments) == 4
+                and segments[0] == "api"
+                and segments[1] == "jobs"
+                and segments[3] == "transcript-notes"
+            ):
+                job_id = segments[2]
+                job_dir = _safe_job_dir(root_resolved, job_id)
+                if job_dir is None:
+                    self._send_json(
+                        HTTPStatus.NOT_FOUND,
+                        {"error": "job not found", "reason": "no-such-job"},
+                    )
+                    return
+                paths = JobPaths(root=job_dir)
+                doc = _load_transcript_notes(
                     paths,
                     logger_stream=getattr(
                         self.server, "logger_stream", None,
@@ -4383,6 +4542,251 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                 pass
             self._send_json(HTTPStatus.OK, doc)
 
+        def _handle_api_transcript_notes_post(self, job_id: str) -> None:
+            """POST /api/jobs/<id>/transcript-notes — JSON body.
+
+            Body shape:
+
+                {
+                  "items": {
+                    "utt-0": {
+                      "correction": "Corrected transcript text",
+                      "note": "Remember to follow up"
+                    }
+                  }
+                }
+
+            Reuses the overlay safety primitives (Host pinning,
+            ``X-Recap-Token`` CSRF, body-size cap, per-job lock,
+            atomic ``<file>.tmp`` → ``os.replace`` write). The endpoint
+            merges incoming items into the existing overlay:
+
+            - Missing or empty ``correction`` removes just that field
+              from the existing item.
+            - Missing or empty ``note`` removes just that field.
+            - An item whose resulting entry is empty is dropped from
+              the overlay entirely.
+
+            Never mutates ``transcript.json`` and never logs the
+            request body, token, or any secret.
+            """
+            allowed_hosts = getattr(self.server, "allowed_hosts", frozenset())
+            got_host = self.headers.get("Host") or ""
+            if not allowed_hosts or not any(
+                secrets.compare_digest(got_host, allowed)
+                for allowed in allowed_hosts
+            ):
+                self._reject_api(
+                    HTTPStatus.FORBIDDEN, "host",
+                    "Host header mismatch.",
+                )
+                return
+
+            ct = (self.headers.get("Content-Type") or "").split(";")[0].strip()
+            if ct.lower() != "application/json":
+                self._reject_api(
+                    HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "content-type",
+                    "Content-Type must be application/json.",
+                )
+                return
+
+            raw_len = self.headers.get("Content-Length")
+            try:
+                content_length = int(raw_len) if raw_len is not None else -1
+            except ValueError:
+                content_length = -1
+            if content_length < 0:
+                self._reject_api(
+                    HTTPStatus.LENGTH_REQUIRED, "content-length-missing",
+                    "Content-Length is required.",
+                )
+                return
+            # Transcript notes carry up to 2000 chars of correction +
+            # 1000 chars of note per item, so we use a larger dedicated
+            # cap than the default `_API_POST_BODY_MAX = 8192` so
+            # batched saves remain feasible.
+            cap = 64 * 1024
+            if content_length > cap:
+                self._reject_api(
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "body-too-large",
+                    f"Request body exceeds {cap} bytes.",
+                )
+                return
+
+            expected_token = getattr(self.server, "csrf_token", "") or ""
+            got_token = self.headers.get("X-Recap-Token") or ""
+            if not expected_token or not secrets.compare_digest(
+                got_token, expected_token,
+            ):
+                self._reject_api(
+                    HTTPStatus.FORBIDDEN, "csrf",
+                    "CSRF token missing or invalid.",
+                )
+                return
+
+            job_dir = _safe_job_dir(root_resolved, job_id)
+            if job_dir is None:
+                self._reject_api(
+                    HTTPStatus.NOT_FOUND, "no-such-job",
+                    "Job not found.",
+                )
+                return
+
+            raw = (
+                self.rfile.read(content_length) if content_length > 0
+                else b""
+            )
+            try:
+                parsed = json.loads(raw.decode("utf-8", "replace"))
+            except ValueError:
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "bad-json",
+                    "Body is not valid JSON.",
+                )
+                return
+            if not isinstance(parsed, dict):
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "bad-json",
+                    "Top-level JSON must be an object.",
+                )
+                return
+            items_in = parsed.get("items")
+            if not isinstance(items_in, dict):
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "bad-schema",
+                    "Body must contain an 'items' object.",
+                )
+                return
+
+            # Start from the already-sanitized existing overlay so a
+            # partial POST only mutates the rows it touches.
+            existing = _load_transcript_notes(JobPaths(root=job_dir))
+            sanitized: dict[str, dict] = {
+                k: dict(v) for k, v in (existing.get("items") or {}).items()
+            }
+
+            for key, entry in items_in.items():
+                if (
+                    not isinstance(key, str)
+                    or not _API_TRANSCRIPT_ROW_KEY_RE.match(key)
+                ):
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "bad-key-shape",
+                        "Row keys must be of the form 'utt-<n>' or "
+                        "'seg-<n>'.",
+                    )
+                    return
+                if not isinstance(entry, dict):
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "bad-value",
+                        "Row entries must be objects.",
+                    )
+                    return
+
+                current = dict(sanitized.get(key) or {})
+
+                # Correction field.
+                if "correction" in entry:
+                    raw_corr = entry.get("correction")
+                    if not isinstance(raw_corr, str):
+                        self._reject_api(
+                            HTTPStatus.BAD_REQUEST, "bad-value",
+                            "'correction' must be a string.",
+                        )
+                        return
+                    corr = raw_corr.strip()
+                    if not corr:
+                        current.pop("correction", None)
+                    else:
+                        if len(corr) > _API_TRANSCRIPT_CORRECTION_MAX_LEN:
+                            self._reject_api(
+                                HTTPStatus.BAD_REQUEST, "too-long",
+                                f"Correction exceeds "
+                                f"{_API_TRANSCRIPT_CORRECTION_MAX_LEN} "
+                                "characters.",
+                            )
+                            return
+                        if _transcript_notes_contains_control(corr):
+                            self._reject_api(
+                                HTTPStatus.BAD_REQUEST, "bad-value",
+                                "Correction must not contain control "
+                                "characters other than tab / newline.",
+                            )
+                            return
+                        current["correction"] = corr
+
+                # Note field.
+                if "note" in entry:
+                    raw_note = entry.get("note")
+                    if not isinstance(raw_note, str):
+                        self._reject_api(
+                            HTTPStatus.BAD_REQUEST, "bad-value",
+                            "'note' must be a string.",
+                        )
+                        return
+                    note = raw_note.strip()
+                    if not note:
+                        current.pop("note", None)
+                    else:
+                        if len(note) > _API_TRANSCRIPT_NOTE_MAX_LEN:
+                            self._reject_api(
+                                HTTPStatus.BAD_REQUEST, "too-long",
+                                f"Note exceeds "
+                                f"{_API_TRANSCRIPT_NOTE_MAX_LEN} "
+                                "characters.",
+                            )
+                            return
+                        if _transcript_notes_contains_control(note):
+                            self._reject_api(
+                                HTTPStatus.BAD_REQUEST, "bad-value",
+                                "Note must not contain control "
+                                "characters other than tab / newline.",
+                            )
+                            return
+                        current["note"] = note
+
+                if current:
+                    sanitized[key] = current
+                else:
+                    sanitized.pop(key, None)
+
+            lock = _get_job_lock(job_id)
+            if not lock.acquire(timeout=_LOCK_ACQUIRE_TIMEOUT):
+                self._reject_api(
+                    HTTPStatus.TOO_MANY_REQUESTS, "lock",
+                    "Another action is in progress for this job. "
+                    "Try again shortly.",
+                    extra_headers={"Retry-After": "2"},
+                )
+                return
+
+            try:
+                paths = JobPaths(root=job_dir)
+                try:
+                    doc = _write_transcript_notes(paths, sanitized)
+                except OSError as e:
+                    self._reject_api(
+                        HTTPStatus.INTERNAL_SERVER_ERROR, "write-failed",
+                        f"Failed to write transcript_notes.json: "
+                        f"{type(e).__name__}",
+                    )
+                    return
+            finally:
+                try:
+                    lock.release()
+                except RuntimeError:
+                    pass
+
+            try:
+                self.server.logger_stream.write(
+                    f"[recap-ui] saved transcript-notes job={job_id} "
+                    f"count={len(sanitized)}\n"
+                )
+                self.server.logger_stream.flush()
+            except Exception:
+                pass
+            self._send_json(HTTPStatus.OK, doc)
+
         def _handle_api_jobs_start(self) -> None:
             """POST /api/jobs/start — JSON body.
 
@@ -5483,6 +5887,17 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                 and early_segments[3] == "frame-review"
             ):
                 self._handle_api_frame_review_post(early_segments[2])
+                return
+
+            if (
+                len(early_segments) == 4
+                and early_segments[0] == "api"
+                and early_segments[1] == "jobs"
+                and early_segments[3] == "transcript-notes"
+            ):
+                self._handle_api_transcript_notes_post(
+                    early_segments[2],
+                )
                 return
 
             if early_segments == ["api", "jobs", "start"]:

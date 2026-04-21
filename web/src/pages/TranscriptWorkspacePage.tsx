@@ -5,18 +5,22 @@ import {
   getJob,
   getSpeakerNames,
   getTranscript,
+  getTranscriptNotes,
   saveChapterTitles,
   saveSpeakerNames,
+  saveTranscriptNotes,
   type ChapterEntry,
   type ChapterListPayload,
   type JobSummary,
   type SpeakerNamesDoc,
+  type TranscriptNotesDoc,
   type TranscriptPayload,
 } from "../lib/api";
 import { attachSpeakers, buildTranscriptRows } from "../lib/format";
 import { computeTranscriptMatches } from "../lib/search";
 import ChapterSidebar from "../components/ChapterSidebar";
 import SpeakerLegend from "../components/SpeakerLegend";
+import TranscriptNotesEditor from "../components/TranscriptNotesEditor";
 import TranscriptSearchBar from "../components/TranscriptSearchBar";
 import TranscriptTable from "../components/TranscriptTable";
 import VideoPlayer from "../components/VideoPlayer";
@@ -29,6 +33,7 @@ type LoadState =
       transcript: TranscriptPayload;
       names: SpeakerNamesDoc;
       chapters: ChapterListPayload;
+      notes: TranscriptNotesDoc;
     }
   | { status: "error"; message: string };
 
@@ -67,6 +72,11 @@ export default function TranscriptWorkspacePage() {
   const [chapterSaveError, setChapterSaveError] = useState<string | null>(
     null,
   );
+  const [editingRowId, setEditingRowId] = useState<string | null>(null);
+  const [noteSaving, setNoteSaving] = useState(false);
+  const [noteSaveError, setNoteSaveError] = useState<string | null>(null);
+  const [notesSavedPulse, setNotesSavedPulse] = useState(false);
+  const [showCorrections, setShowCorrections] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -81,8 +91,9 @@ export default function TranscriptWorkspacePage() {
       getTranscript(id),
       getSpeakerNames(id),
       getChapters(id),
+      getTranscriptNotes(id),
     ])
-      .then(([job, transcript, names, chapters]) => {
+      .then(([job, transcript, names, chapters, notes]) => {
         if (!cancelled) {
           setState({
             status: "loaded",
@@ -90,6 +101,7 @@ export default function TranscriptWorkspacePage() {
             transcript,
             names,
             chapters,
+            notes,
           });
         }
       })
@@ -170,6 +182,55 @@ export default function TranscriptWorkspacePage() {
     }
     setActiveChapterIndex(chapter.index);
   }, []);
+
+  const openNoteEditor = useCallback((rowId: string) => {
+    setEditingRowId((prev) => (prev === rowId ? null : rowId));
+    setNoteSaveError(null);
+  }, []);
+
+  const closeNoteEditor = useCallback(() => {
+    setEditingRowId(null);
+    setNoteSaveError(null);
+  }, []);
+
+  const handleSaveNote = useCallback(
+    async (
+      rowId: string,
+      payload: { correction: string; note: string },
+    ) => {
+      if (!id) return;
+      if (state.status !== "loaded") return;
+      setNoteSaving(true);
+      setNoteSaveError(null);
+      try {
+        // Send just this row. The server merges with the existing
+        // overlay and empty fields clear the field / mapping.
+        const saved = await saveTranscriptNotes(id, {
+          [rowId]: {
+            correction: payload.correction,
+            note: payload.note,
+          },
+        });
+        setState((curr) =>
+          curr.status === "loaded"
+            ? { ...curr, notes: saved }
+            : curr,
+        );
+        setEditingRowId(null);
+        setNotesSavedPulse(true);
+        window.setTimeout(() => setNotesSavedPulse(false), 2200);
+      } catch (err) {
+        setNoteSaveError(
+          err instanceof Error
+            ? err.message
+            : "Could not save transcript note.",
+        );
+      } finally {
+        setNoteSaving(false);
+      }
+    },
+    [id, state],
+  );
 
   const handleSaveChapterTitle = useCallback(
     async (index: number, title: string) => {
@@ -296,7 +357,8 @@ export default function TranscriptWorkspacePage() {
     );
   }
 
-  const { job, transcript, names, chapters } = state;
+  const { job, transcript, names, chapters, notes } = state;
+  const noteItems = notes.items || {};
   const title = job.original_filename || job.job_id;
   const hasVideo = Boolean(job.artifacts.analysis_mp4);
   const status = job.status || "unknown";
@@ -396,6 +458,29 @@ export default function TranscriptWorkspacePage() {
           activeMatchIndex={activeMatchIndex}
           hiddenSpeakers={hiddenSpeakers}
           totalRowCount={built.rows.length}
+          notes={noteItems}
+          editingRowId={editingRowId}
+          onOpenNoteEditor={openNoteEditor}
+          showCorrections={showCorrections}
+          onToggleCorrections={() =>
+            setShowCorrections((v) => !v)
+          }
+          renderRowEditor={(rowId) => {
+            const row = built.rows.find((r) => r.id === rowId);
+            if (!row) return null;
+            return (
+              <TranscriptNotesEditor
+                rowId={rowId}
+                canonicalText={row.text}
+                timestamp={row.start}
+                initial={noteItems[rowId] ?? null}
+                onSave={(payload) => handleSaveNote(rowId, payload)}
+                onCancel={closeNoteEditor}
+                saving={noteSaving}
+                error={noteSaveError}
+              />
+            );
+          }}
           toolbar={
             <TranscriptSearchBar
               query={query}
@@ -407,6 +492,11 @@ export default function TranscriptWorkspacePage() {
             />
           }
         />
+        {notesSavedPulse ? (
+          <p className="save-toast transcript-notes-toast" role="status">
+            Transcript note saved.
+          </p>
+        ) : null}
       </section>
       <footer className="workspace-footer">
         <Link className="text-link" to="/">

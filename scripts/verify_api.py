@@ -1510,6 +1510,229 @@ def main() -> int:
         if fr_path.exists():
             fr_path.unlink()
 
+        # -----------------------------------------------------------
+        # /api/jobs/<id>/transcript-notes — per-row correction + note
+        # overlay. Mirrors the speaker-names / chapter-titles /
+        # frame-review contract: empty fields clear, malformed input
+        # is rejected, malformed stored overlay degrades gracefully,
+        # and the upstream transcript.json is never mutated.
+        # -----------------------------------------------------------
+        tn_path = job_dir / "transcript_notes.json"
+        transcript_bytes_before = (
+            (job_dir / "transcript.json").read_bytes()
+            if (job_dir / "transcript.json").exists()
+            else None
+        )
+
+        case = "api-transcript-notes-empty-when-absent"
+        got = get_json(
+            case, port, "/api/jobs/minimal_job/transcript-notes",
+        )
+        if got != {"version": 1, "updated_at": None, "items": {}}:
+            fail(case, f"expected empty overlay: {got!r}")
+        passed()
+
+        case = "api-transcript-notes-missing-csrf"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/transcript-notes",
+            {"items": {"utt-0": {"correction": "fix"}}},
+        )
+        if status != 403:
+            fail(case, f"expected 403, got {status}: {got!r}")
+        expect_reason(case, got, "csrf")
+        passed()
+
+        case = "api-transcript-notes-bad-key"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/transcript-notes",
+            {"items": {"../../evil": {"correction": "x"}}},
+            token=token,
+        )
+        if status != 400:
+            fail(case, f"expected 400, got {status}: {got!r}")
+        expect_reason(case, got, "bad-key-shape")
+        passed()
+
+        case = "api-transcript-notes-bad-key-shape-no-prefix"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/transcript-notes",
+            {"items": {"row-0": {"correction": "x"}}},
+            token=token,
+        )
+        if status != 400:
+            fail(case, f"expected 400, got {status}: {got!r}")
+        expect_reason(case, got, "bad-key-shape")
+        passed()
+
+        case = "api-transcript-notes-correction-too-long"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/transcript-notes",
+            {"items": {"utt-0": {"correction": "x" * 2001}}},
+            token=token,
+        )
+        if status != 400:
+            fail(case, f"expected 400, got {status}: {got!r}")
+        expect_reason(case, got, "too-long")
+        passed()
+
+        case = "api-transcript-notes-note-too-long"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/transcript-notes",
+            {"items": {"utt-0": {"note": "n" * 1001}}},
+            token=token,
+        )
+        if status != 400:
+            fail(case, f"expected 400, got {status}: {got!r}")
+        expect_reason(case, got, "too-long")
+        passed()
+
+        case = "api-transcript-notes-control-chars"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/transcript-notes",
+            {"items": {"utt-0": {"correction": "bad\x01text"}}},
+            token=token,
+        )
+        if status != 400:
+            fail(case, f"expected 400, got {status}: {got!r}")
+        expect_reason(case, got, "bad-value")
+        passed()
+
+        case = "api-transcript-notes-success"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/transcript-notes",
+            {
+                "items": {
+                    "utt-0": {
+                        "correction": "  Hello world  ",
+                        "note": "Opening remarks\nfollow up",
+                    },
+                    "seg-3": {"note": "Check this later"},
+                },
+            },
+            token=token,
+        )
+        if status != 200:
+            fail(case, f"expected 200, got {status}: {got!r}")
+        stored = got.get("items") or {}
+        if stored.get("utt-0") != {
+            "correction": "Hello world",
+            "note": "Opening remarks\nfollow up",
+        }:
+            fail(case, f"utt-0 wrong: {stored!r}")
+        if stored.get("seg-3") != {"note": "Check this later"}:
+            fail(case, f"seg-3 wrong: {stored!r}")
+        on_disk = json.loads(tn_path.read_text(encoding="utf-8"))
+        if on_disk.get("items") != stored:
+            fail(case, f"disk mismatch: {on_disk!r}")
+        passed()
+
+        case = "api-transcript-notes-roundtrip"
+        got = get_json(
+            case, port, "/api/jobs/minimal_job/transcript-notes",
+        )
+        if got.get("items", {}).get("utt-0", {}).get("correction") != "Hello world":
+            fail(case, f"GET after POST mismatch: {got!r}")
+        passed()
+
+        case = "api-transcript-notes-empty-clears-field"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/transcript-notes",
+            {"items": {"utt-0": {"correction": ""}}},
+            token=token,
+        )
+        if status != 200:
+            fail(case, f"expected 200, got {status}: {got!r}")
+        # Correction cleared; note preserved from prior POST.
+        if got.get("items", {}).get("utt-0") != {
+            "note": "Opening remarks\nfollow up",
+        }:
+            fail(
+                case,
+                "empty correction did not clear just that field: "
+                f"{got!r}",
+            )
+        passed()
+
+        case = "api-transcript-notes-empty-item-clears-mapping"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/transcript-notes",
+            {"items": {"utt-0": {"correction": "", "note": ""}}},
+            token=token,
+        )
+        if status != 200:
+            fail(case, f"expected 200, got {status}: {got!r}")
+        if "utt-0" in (got.get("items") or {}):
+            fail(
+                case,
+                f"empty correction + empty note did not drop mapping: "
+                f"{got!r}",
+            )
+        # seg-3 still present.
+        if "seg-3" not in (got.get("items") or {}):
+            fail(case, f"unrelated entry dropped: {got!r}")
+        passed()
+
+        case = "api-transcript-notes-upstream-transcript-unchanged"
+        now = (
+            (job_dir / "transcript.json").read_bytes()
+            if (job_dir / "transcript.json").exists()
+            else None
+        )
+        if now != transcript_bytes_before:
+            fail(
+                case,
+                "transcript_notes endpoint mutated transcript.json",
+            )
+        passed()
+
+        case = "api-transcript-notes-malformed-graceful"
+        tn_path.write_text("{not json", encoding="utf-8")
+        got = get_json(
+            case, port, "/api/jobs/minimal_job/transcript-notes",
+        )
+        if got.get("items") != {}:
+            fail(case, f"malformed overlay not graceful: {got!r}")
+        passed()
+
+        case = "api-transcript-notes-static-artifact-serves"
+        # After clearing mapping above, re-write a minimal payload and
+        # confirm raw serving works under the static whitelist.
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/transcript-notes",
+            {"items": {"seg-3": {"note": "Check this later"}}},
+            token=token,
+        )
+        if status != 200:
+            fail(case, f"expected 200, got {status}: {got!r}")
+        code, headers, raw = request(
+            port, "GET", "/job/minimal_job/transcript_notes.json",
+        )
+        if code != 200:
+            fail(case, f"raw artifact status={code}")
+        if "application/json" not in headers.get("Content-Type", ""):
+            fail(case, "raw artifact not served as JSON")
+        parsed_raw = json.loads(raw.decode("utf-8"))
+        if parsed_raw.get("items", {}).get("seg-3", {}).get(
+            "note"
+        ) != "Check this later":
+            fail(case, f"raw artifact mismatch: {parsed_raw!r}")
+        passed()
+
+        # Teardown: remove the overlay so later tests see the clean
+        # fixture scratch copy.
+        if tn_path.exists():
+            tn_path.unlink()
+
         case = "api-insights-endpoint-404-when-absent"
         i_path = job_dir / "insights.json"
         if i_path.exists():

@@ -709,7 +709,50 @@ POST /api/jobs/<id>/chapter-titles   update overlay (CSRF, Host-pinned)
 GET  /api/jobs/<id>/frames           merged visual-artifact view (scenes + scores + selected + overlay)
 GET  /api/jobs/<id>/frame-review     frame-review overlay
 POST /api/jobs/<id>/frame-review     update overlay (CSRF, Host-pinned)
+GET  /api/jobs/<id>/transcript-notes  per-row correction + note overlay
+POST /api/jobs/<id>/transcript-notes  update overlay (CSRF, Host-pinned)
 ```
+
+### Transcript corrections + notes (slice 11)
+
+The React transcript workspace grows a per-row **Correct / note**
+affordance. Hovering (or tabbing to) a row reveals a small inline
+**Note** button; clicking it opens an inline editor beneath the row
+with two textareas — a correction (max 2000 chars) and a private
+reviewer note (max 1000 chars) — plus a reminder that the canonical
+`transcript.json` stays untouched. Saving writes to a new
+`transcript_notes.json` overlay via
+`POST /api/jobs/<id>/transcript-notes`. Keys are the row's stable
+id (`utt-<n>` for Deepgram utterances, `seg-<n>` for
+faster-whisper segments); empty fields clear that field; an item
+with both fields empty removes the mapping entirely. A small
+"**N notes**" chip appears in the transcript card header when the
+overlay is non-empty, and rows with stored corrections render the
+corrected text (with a "Show corrections" toggle to flip back to
+canonical) plus an `edited` or `note` badge. The canonical
+transcript artifact on disk is never mutated.
+
+Overlay file shape (same safety model as `speaker_names.json` /
+`chapter_titles.json` / `frame_review.json` — atomic tmp + replace,
+malformed files degrade to empty):
+
+```json
+{
+  "version": 1,
+  "updated_at": "2026-04-21T12:34:56Z",
+  "items": {
+    "utt-0": {
+      "correction": "Corrected transcript text",
+      "note": "Remember to follow up"
+    }
+  }
+}
+```
+
+Exporter integration (`recap assemble` / `export-html` /
+`export-docx` rendering corrections/notes) is tracked as a follow-up
+slice and deferred from this one to avoid report byte-compat
+regressions.
 
 ### Screenshot / frame review (slice 8)
 

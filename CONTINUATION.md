@@ -50,7 +50,16 @@ does and produces, read `HANDOFF.md`.
   image extension; `decision` ∈ `{keep, reject, unset}` with `unset`
   removing the mapping; notes trimmed and capped at 300 chars with
   control chars rejected; overlay never mutates
-  `selected_frames.json` or `frame_scores.json`), and
+  `selected_frames.json` or `frame_scores.json`),
+  `GET /api/jobs/<id>/transcript-notes` /
+  `POST /api/jobs/<id>/transcript-notes` (per-row correction + note
+  overlay; row keys must match `^(utt|seg)-\d+$`; corrections
+  bounded at 2000 chars and notes at 1000 chars with control chars
+  other than tab/newline rejected; empty fields clear just that
+  field and an empty item drops the mapping; dedicated 64 KiB body
+  cap; overlay never mutates `transcript.json`; persisted at
+  `jobs/<id>/transcript_notes.json` and whitelisted for raw
+  serving),
   **the three exporters (`recap assemble` / `export-html` /
   `export-docx`) now honor all three React-surface overlays at
   render time.** `speaker_names.json` substitutes custom labels
@@ -100,6 +109,29 @@ does and produces, read `HANDOFF.md`.
   `X-Recap-Token`, body-size caps, and the existing per-job lock.
   The overlay never mutates `transcript.json`, and exporters do not
   read it yet.
+- **2026-04-21 transcript notes overlay.** React transcript
+  workspace gains a per-row correction + private-note flow backed
+  by a new `transcript_notes.json` overlay and
+  `GET/POST /api/jobs/<id>/transcript-notes` endpoints. Row ids
+  stabilized to `utt-<n>` / `seg-<n>` (via
+  `buildTranscriptRows`) so overlays survive transcript re-renders.
+  `TranscriptTable` grows a `Note` button that appears on hover /
+  focus / when an overlay entry exists, opens a
+  `TranscriptNotesEditor` directly beneath the row with both
+  correction and note textareas, and renders an `edited` or `note`
+  badge plus a note-preview paragraph. A `Show corrections` toggle
+  in the transcript card header flips between overlay text and
+  canonical text. The dashboard meta line now surfaces a
+  `Transcript notes` chip when the artifact is present. The
+  canonical `transcript.json` is never mutated; exporter integration
+  is tracked as a follow-up. Verifier adds 14 new checks (empty
+  default, missing CSRF, traversal / no-prefix key shape,
+  correction-too-long, note-too-long, control chars,
+  success + roundtrip, empty-field clears just the field, empty
+  item clears the mapping, upstream transcript bytes unchanged,
+  malformed overlay graceful, raw-artifact static serving). Vitest
+  adds 9 new checks covering the editor component and the row
+  affordance flow.
 - **2026-04-21 React product polish (frontend-only).** Tightened
   every React surface to feel like a coherent, modern, friendly
   self-hosted product. `JobCard` shows one primary CTA + a secondary

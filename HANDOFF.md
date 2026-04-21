@@ -1046,6 +1046,41 @@ Primary `GET` routes:
   prefixes. Exporters never mutate the upstream artifacts. The
   `run()` `extra` dict now carries an `overlays` sub-dict recording
   which overlays resolved to non-empty state for the run.
+- `GET /api/jobs/<id>/transcript-notes` — read the per-row
+  correction + note overlay. Returns
+  `{version: 1, updated_at: string|null, items: {row-id: {correction?,
+  note?}}}`. Falls back to the empty default when the file is absent
+  or malformed, following the same read policy as the other
+  overlays.
+- `POST /api/jobs/<id>/transcript-notes` — update the overlay.
+  Reuses Host pinning, `X-Recap-Token` CSRF, per-job lock, atomic
+  `<file>.tmp` → `os.replace` write. Body shape
+  `{"items": {"utt-0": {"correction": "...", "note": "..."}}}`.
+  Row keys must match `^(utt|seg)-\d+$` — the same stable row-id
+  convention the React workspace emits (`utt-<n>` for
+  Deepgram-style utterances, `seg-<n>` for faster-whisper
+  segments). Corrections are trimmed and bounded at 2000 chars;
+  notes at 1000 chars. Both fields reject control characters other
+  than tab / newline (line breaks are permitted because corrections
+  are freeform text). Semantics: each POST merges into the existing
+  overlay; sending `correction: ""` clears just that field; sending
+  both fields empty drops the mapping entirely; sending only one
+  field preserves the other. The endpoint uses a dedicated 64 KiB
+  body cap rather than the default 8 KiB so batched saves remain
+  feasible. Reasons drawn from
+  `{host, content-type, content-length-missing, body-too-large,
+  csrf, no-such-job, bad-json, bad-schema, bad-key-shape, bad-value,
+  too-long, write-failed, lock}`. The upstream `transcript.json` is
+  **never** mutated; the overlay lives at
+  `jobs/<id>/transcript_notes.json` alongside the other review
+  overlays. **Exporter integration is deferred** to a follow-up
+  slice — today the overlay only drives the React transcript
+  workspace; `recap assemble` / `export-html` / `export-docx` still
+  render canonical transcript segments regardless of the overlay.
+  `transcript_notes.json` is whitelisted as a raw artifact and
+  served at `/job/<id>/transcript_notes.json`. The dashboard meta
+  chip shows a "Transcript notes" marker when the artifact is
+  present.
 - `GET /api/jobs/<id>/frames` — merged visual-artifact view.
   Enumerates every image in `candidate_frames/` (the ground truth for
   what's reviewable) and enriches each with `frame_scores.json`

@@ -161,6 +161,8 @@ export default function JobDetailPage() {
     if (model) out.push(`Model · ${model}`);
     const segs = detectSegmentCount(job);
     if (segs != null) out.push(`${segs} segments`);
+    const a = job.artifacts as Record<string, unknown> | undefined;
+    if (a && a.transcript_notes_json) out.push("Transcript notes");
     return out;
   }, [state]);
 
