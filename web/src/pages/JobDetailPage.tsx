@@ -161,9 +161,6 @@ export default function JobDetailPage() {
     if (model) out.push(`Model · ${model}`);
     const segs = detectSegmentCount(job);
     if (segs != null) out.push(`${segs} segments`);
-    const artifacts = job.artifacts || {};
-    if (artifacts.report_md) out.push("report.md");
-    if (artifacts.insights_json) out.push("insights.json");
     return out;
   }, [state]);
 
@@ -205,6 +202,7 @@ export default function JobDetailPage() {
   const title = job.original_filename || job.job_id;
   const status = job.status || "unknown";
   const transcriptUrl = `/job/${encodeURIComponent(job.job_id)}/transcript`;
+  const framesUrl = `/job/${encodeURIComponent(job.job_id)}/frames`;
   const legacyDetail =
     jobUrl(job, "legacy_detail") ||
     jobUrl(job, "detail_html") ||
@@ -214,47 +212,59 @@ export default function JobDetailPage() {
   const reportDocxUrl = jobUrl(job, "report_docx");
   const insightsJsonUrl = jobUrl(job, "insights_json");
 
+  const reportLinks: Array<{ label: string; href: string; download?: boolean }> =
+    [];
+  if (reportHtmlUrl && job.artifacts?.report_html) {
+    reportLinks.push({ label: "HTML", href: reportHtmlUrl });
+  }
+  if (reportMdUrl && job.artifacts?.report_md) {
+    reportLinks.push({ label: "Markdown", href: reportMdUrl });
+  }
+  if (reportDocxUrl && job.artifacts?.report_docx) {
+    reportLinks.push({ label: "DOCX", href: reportDocxUrl, download: true });
+  }
+
+  const haveScreenshots = !!job.artifacts?.selected_frames_json;
+
   return (
     <main className="detail-shell">
       <header className="detail-hero">
         <div className="detail-hero-top">
           <div className="detail-hero-title-group">
-            <p className="eyebrow">Recap · Job</p>
+            <p className="eyebrow">Job</p>
             <h1 className="detail-hero-title" title={title}>
               {title}
             </h1>
-            <p className="detail-hero-id" title={job.job_id}>
-              <code>{job.job_id}</code>
+            <p className="detail-hero-subline">
+              <span
+                className={`status-badge status-${status}`}
+                aria-label={`Status: ${status}`}
+              >
+                {status}
+              </span>
+              <span className="detail-hero-meta-sep" aria-hidden>
+                ·
+              </span>
+              <span className="detail-hero-time">
+                Updated {formatJobDateTime(job.updated_at)}
+              </span>
+              {metaChips.length > 0 ? (
+                <>
+                  <span className="detail-hero-meta-sep" aria-hidden>
+                    ·
+                  </span>
+                  <span className="detail-hero-chiprow">
+                    {metaChips.map((chip, i) => (
+                      <span key={i} className="detail-chip">
+                        {chip}
+                      </span>
+                    ))}
+                  </span>
+                </>
+              ) : null}
             </p>
           </div>
-          <span
-            className={`status-badge status-${status}`}
-            aria-label={`Status: ${status}`}
-          >
-            {status}
-          </span>
         </div>
-
-        <dl className="detail-hero-meta" aria-label="Job metadata">
-          <div>
-            <dt>Created</dt>
-            <dd>{formatJobDateTime(job.created_at)}</dd>
-          </div>
-          <div>
-            <dt>Updated</dt>
-            <dd>{formatJobDateTime(job.updated_at)}</dd>
-          </div>
-        </dl>
-
-        {metaChips.length > 0 ? (
-          <ul className="detail-hero-chips" aria-label="Job facts">
-            {metaChips.map((chip, i) => (
-              <li key={i} className="detail-chip">
-                {chip}
-              </li>
-            ))}
-          </ul>
-        ) : null}
 
         {job.error ? (
           <p className="detail-hero-error" role="status">
@@ -262,89 +272,71 @@ export default function JobDetailPage() {
           </p>
         ) : null}
 
-        <div className="detail-hero-actions">
+        <div className="detail-hero-actions" role="group" aria-label="Job actions">
           <Link className="primary-button" to={transcriptUrl}>
             Open transcript workspace
           </Link>
           <Link
-            className="ghost-button"
-            to={`/job/${encodeURIComponent(job.job_id)}/frames`}
+            className={`ghost-button${haveScreenshots ? "" : " is-empty"}`}
+            to={framesUrl}
           >
-            {job.artifacts?.selected_frames_json
-              ? "Review screenshots"
-              : "Review screenshots (empty)"}
+            {haveScreenshots ? "Review screenshots" : "Screenshots (empty)"}
           </Link>
-          <a className="ghost-button" href={legacyDetail}>
+          {reportLinks.length > 0 ? (
+            <span
+              className="detail-hero-reports"
+              aria-label="Open exported report"
+            >
+              <span className="detail-hero-reports-label">Open report</span>
+              {reportLinks.map((link) => (
+                <a
+                  key={link.label}
+                  className="text-link detail-hero-report-link"
+                  href={link.href}
+                  {...(link.download
+                    ? {}
+                    : { target: "_blank", rel: "noreferrer" })}
+                >
+                  {link.label}
+                </a>
+              ))}
+            </span>
+          ) : null}
+          <a
+            className="text-link detail-hero-legacy"
+            href={legacyDetail}
+          >
             Legacy detail page
           </a>
-          {reportHtmlUrl && job.artifacts?.report_html ? (
-            <a
-              className="ghost-button"
-              href={reportHtmlUrl}
-              target="_blank"
-              rel="noreferrer"
-            >
-              Open HTML report
-            </a>
-          ) : null}
-          {reportMdUrl && job.artifacts?.report_md ? (
-            <a
-              className="ghost-button"
-              href={reportMdUrl}
-              target="_blank"
-              rel="noreferrer"
-            >
-              Open report.md
-            </a>
-          ) : null}
-          {reportDocxUrl && job.artifacts?.report_docx ? (
-            <a className="ghost-button" href={reportDocxUrl}>
-              Download .docx
-            </a>
-          ) : null}
         </div>
       </header>
 
       <section className="detail-grid">
         <div className="detail-main">
-          <InsightsPreview
-            state={insightsState}
-            insightsJsonUrl={insightsJsonUrl ?? undefined}
-          />
-          <ChaptersCard jobId={job.job_id} state={chaptersState} />
           <RunActionsPanel
             jobId={job.job_id}
             insightsPresent={!!job.artifacts?.insights_json}
             onRunCompleted={handleRunCompleted}
           />
-          <ArtifactGrid job={job} />
+          <InsightsPreview
+            state={insightsState}
+            insightsJsonUrl={insightsJsonUrl ?? undefined}
+          />
+          <ChaptersCard jobId={job.job_id} state={chaptersState} />
+          <details className="detail-disclosure">
+            <summary>
+              <span className="detail-disclosure-label">Artifacts on disk</span>
+              <span className="detail-disclosure-hint">
+                Raw files this job has produced.
+              </span>
+            </summary>
+            <div className="detail-disclosure-body">
+              <ArtifactGrid job={job} />
+            </div>
+          </details>
         </div>
         <aside className="detail-rail">
           <StageTimeline stages={job.stages || {}} />
-          <section className="next-actions-card" aria-label="Next actions">
-            <p className="eyebrow">Next</p>
-            <h2>What you can do now</h2>
-            <ul className="next-actions-list">
-              <li>
-                <Link className="text-link" to={transcriptUrl}>
-                  Open the transcript workspace
-                </Link>
-                <p>
-                  Search, filter speakers, and rename voices inline.
-                </p>
-              </li>
-              <li>
-                <a className="text-link" href={legacyDetail}>
-                  Open the legacy HTML detail page
-                </a>
-                <p>
-                  The stdlib dashboard remains live as a fallback —
-                  exporter reruns and the legacy rich-report form are
-                  still available there.
-                </p>
-              </li>
-            </ul>
-          </section>
         </aside>
       </section>
 

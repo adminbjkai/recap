@@ -832,6 +832,33 @@ Primary `GET` routes:
   section and enrich the existing `## Chapters` rendering with titles,
   summaries, bullets, action items, and speaker focus. When absent,
   exports stay byte-compatible with prior behavior.
+- **2026-04-21 React product polish.** Frontend-only consolidation
+  pass. `JobCard` lost the long artifact-chip strip in favour of a
+  single readiness sentence ("Report ready · Insights · …" or
+  "Transcript ready · Report not generated") with one primary
+  "Open job dashboard" CTA and a secondary `Transcript` text link;
+  the per-card status badge moved into the title group so readiness
+  is obvious at a glance. `JobsIndexPage` stats collapsed from boxy
+  tiles into a flat baseline-aligned row. `JobDetailPage` hero now
+  carries one subline (status badge · updated · engine/model/segments
+  chips) and a single action strip (primary "Open transcript
+  workspace", ghost "Review screenshots", quiet text-link "Open
+  report · HTML / Markdown / DOCX", small "Legacy detail page"). The
+  artifact grid moved into a `<details>` disclosure labelled
+  "Artifacts on disk". `RunActionsPanel` dropped the verbose intro
+  paragraph and wraps the "11-stage chain" footer notes in an
+  "About this run" disclosure. `TranscriptWorkspacePage` collapsed
+  the redundant artifact-summary card and tightened the header to
+  one status + meta line. `FrameReviewPage` now groups frame cards
+  by chapter (`Chapter N — display_title` headings) instead of one
+  flat grid; per-card raw scoring (CLIP similarity, text novelty,
+  OCR text, duplicate_of) is behind a "Scoring details" disclosure
+  so the algorithm's hero/supporting decision and VLM verdict stay
+  on top. `AppShell` topbar carries a single primary "New recording"
+  CTA and a quieter `Legacy` text link. The body background lost the
+  triple radial wash for one soft warm gradient. No backend changes,
+  no API changes, no new dependencies; legacy HTML routes still
+  render their old surfaces unchanged.
 - The React dashboard at `/app/job/<id>` links to a new frame-review
   workspace at `/app/job/<id>/frames`. `FrameReviewPage` fetches the
   merged view from `GET /api/jobs/<id>/frames`, lays out a

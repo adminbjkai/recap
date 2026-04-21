@@ -300,10 +300,13 @@ export default function TranscriptWorkspacePage() {
   const title = job.original_filename || job.job_id;
   const hasVideo = Boolean(job.artifacts.analysis_mp4);
   const status = job.status || "unknown";
-  const engineLine = [
-    transcript.engine ? `Engine · ${transcript.engine}` : null,
-    transcript.model ? `Model · ${transcript.model}` : null,
-    transcript.language ? `Language · ${transcript.language}` : null,
+  const transcriptMetaParts = [
+    transcript.engine ? transcript.engine : null,
+    transcript.model ? transcript.model : null,
+    transcript.language ? transcript.language : null,
+    typeof transcript.duration === "number"
+      ? formatDuration(transcript.duration)
+      : null,
   ].filter(Boolean);
 
   return (
@@ -312,35 +315,30 @@ export default function TranscriptWorkspacePage() {
         <div className="workspace-title-group">
           <p className="eyebrow">Transcript workspace</p>
           <h1>{title}</h1>
-          <div className="workspace-meta">
+          <p className="workspace-meta">
             <span
               className={`status-badge status-${status}`}
               aria-label={`Status: ${status}`}
             >
               {status}
             </span>
-            <span className="sep">·</span>
-            <span title={job.job_id}>
-              <code>{job.job_id}</code>
-            </span>
-            {engineLine.length > 0 ? (
+            {transcriptMetaParts.length > 0 ? (
               <>
-                <span className="sep">·</span>
-                <span>{engineLine.join(" · ")}</span>
+                <span className="sep" aria-hidden>
+                  ·
+                </span>
+                <span>{transcriptMetaParts.join(" · ")}</span>
               </>
             ) : null}
-          </div>
+          </p>
         </div>
         <div className="workspace-actions">
-          <Link className="ghost-button" to="/">
-            ← All jobs
+          <Link
+            className="ghost-button"
+            to={`/job/${encodeURIComponent(job.job_id)}`}
+          >
+            ← Dashboard
           </Link>
-          <a className="ghost-button" href={`/job/${job.job_id}/transcript`}>
-            Legacy transcript
-          </a>
-          <a className="ghost-button" href={`/job/${job.job_id}/`}>
-            Job detail
-          </a>
         </div>
       </header>
 
@@ -388,53 +386,6 @@ export default function TranscriptWorkspacePage() {
             hasCandidateArtifact={chapters.sources.chapter_candidates}
             hasInsightsArtifact={chapters.sources.insights}
           />
-          <section className="summary-card" aria-label="Artifacts summary">
-            <p className="eyebrow">Artifacts</p>
-            <dl>
-              <div>
-                <dt>Transcript</dt>
-                <dd
-                  className={
-                    job.artifacts.transcript_json
-                      ? "summary-ready"
-                      : "summary-missing"
-                  }
-                >
-                  {job.artifacts.transcript_json ? "Ready" : "Missing"}
-                </dd>
-              </div>
-              <div>
-                <dt>Speaker names</dt>
-                <dd
-                  className={
-                    job.artifacts.speaker_names_json
-                      ? "summary-ready"
-                      : "summary-missing"
-                  }
-                >
-                  {job.artifacts.speaker_names_json ? "Saved" : "Default"}
-                </dd>
-              </div>
-              <div>
-                <dt>Report</dt>
-                <dd
-                  className={
-                    job.artifacts.report_md
-                      ? "summary-ready"
-                      : "summary-missing"
-                  }
-                >
-                  {job.artifacts.report_md ? "Ready" : "Missing"}
-                </dd>
-              </div>
-              {typeof transcript.duration === "number" ? (
-                <div>
-                  <dt>Duration</dt>
-                  <dd>{formatDuration(transcript.duration)}</dd>
-                </div>
-              ) : null}
-            </dl>
-          </section>
         </aside>
 
         <TranscriptTable

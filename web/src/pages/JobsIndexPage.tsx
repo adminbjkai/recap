@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { getJobs, type JobSummary } from "../lib/api";
 import JobCard from "../components/JobCard";
 
@@ -122,42 +123,42 @@ export default function JobsIndexPage() {
     <main className="jobs-shell">
       <section className="jobs-hero" aria-label="Jobs overview">
         <div className="jobs-hero-top">
-          <div>
-            <p className="eyebrow">Recap · Jobs</p>
-            <h1>Your transcripts &amp; reports</h1>
+          <div className="jobs-hero-title-group">
+            <p className="eyebrow">Library</p>
+            <h1>Recordings &amp; reports</h1>
             <p className="jobs-hero-sub">
               {total === 0
-                ? "No jobs yet — start one from the legacy dashboard to see it here."
+                ? "No recordings yet. Start one to see it here."
                 : `Showing ${visible} of ${total}`}
             </p>
           </div>
-          <a className="primary-button" href="/new">
-            New job
-          </a>
+          <Link className="primary-button" to="/new">
+            New recording
+          </Link>
         </div>
         {total > 0 ? (
-          <dl className="jobs-hero-stats" aria-label="Job totals">
-            <div className="jobs-stat">
-              <dt className="jobs-stat-label">Total</dt>
-              <dd className="jobs-stat-value">{stats.total}</dd>
-            </div>
-            <div className="jobs-stat completed">
-              <dt className="jobs-stat-label">Completed</dt>
-              <dd className="jobs-stat-value">{stats.completed}</dd>
-            </div>
-            <div className="jobs-stat running">
-              <dt className="jobs-stat-label">Running</dt>
-              <dd className="jobs-stat-value">{stats.running}</dd>
-            </div>
-            <div className="jobs-stat failed">
-              <dt className="jobs-stat-label">Failed</dt>
-              <dd className="jobs-stat-value">{stats.failed}</dd>
-            </div>
-            <div className="jobs-stat">
-              <dt className="jobs-stat-label">Pending</dt>
-              <dd className="jobs-stat-value">{stats.pending}</dd>
-            </div>
-          </dl>
+          <ul className="jobs-hero-stats" aria-label="Job totals">
+            <li className="jobs-stat">
+              <span className="jobs-stat-value">{stats.total}</span>
+              <span className="jobs-stat-label">Total</span>
+            </li>
+            <li className="jobs-stat completed">
+              <span className="jobs-stat-value">{stats.completed}</span>
+              <span className="jobs-stat-label">Completed</span>
+            </li>
+            <li className="jobs-stat running">
+              <span className="jobs-stat-value">{stats.running}</span>
+              <span className="jobs-stat-label">Running</span>
+            </li>
+            <li className="jobs-stat failed">
+              <span className="jobs-stat-value">{stats.failed}</span>
+              <span className="jobs-stat-label">Failed</span>
+            </li>
+            <li className="jobs-stat">
+              <span className="jobs-stat-value">{stats.pending}</span>
+              <span className="jobs-stat-label">Pending</span>
+            </li>
+          </ul>
         ) : null}
       </section>
 
@@ -197,14 +198,12 @@ export default function JobsIndexPage() {
 
       {total === 0 ? (
         <section className="hero-card empty-card">
-          <p className="eyebrow">Empty</p>
-          <h2>No jobs yet</h2>
+          <p className="eyebrow">Get started</p>
+          <h2>Capture your first recording</h2>
           <p>
-            Create a job from the <a className="text-link" href="/new">
-              upload form
-            </a>
-            {" "}on the legacy dashboard. Completed jobs will appear here
-            automatically.
+            Open <Link className="text-link" to="/new">the start page</Link>{" "}
+            to record screen + audio in the browser, or pick a video file
+            from <code>--sources-root</code>. Completed runs appear here.
           </p>
         </section>
       ) : visible === 0 ? (

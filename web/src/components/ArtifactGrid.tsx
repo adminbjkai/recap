@@ -95,16 +95,18 @@ function resolveUrl(
 }
 
 export default function ArtifactGrid({ job }: Props) {
+  const presentCount = ARTIFACTS.filter((a) =>
+    Boolean(job.artifacts?.[a.key]),
+  ).length;
   return (
     <section className="artifacts-card" aria-label="Artifacts">
       <div className="section-heading">
         <div>
           <p className="eyebrow">Artifacts</p>
-          <h2>On disk</h2>
+          <h2>Files on disk</h2>
         </div>
         <span className="artifacts-count">
-          {ARTIFACTS.filter((a) => Boolean(job.artifacts?.[a.key])).length} of{" "}
-          {ARTIFACTS.length} present
+          {presentCount} of {ARTIFACTS.length} present
         </span>
       </div>
       <ul className="artifact-grid">
@@ -128,7 +130,7 @@ export default function ArtifactGrid({ job }: Props) {
               <div className="artifact-tile-actions">
                 {present && url ? (
                   <a
-                    className="ghost-button"
+                    className="text-link"
                     href={url}
                     target="_blank"
                     rel="noreferrer"

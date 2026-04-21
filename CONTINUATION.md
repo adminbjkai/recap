@@ -100,6 +100,27 @@ does and produces, read `HANDOFF.md`.
   `X-Recap-Token`, body-size caps, and the existing per-job lock.
   The overlay never mutates `transcript.json`, and exporters do not
   read it yet.
+- **2026-04-21 React product polish (frontend-only).** Tightened
+  every React surface to feel like a coherent, modern, friendly
+  self-hosted product. `JobCard` shows one primary CTA + a secondary
+  Transcript text link with a single "Report ready · Insights · …"
+  readiness sentence. `JobsIndexPage` stats flattened into a baseline
+  row; "New recording" is the only primary CTA on the library.
+  `JobDetailPage` hero is one subline of status + meta chips with a
+  tight action strip (primary `Open transcript workspace`, ghost
+  `Review screenshots`, quiet `Open report · HTML/MD/DOCX`, small
+  `Legacy detail page`); `ArtifactGrid` moved into a `<details>`
+  disclosure. `RunActionsPanel` dropped the verbose intro and wraps
+  the "11-stage chain" notes in an "About this run" disclosure.
+  `TranscriptWorkspacePage` removed the redundant artifact summary
+  card and tightened the header. `FrameReviewPage` groups frame
+  cards by chapter (`Chapter N — display_title` headings) and hides
+  raw per-frame scoring (CLIP similarity, text novelty, OCR text,
+  duplicate_of) behind a "Scoring details" disclosure so algorithm
+  decision + VLM verdict stay visible. `AppShell` carries a single
+  primary "New recording" CTA and a quieter "Legacy" link. The body
+  background was reduced to a single soft gradient. No API or
+  backend changes; legacy HTML routes unchanged; no new dependencies.
 - The React surface had a polish pass: a full visual-system rewrite
   in `web/src/index.css` (CSS custom-property tokens for surfaces,
   ink, lines, brand, accent, status colors, elevation, radii, a

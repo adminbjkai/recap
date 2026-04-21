@@ -22,10 +22,10 @@ function describeInsightsStatus(
   status: InsightsRunStatus | null,
 ): string {
   if (!status || status.status === "no-run") {
-    return "No runs yet. The dashboard will show progress here once a run starts.";
+    return "Generate an overview, bullets, action items, and chapter summaries.";
   }
   if (status.status === "in-progress") {
-    return "Insights are generating. This panel polls automatically.";
+    return "Generating… this panel refreshes automatically.";
   }
   if (status.status === "success") {
     return "Last run completed successfully.";
@@ -37,7 +37,7 @@ function describeRichReportStatus(
   status: RichReportRunStatus | null,
 ): string {
   if (!status || status.status === "no-run") {
-    return "No rich-report runs yet. Kicking one off runs 11 stages (scenes → dedupe → window → similarity → chapters → rank → shortlist → verify → assemble → export-html → export-docx).";
+    return "Run the 11-stage chain to produce chapters, screenshots, captions, and the full report set.";
   }
   if (status.status === "in-progress") {
     const curr = status.current_stage;
@@ -232,12 +232,6 @@ export default function RunActionsPanel({
           <h2>Generate &amp; enrich</h2>
         </div>
       </div>
-      <p className="run-actions-intro">
-        Kick off insights or the full rich-report chain from here. Runs
-        happen on the server and this panel polls every{" "}
-        {(POLL_INTERVAL_MS / 1000).toFixed(1)}s while something is in
-        flight. The legacy HTML dashboard is still live as a fallback.
-      </p>
 
       <div className="run-action-subcard" aria-label="Insights action">
         <div className="run-action-header">
@@ -270,8 +264,8 @@ export default function RunActionsPanel({
               }
               disabled={insightsBusy}
             >
-              <option value="mock">mock (offline, deterministic)</option>
-              <option value="groq">groq (cloud, requires GROQ_API_KEY)</option>
+              <option value="mock">mock · offline</option>
+              <option value="groq">groq · cloud</option>
             </select>
           </label>
           <label className="run-field run-field--inline">
@@ -281,15 +275,13 @@ export default function RunActionsPanel({
               onChange={(e) => setForceRerun(e.target.checked)}
               disabled={insightsBusy}
             />
-            <span>Force regenerate (pass --force)</span>
+            <span>Force regenerate</span>
           </label>
         </div>
         {provider === "groq" ? (
           <p className="run-action-note">
-            The Groq provider requires{" "}
-            <code>GROQ_API_KEY</code> in the server's environment. The
-            server never echoes the key; if it's missing the request
-            returns <code>400 groq-unavailable</code>.
+            Groq requires <code>GROQ_API_KEY</code> in the server
+            environment. The key is never echoed.
           </p>
         ) : null}
         {insightsError ? (
@@ -315,7 +307,7 @@ export default function RunActionsPanel({
           </button>
           {insightsStatus?.started_at ? (
             <span className="run-action-timestamp">
-              Last started{" "}
+              Last run · {" "}
               {formatJobDateTime(insightsStatus.started_at)}
               {typeof insightsStatus.elapsed === "number" ? (
                 <>
@@ -382,7 +374,7 @@ export default function RunActionsPanel({
           </button>
           {richStatus?.started_at ? (
             <span className="run-action-timestamp">
-              Last started{" "}
+              Last run · {" "}
               {formatJobDateTime(richStatus.started_at)}
               {typeof richStatus.elapsed === "number" ? (
                 <>
@@ -443,21 +435,26 @@ export default function RunActionsPanel({
             ) : null}
           </div>
         ) : null}
-        <p className="run-action-note">
-          Runs the legacy 11-stage chain under the same global
-          single-job slot. While this is running, other long jobs on
-          this server will get <code>429 slot</code> until it finishes.
-        </p>
-        <p className="run-action-note">
-          Need progress on the legacy HTML page?{" "}
-          <a
-            className="text-link"
-            href={`/job/${encodeURIComponent(jobId)}/run/rich-report/last`}
-          >
-            Open the legacy rich-report status page
-          </a>
-          .
-        </p>
+        <details className="run-action-output">
+          <summary>About this run</summary>
+          <p className="run-action-note">
+            Runs scenes → dedupe → window → similarity → chapters →
+            rank → shortlist → verify → assemble → export-html →
+            export-docx as one chain under the global single-job slot.
+            Other long jobs on this server queue with{" "}
+            <code>429 slot</code> until it finishes.
+          </p>
+          <p className="run-action-note">
+            Need progress on the legacy HTML page?{" "}
+            <a
+              className="text-link"
+              href={`/job/${encodeURIComponent(jobId)}/run/rich-report/last`}
+            >
+              Open the legacy rich-report status page
+            </a>
+            .
+          </p>
+        </details>
       </div>
     </section>
   );

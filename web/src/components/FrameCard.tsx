@@ -140,56 +140,31 @@ export default function FrameCard({
           </div>
         )}
 
-        <dl className="frame-card-meta">
-          {chapter ? (
-            <div>
-              <dt>Chapter</dt>
-              <dd>
-                #{chapter.index} · {chapter.display_title}
-              </dd>
-            </div>
-          ) : null}
-          {typeof frame.composite_score === "number" ? (
-            <div>
-              <dt>Composite score</dt>
-              <dd>{frame.composite_score.toFixed(3)}</dd>
-            </div>
-          ) : null}
-          {typeof frame.clip_similarity === "number" ? (
-            <div>
-              <dt>CLIP similarity</dt>
-              <dd>{frame.clip_similarity.toFixed(3)}</dd>
-            </div>
-          ) : null}
-          {typeof frame.text_novelty === "number" ? (
-            <div>
-              <dt>Text novelty</dt>
-              <dd>{frame.text_novelty.toFixed(3)}</dd>
-            </div>
-          ) : null}
-          {frame.verification?.relevance ? (
-            <div>
-              <dt>VLM</dt>
-              <dd>
-                {frame.verification.relevance}
+        {frame.verification?.relevance ||
+        typeof frame.composite_score === "number" ? (
+          <p className="frame-card-headline">
+            {frame.verification?.relevance ? (
+              <span>
+                VLM · {frame.verification.relevance}
                 {renderConfidence(frame.verification.confidence) ? (
                   <>
                     {" · "}
                     {renderConfidence(frame.verification.confidence)}
                   </>
                 ) : null}
-              </dd>
-            </div>
-          ) : null}
-          {frame.duplicate_of ? (
-            <div>
-              <dt>Duplicate of</dt>
-              <dd>
-                <code>{frame.duplicate_of}</code>
-              </dd>
-            </div>
-          ) : null}
-        </dl>
+              </span>
+            ) : null}
+            {frame.verification?.relevance &&
+            typeof frame.composite_score === "number" ? (
+              <span aria-hidden> · </span>
+            ) : null}
+            {typeof frame.composite_score === "number" ? (
+              <span>
+                Score {frame.composite_score.toFixed(2)}
+              </span>
+            ) : null}
+          </p>
+        ) : null}
       </div>
 
       {frame.verification?.caption ? (
@@ -198,10 +173,45 @@ export default function FrameCard({
         </blockquote>
       ) : null}
 
-      {frame.ocr_text && frame.ocr_text.length > 0 ? (
-        <details className="frame-card-ocr">
-          <summary>OCR text</summary>
-          <pre>{frame.ocr_text}</pre>
+      {(typeof frame.clip_similarity === "number" ||
+        typeof frame.text_novelty === "number" ||
+        frame.duplicate_of ||
+        (frame.ocr_text && frame.ocr_text.length > 0)) ? (
+        <details className="frame-card-details">
+          <summary>Scoring details</summary>
+          <dl className="frame-card-meta">
+            {chapter ? (
+              <div>
+                <dt>Chapter</dt>
+                <dd>
+                  #{chapter.index} · {chapter.display_title}
+                </dd>
+              </div>
+            ) : null}
+            {typeof frame.clip_similarity === "number" ? (
+              <div>
+                <dt>CLIP similarity</dt>
+                <dd>{frame.clip_similarity.toFixed(3)}</dd>
+              </div>
+            ) : null}
+            {typeof frame.text_novelty === "number" ? (
+              <div>
+                <dt>Text novelty</dt>
+                <dd>{frame.text_novelty.toFixed(3)}</dd>
+              </div>
+            ) : null}
+            {frame.duplicate_of ? (
+              <div>
+                <dt>Duplicate of</dt>
+                <dd>
+                  <code>{frame.duplicate_of}</code>
+                </dd>
+              </div>
+            ) : null}
+          </dl>
+          {frame.ocr_text && frame.ocr_text.length > 0 ? (
+            <pre className="frame-card-ocr-pre">{frame.ocr_text}</pre>
+          ) : null}
         </details>
       ) : null}
 

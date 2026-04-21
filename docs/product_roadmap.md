@@ -286,6 +286,32 @@ is kept separate to avoid report byte-compat regressions.
 **Deferred to slice 9:** exporters honoring `frame_review.json`
 (kept separate to avoid report byte-compat regressions).
 
+## 9b. React product polish — **done**
+
+**Shipped in:**
+- `Polish React product experience`
+
+**What it gives users:**
+- A coherent product feel across every React surface — the
+  `/app/`, `/app/new`, `/app/job/:id`, `/app/job/:id/transcript`,
+  and `/app/job/:id/frames` pages now share one consistent
+  hierarchy (single primary CTA per surface, one subline of
+  status + meta, low-priority detail behind disclosures).
+- Job library cards lost the noisy artifact-chip strip in favour
+  of a single "Report ready · Insights · …" readiness sentence.
+- Job dashboard hero is one tight action strip (Open transcript,
+  Review screenshots, quiet `Open report` text links, small
+  Legacy fallback). Stage timeline + artifact grid still
+  available, just visually demoted.
+- Frame review groups frames by chapter so the surface feels
+  editorial, not diagnostic. Per-frame raw scoring is one click
+  away under "Scoring details".
+- Single soft warm gradient background — no triple radial wash,
+  no AI-purple gradient, no dark-mode-only solution.
+- No backend changes; legacy HTML routes still render unchanged;
+  no new dependencies (no Tailwind, Tabler, TW Elements, icon
+  libraries, or UI kits).
+
 ## 9. Exports honor overlays fully — **done**
 
 **Shipped in:**

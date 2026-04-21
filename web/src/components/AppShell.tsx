@@ -16,16 +16,23 @@ export default function AppShell({ children }: Props) {
             </span>
             <span className="recap-brand-name">Recap</span>
             <span className="recap-brand-sub" aria-hidden>
-              transcripts &amp; reports
+              local-first video docs
             </span>
           </Link>
           <nav className="recap-topnav" aria-label="Primary">
-            <a className="recap-topnav-link" href="/">
-              Legacy dashboard
-            </a>
-            <Link className="recap-topnav-link primary" to="/new">
-              New job
+            <Link className="recap-topnav-link" to="/">
+              Library
             </Link>
+            <Link className="recap-topnav-link primary" to="/new">
+              New recording
+            </Link>
+            <a
+              className="recap-topnav-fallback"
+              href="/"
+              title="Legacy stdlib HTML dashboard"
+            >
+              Legacy
+            </a>
           </nav>
         </div>
       </header>

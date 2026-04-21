@@ -592,8 +592,22 @@ routes:
 /app/job/<job_id>/transcript     (transcript workspace)
 ```
 
-Both pages are wrapped in a polished `AppShell` with a sticky top bar
-that links to the legacy HTML dashboard and to `/app/new`. The visual system
+Every page is wrapped in a polished `AppShell` with a sticky top bar
+carrying a single primary "New recording" CTA and a quieter "Library"
+link. The legacy HTML dashboard is still reachable through a small
+"Legacy" link tucked at the end of the nav.
+
+The 2026-04-21 product polish pass tightened the visual system across
+every React surface: a single soft background gradient (no triple
+radials), one primary CTA per card on the library, the job dashboard
+hero collapsed into a single subline of status + meta chips, the
+artifact grid wrapped in an "Artifacts on disk" disclosure, and the
+frame review surface grouped by chapter so users see editorial
+context — `Chapter 1 — display title` headings — instead of one flat
+grid. Per-frame raw scoring (CLIP / text-novelty / OCR text) lives
+behind a "Scoring details" disclosure; the algorithm output (hero /
+supporting / VLM relevance + confidence + composite score) stays
+visible on top. The visual system
 (see `web/src/index.css`) uses a small set of CSS custom properties
 for colors, typography, radii, elevation, and focus states, plus
 `prefers-reduced-motion` safeguards — no Tailwind and no component

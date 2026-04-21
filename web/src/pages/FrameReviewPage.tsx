@@ -257,49 +257,58 @@ export default function FrameReviewPage() {
     ).length,
   };
 
+  // Group visible frames by chapter for an editorial layout. Frames
+  // without chapter context fall into a final "Unassigned" bucket so
+  // they are still reviewable.
+  type Group = {
+    key: string;
+    chapter: FrameChapterContext | null;
+    frames: FrameItem[];
+  };
+  const groups: Group[] = [];
+  const groupByKey = new Map<string, Group>();
+  for (const frame of visibleFrames) {
+    const ci = frame.chapter_index;
+    const key = typeof ci === "number" ? `ch-${ci}` : "unassigned";
+    let group = groupByKey.get(key);
+    if (!group) {
+      const chapter =
+        typeof ci === "number" ? chapterByIndex.get(ci) ?? null : null;
+      group = { key, chapter, frames: [] };
+      groupByKey.set(key, group);
+      groups.push(group);
+    }
+    group.frames.push(frame);
+  }
+  groups.sort((a, b) => {
+    const ai = a.chapter?.index ?? Number.POSITIVE_INFINITY;
+    const bi = b.chapter?.index ?? Number.POSITIVE_INFINITY;
+    return ai - bi;
+  });
+
   return (
     <main className="frames-shell">
       <header className="frames-header">
         <div className="frames-header-group">
-          <p className="eyebrow">Recap · Frame review</p>
+          <p className="eyebrow">Frame review</p>
           <h1 className="frames-title">{jobTitle}</h1>
           <p className="frames-sub">
-            <code>{job.job_id}</code>
+            <span>
+              {totals.total} candidates · {totals.shortlist} shortlist
+              {" "}· {totals.selected} selected · {totals.review} reviewed
+            </span>
           </p>
-          <ul className="frames-stats" aria-label="Frame counts">
-            <li>
-              <span className="frames-stat-label">Candidates</span>
-              <span className="frames-stat-value">{totals.total}</span>
-            </li>
-            <li>
-              <span className="frames-stat-label">Shortlist</span>
-              <span className="frames-stat-value">
-                {totals.shortlist}
-              </span>
-            </li>
-            <li>
-              <span className="frames-stat-label">Selected</span>
-              <span className="frames-stat-value">{totals.selected}</span>
-            </li>
-            <li>
-              <span className="frames-stat-label">Reviewed</span>
-              <span className="frames-stat-value">{totals.review}</span>
-            </li>
-          </ul>
         </div>
         <div className="frames-actions">
           <Link className="ghost-button" to={dashboardHref}>
             ← Dashboard
           </Link>
           <Link
-            className="ghost-button"
+            className="text-link"
             to={`/job/${encodeURIComponent(job.job_id)}/transcript`}
           >
             Transcript workspace
           </Link>
-          <a className="ghost-button" href={legacyDashboard}>
-            Legacy detail
-          </a>
         </div>
       </header>
 
@@ -383,43 +392,85 @@ export default function FrameReviewPage() {
         </div>
       </section>
 
-      <p className="frames-provenance">
-        Sources:{" "}
-        {[
-          hasSelected ? "selected_frames.json" : null,
-          frames.sources.frame_scores ? "frame_scores.json" : null,
-          frames.sources.scenes ? "scenes.json" : null,
-          hasCandidates ? "candidate_frames/" : null,
-          frames.sources.frame_review_overlay
-            ? "frame_review.json"
-            : null,
-        ]
-          .filter(Boolean)
-          .join(" · ") || "candidate_frames/ only"}
-      </p>
-
       {visibleFrames.length === 0 ? (
         <p className="frames-empty-filter">
           No frames match the <strong>{filter}</strong> filter.
         </p>
       ) : (
-        <section className="frames-grid">
-          {visibleFrames.map((frame) => (
-            <FrameCard
-              key={frame.frame_file}
-              frame={frame}
-              chapter={
-                typeof frame.chapter_index === "number"
-                  ? chapterByIndex.get(frame.chapter_index) ?? null
-                  : null
+        <div className="frames-groups">
+          {groups.map((group) => (
+            <section
+              key={group.key}
+              className="frames-chapter-group"
+              aria-label={
+                group.chapter
+                  ? `Chapter ${group.chapter.index}: ${group.chapter.display_title}`
+                  : "Unassigned frames"
               }
-              pending={pending[frame.frame_file] ?? null}
-              onChange={(entry) => handleChange(frame.frame_file, entry)}
-              disabled={saving}
-            />
+            >
+              <header className="frames-chapter-head">
+                <h2 className="frames-chapter-title">
+                  {group.chapter ? (
+                    <>
+                      <span className="frames-chapter-index">
+                        Chapter {group.chapter.index}
+                      </span>
+                      <span className="frames-chapter-name">
+                        {group.chapter.display_title}
+                      </span>
+                    </>
+                  ) : (
+                    <span className="frames-chapter-name">
+                      Unassigned candidates
+                    </span>
+                  )}
+                </h2>
+                <span className="frames-chapter-count">
+                  {group.frames.length} frame
+                  {group.frames.length === 1 ? "" : "s"}
+                </span>
+              </header>
+              <section className="frames-grid">
+                {group.frames.map((frame) => (
+                  <FrameCard
+                    key={frame.frame_file}
+                    frame={frame}
+                    chapter={group.chapter}
+                    pending={pending[frame.frame_file] ?? null}
+                    onChange={(entry) =>
+                      handleChange(frame.frame_file, entry)
+                    }
+                    disabled={saving}
+                  />
+                ))}
+              </section>
+            </section>
           ))}
-        </section>
+        </div>
       )}
+
+      <details className="frames-provenance-details">
+        <summary>Source artifacts</summary>
+        <p className="frames-provenance">
+          {[
+            hasSelected ? "selected_frames.json" : null,
+            frames.sources.frame_scores ? "frame_scores.json" : null,
+            frames.sources.scenes ? "scenes.json" : null,
+            hasCandidates ? "candidate_frames/" : null,
+            frames.sources.frame_review_overlay
+              ? "frame_review.json"
+              : null,
+          ]
+            .filter(Boolean)
+            .join(" · ") || "candidate_frames/ only"}
+        </p>
+        <p className="frames-provenance">
+          Legacy fallback:{" "}
+          <a className="text-link" href={legacyDashboard}>
+            HTML detail page
+          </a>
+        </p>
+      </details>
 
       <footer className="workspace-footer">
         <Link className="text-link" to="/">
