@@ -1890,6 +1890,72 @@ FFmpeg itself is never invoked by the verifier — every failure path
 is simulated by function-level monkey patches so CI has no media
 dependency and no wall-clock exposure.
 
+## UX: screenshot-audit pass (2026-04-21 follow-up)
+
+After the premium redesign pass shipped, a screenshot-driven
+audit surfaced five concrete problems that theory had missed.
+Playwright captured every React route (`/app/`, `/app/new`,
+`/app/job/:id`, `/app/job/:id/transcript`,
+`/app/job/:id/frames`) at 1440 × 900 and 390 × 844 against a
+real completed job; the before screenshots live at
+`/tmp/recap_ui_audit/before/`. The commit *Refine React UI from
+screenshot audit* landed targeted fixes, one per finding:
+
+1. **`StageTimeline` rewrite.** The right rail on the detail
+   page had been rendering every stage's full `extras`
+   dictionary as a visible `<dl>` — artifacts, `command_mode`,
+   `elapsed_seconds`, `output_bytes`, `percent`, `phase`,
+   engine, model, segments — on a rich-report job this meant
+   50 – 80 admin-console rows dominating the dashboard. Fixed
+   by rendering name + status chip + finish time as the default
+   row; the extras `<dl>` now lives behind a per-stage
+   `Details N ▾` disclosure, and the card heading shows a
+   compact `N / M done · F failed` counter.
+2. **`JobCard` readiness dots.** The readiness sentence
+   (`Report ready · Insights · Screenshots · Renamed
+   speakers`) was redundant with the existing chips. Replaced
+   with three pill dots `T / R / I` (Transcript / Report /
+   Insights, green fill when ready, outlined when pending); the
+   wrapper carries an `aria-label` naming every slot's state,
+   and a visually-hidden paragraph repeats the state sentence
+   so nothing is color-only. The library grid also stepped up
+   to `minmax(440 px, 1fr)` so cards breathe instead of feeling
+   chunky at three-across.
+3. **Detail-hero hierarchy.** The primary action strip had been
+   a mix of a primary button, a ghost button, a chip group, and
+   a text link — no hierarchy. Now `Open transcript workspace`
+   and `Review screenshots` are the only items on the primary
+   strip; report links dropped to a dedicated
+   `Downloads HTML · Markdown · DOCX` row below; `Legacy detail
+   page` moved into the meta-actions row alongside Rename /
+   Archive so the primary CTA finally stands alone.
+4. **`ChapterSidebar` nav-first.** The sidebar had been
+   rendering per-chapter summary / bullets / action_items
+   inline, so the rail read as documentation. Now summary /
+   bullets / action_items sit behind an `Outline ▾`
+   disclosure; titles + timestamps + rename button stay
+   visible as the nav list. The editorial body lives in the
+   Insights preview on the detail page.
+5. **`FrameCard` CSS polish.** The fieldset scaffold
+   (three radios + note textarea) was overwhelming the image
+   on first paint. DOM structure stayed put (tests still
+   match `getByLabelText("Keep")`, `getByLabelText("Reject")`,
+   placeholder `/why keep or reject/i`); CSS restyles the
+   radios as a compact segmented pill and forces the image to
+   16 : 9 so the gallery feels uniform.
+
+Plus one secondary fix: `.source-root-chip` dropped its
+`max-width: 60%` cap so long absolute paths wrap cleanly on
+`/app/new`.
+
+All fixes landed with one small scoped CSS block reusing existing
+tokens — no new palette, shadow, or elevation tokens — plus four
+targeted JSX tweaks in `StageTimeline.tsx`, `JobCard.tsx`,
+`JobDetailPage.tsx`, `ChapterSidebar.tsx`. After screenshots live
+at `/tmp/recap_ui_audit/after/`. The 79-spec Vitest suite stays
+green; `recap/job.py STAGES` and `recap/cli.py cmd_run`
+composition unchanged; no new runtime deps.
+
 ## UX: premium React redesign pass (2026-04-21)
 
 After the normalize hardening landed, the React product was

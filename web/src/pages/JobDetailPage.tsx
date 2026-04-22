@@ -348,16 +348,23 @@ export default function JobDetailPage() {
           >
             {haveScreenshots ? "Review screenshots" : "Screenshots (empty)"}
           </Link>
-          {reportLinks.length > 0 ? (
-            <span
-              className="detail-hero-reports"
-              aria-label="Open exported report"
-            >
-              <span className="detail-hero-reports-label">Report</span>
-              {reportLinks.map((link) => (
+        </div>
+
+        {reportLinks.length > 0 ? (
+          <p
+            className="detail-hero-downloads"
+            aria-label="Open exported report"
+          >
+            <span className="detail-hero-downloads-label">Downloads</span>
+            {reportLinks.map((link, i) => (
+              <span key={link.label} className="detail-hero-downloads-item">
+                {i > 0 ? (
+                  <span className="detail-hero-meta-sep" aria-hidden>
+                    ·
+                  </span>
+                ) : null}
                 <a
-                  key={link.label}
-                  className="text-link detail-hero-report-link"
+                  className="text-link"
                   href={link.href}
                   {...(link.download
                     ? {}
@@ -365,16 +372,10 @@ export default function JobDetailPage() {
                 >
                   {link.label}
                 </a>
-              ))}
-            </span>
-          ) : null}
-          <a
-            className="text-link detail-hero-legacy"
-            href={legacyDetail}
-          >
-            Legacy detail page
-          </a>
-        </div>
+              </span>
+            ))}
+          </p>
+        ) : null}
 
         <div className="detail-hero-meta-actions" role="group" aria-label="Organize">
           <button
@@ -409,6 +410,12 @@ export default function JobDetailPage() {
           >
             {archived ? "Unarchive" : "Archive"}
           </button>
+          <a
+            className="text-link detail-hero-legacy"
+            href={legacyDetail}
+          >
+            Legacy detail page
+          </a>
         </div>
 
         {editingMetadata ? (

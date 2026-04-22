@@ -655,6 +655,23 @@ for colors, typography, radii, elevation, and focus states, plus
 `prefers-reduced-motion` safeguards — no Tailwind and no component
 library.
 
+A **screenshot-audit pass** followed the redesign (2026-04-21,
+commit *Refine React UI from screenshot audit*). Playwright
+captured every React route at 1440 × 900 and 390 × 844 against
+real jobs; the top-5 audit findings (stage-timeline JSON dump,
+library card noise, detail-hero competing CTAs, chapter sidebar
+reading as docs, over-scaffolded frame cards) drove five
+targeted fixes — the `StageTimeline` extras dictionary moved
+behind a per-stage `Details ▾` disclosure, `JobCard` gained a
+`T / R / I` tri-dot readiness indicator in place of the
+readiness sentence, the detail hero now has one primary CTA
+with reports demoted to a `Downloads` row, `ChapterSidebar`
+collapsed per-row summaries / bullets / action_items behind an
+`Outline ▾` disclosure, and `FrameCard` visuals were tightened
+via CSS only (segmented Keep/Reject/Unset pill, uniform 16 : 9
+image aspect). Audit + screenshot paths are recorded in
+[CONTINUATION.md](CONTINUATION.md).
+
 A follow-up **premium redesign pass** (2026-04-21, commit *Redesign
 React product experience*) layered a cohesive token-override
 section at the bottom of `web/src/index.css`: calmer warm palette,

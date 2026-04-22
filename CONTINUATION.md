@@ -8,6 +8,127 @@ which UX patterns we borrow from Cap5, CapSoftware/Cap, and
 steipete/summarize ("borrow patterns, not code"). For what the system
 does and produces, read `HANDOFF.md`.
 
+## UI audit — 2026-04-21 screenshot pass
+
+Running `.venv/bin/python -m recap ui` against the real `jobs/`
+directory and capturing every React route at **1440 × 900** and
+**390 × 844** (via the stdlib Playwright CLI) surfaced the
+following top-5 visual / product problems on top of commit
+`384e7d1 Redesign React product experience`. The matching fix for
+each is the subject of the follow-up commit *Refine React UI from
+screenshot audit*.
+
+Before screenshots:
+`/tmp/recap_ui_audit/before/{01-library,02-new,03-detail,04-transcript,05-frames}-{desktop,mobile}.png`
+(10 files, real `jobs/20260420-041917-cea2f51d` = `maoconfig.mp4`).
+
+1. **Stage timeline is a JSON dump.** `/app/job/:id`'s right rail
+   renders `StageTimeline` with every stage's full
+   `extras` dictionary flattened into a visible `<dl>` — artifacts,
+   `command_mode`, `elapsed_seconds`, `output_bytes`, `percent`,
+   `phase`, engine, model, segments, etc. For a rich-report job
+   this is 11+ stages × 4–8 rows each ≈ 50–80 admin-console rows
+   dominating the dashboard. **Fix:** default row is stage name
+   + status chip + finish time; move the extras `<dl>` behind a
+   per-stage `<details>` disclosure; add a compact header chip
+   `N / M completed`.
+2. **Library cards carry 7 competing UI items each.** Status chip,
+   title, renamed / archived badge, project chip, readiness
+   sentence, updated time, primary `Open job dashboard` pill, plus
+   three text links (`Transcript` / `Edit` / `Archive`). Twelve
+   cards × seven items ≈ 84 UI elements on first paint and the
+   grid reads as a data table rather than a library. **Fix:**
+   collapse the three text-link actions behind a `⋯ More` toggle;
+   replace the readiness sentence with three tiny dot pills
+   (Transcript / Report / Insights, filled when ready, with an
+   sr-only label so nothing is color-only); keep the existing
+   primary button but demote it to secondary visual weight so the
+   card as a whole reads as a link target.
+3. **Detail-page hero has no hierarchy.** The action strip mixes a
+   primary button (`Open transcript workspace`) with a ghost button
+   (`Review screenshots`), a labeled chip group (`Report: HTML ·
+   Markdown · DOCX`), and a trailing `Legacy detail page` link —
+   plus a second row of `Rename / Project` and `Archive` text
+   links. Every CTA competes. **Fix:** keep one primary CTA
+   (`Open transcript workspace`); demote report links to a
+   downloads chip group below; move legacy detail to a tiny
+   footer link; keep Rename / Archive where they are (already
+   demoted in the previous pass).
+4. **Transcript workspace left rail renders three stacked card
+   surfaces.** Video + Speakers + Chapters each get their own
+   border, padding, and card shadow; the "Chapters" card also
+   renders per-chapter bullet summaries that duplicate the
+   Insights preview on the dashboard. **Fix:** unify speakers +
+   chapters into a single bordered navigation column with two
+   section headers (no double borders), and hide chapter summary
+   bullets from the sidebar — titles + timestamps only; the
+   bullets live in Insights for a reason.
+5. **Frame review cards are over-scaffolded.** Every card renders
+   a 3-pill header, an image, a headline + caption, a Scoring
+   details disclosure, **and** a `<fieldset>` Review with three
+   radios (Keep / Reject / Unset) plus a 2-row note textarea
+   visible by default. This makes a gallery of 40+ frames
+   effectively 2× taller than it needs to be on first load.
+   **Fix:** reorganize card body so the image dominates; collapse
+   Keep / Reject into a segmented 2-state control with Unset as a
+   quiet "Clear" text link; hide the note textarea behind an "Add
+   note" disclosure that only auto-opens when a reviewer has
+   actually typed a note previously.
+
+Deferred from this pass (not blocking):
+
+- Mobile detail-page scroll length (stage timeline falls to the
+  bottom of a 2000 px+ scroll even after collapsing) — acceptable
+  once the default row is one line.
+- Designed-empty-state illustrations across loading surfaces —
+  the current skeleton shimmer is adequate for this pass.
+- Dark mode. Out of scope; noted in ux_inspiration.md.
+
+### What shipped in *Refine React UI from screenshot audit*
+
+- **StageTimeline rewrite.** Each stage row now renders name +
+  status chip + finish time only. The `extras` dictionary moved
+  behind a per-stage `Details N ▾` disclosure. The card heading
+  gained a compact `N / M done · F failed` counter. The before
+  screenshot's 2000 px-tall rail shrinks to ~900 px on a real
+  rich-report job.
+- **JobCard readiness dots.** Readiness sentence (`Report ready ·
+  Insights · Screenshots · Renamed speakers`) replaced by three
+  pill dots `T / R / I` (Transcript / Report / Insights). Filled
+  green when ready, outlined when pending. The wrapper carries
+  an `aria-label` naming every slot's state, and a visually-
+  hidden paragraph repeats the state sentence for screen readers
+  — the dots are never color-only. The library grid stepped up
+  to `minmax(440 px, 1fr)` so cards get breathing room instead
+  of feeling chunky at three-across.
+- **Detail-page hero hierarchy.** Primary action strip now
+  carries only `Open transcript workspace` and `Review
+  screenshots`. Report links dropped to a dedicated
+  `Downloads HTML · Markdown · DOCX` row below the primary
+  strip. `Legacy detail page` moved into the meta-actions row
+  alongside Rename / Archive so it stops competing with the
+  primary CTA.
+- **Chapter sidebar nav-first.** Per-row summary / bullets /
+  action_items collapsed behind an `Outline ▾` disclosure.
+  Titles + timestamps are always visible; the editorial body
+  expands only when the reviewer opens it.
+- **FrameCard gallery polish.** The Keep / Reject / Unset
+  radios restyled as a compact segmented pill (DOM structure
+  unchanged — tests keep matching `getByLabelText("Keep")`,
+  `getByLabelText("Reject")`, placeholder `/why keep or
+  reject/i`). Image forced to 16:9 aspect ratio for a uniform
+  gallery feel. Headline / caption / review fieldset tightened.
+- **`.source-root-chip`** lost its `max-width: 60%` cap so long
+  absolute paths wrap cleanly on `/app/new` instead of bleeding
+  past the chip.
+
+All changes landed with one small scoped block in `index.css`
+reusing existing tokens (no new palette or elevation tokens),
+five targeted JSX tweaks in `StageTimeline.tsx`, `JobCard.tsx`,
+`JobDetailPage.tsx`, `ChapterSidebar.tsx`, and no FrameCard JSX
+change. 79/79 Vitest specs stay green. After-screenshots are in
+`/tmp/recap_ui_audit/after/`.
+
 ## Current state
 
 - Phase 1 of Recap is implemented, audited, hardened, and closed out.

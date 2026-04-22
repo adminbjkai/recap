@@ -2563,6 +2563,56 @@ p {
   word-break: break-word;
 }
 
+/* Stage extras now live behind a per-stage disclosure so the right
+   rail reads as a summary, not a raw artifact dump. */
+.timeline-extras-disclosure {
+  margin-top: 0.35rem;
+}
+
+.timeline-extras-disclosure > summary {
+  list-style: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: var(--radius-pill);
+  background: var(--surface-inset);
+  border: 1px solid var(--line);
+  font-size: var(--fs-xs);
+  color: var(--ink-muted);
+  font-weight: 600;
+  user-select: none;
+}
+
+.timeline-extras-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.timeline-extras-disclosure > summary::after {
+  content: "▾";
+  font-size: 0.7rem;
+  color: var(--ink-soft);
+}
+
+.timeline-extras-disclosure[open] > summary::after {
+  content: "▴";
+}
+
+.timeline-extras-summary-label {
+  letter-spacing: 0.04em;
+}
+
+.timeline-extras-count {
+  color: var(--ink-soft);
+  font-weight: 500;
+  font-size: var(--fs-2xs);
+}
+
+.timeline-extras-disclosure[open] .timeline-extras {
+  margin-top: 0.5rem;
+}
+
 /* Next-actions card --------------------------------------- */
 
 .next-actions-list {
@@ -3862,7 +3912,8 @@ p {
   background: rgba(255, 255, 255, 0.55);
   font-size: var(--fs-2xs);
   color: var(--ink-muted);
-  max-width: 60%;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .source-root-label {
@@ -4608,7 +4659,7 @@ body {
 
 .jobs-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(440px, 100%), 1fr));
   gap: 1rem;
 }
 
@@ -5291,4 +5342,211 @@ body {
   outline: none;
   box-shadow: var(--ring);
   border-radius: var(--radius-sm);
+}
+
+/* ------------------------------------------------------------
+ * Screenshot-audit fixes (2026-04-21)
+ * Small, targeted rules — not another full override block.
+ * Each rule is tied to a specific audit finding in
+ * CONTINUATION.md "UI audit — 2026-04-21 screenshot pass".
+ * Tokens only; no new palette or shadow tokens.
+ * ---------------------------------------------------------- */
+
+/* (2) JobCard — readiness dots replace the redundant sentence.
+   Three tiny circles with a T/R/I glyph; green fill when ready,
+   subtle outline when pending. Never color-only — the wrapper
+   carries an aria-label naming every slot's state. */
+.readiness-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.05rem 0.3rem;
+}
+
+.readiness-dot {
+  display: inline-grid;
+  place-items: center;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 0.55rem;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0;
+  border: 1.5px solid var(--line-strong);
+}
+
+.readiness-dot.is-ready {
+  background: var(--success);
+  color: #fff;
+  border-color: var(--success);
+}
+
+/* (3) Detail hero — reports demoted to a quieter "Downloads" row
+   below the primary action strip so the primary CTA stands alone. */
+.detail-hero-downloads {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+  color: var(--ink-muted);
+  font-size: var(--fs-sm);
+  margin-top: -0.35rem;
+}
+
+.detail-hero-downloads-label {
+  font-size: var(--fs-2xs);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  font-weight: 700;
+}
+
+.detail-hero-downloads-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+/* (4) Chapter sidebar — per-row outline moved behind a
+   disclosure so the rail reads as nav, not documentation. */
+.chapter-outline {
+  margin-top: 0.35rem;
+}
+
+.chapter-outline > summary {
+  list-style: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: var(--fs-xs);
+  color: var(--ink-muted);
+  font-weight: 600;
+}
+
+.chapter-outline > summary::-webkit-details-marker {
+  display: none;
+}
+
+.chapter-outline > summary::after {
+  content: "▾";
+  font-size: 0.7rem;
+  color: var(--ink-soft);
+}
+
+.chapter-outline[open] > summary::after {
+  content: "▴";
+}
+
+.chapter-outline .chapter-summary,
+.chapter-outline .chapter-bullets,
+.chapter-outline .chapter-actions {
+  margin-top: 0.4rem;
+}
+
+/* (5) FrameCard — tighten the scaffolding so the image dominates.
+   Pure-visual restyles; the DOM structure stays put so tests keep
+   matching keep/reject/unset radios by label text. */
+.frame-card {
+  padding: 0.8rem;
+  gap: 0.55rem;
+}
+
+.frame-card-head {
+  padding-bottom: 0.4rem;
+}
+
+.frame-card-pills {
+  gap: 0.3rem;
+}
+
+.frame-pill {
+  padding: 0.12rem 0.45rem;
+  font-size: 0.7rem;
+}
+
+.frame-card-image {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+}
+
+.frame-card-headline {
+  font-size: var(--fs-xs);
+  color: var(--ink-muted);
+  margin-top: 0.2rem;
+}
+
+.frame-card-caption {
+  margin: 0.25rem 0 0;
+  padding: 0.45rem 0.65rem;
+  font-size: var(--fs-xs);
+  line-height: 1.35;
+}
+
+.frame-card-review {
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+
+.frame-card-review legend {
+  font-size: var(--fs-2xs);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  font-weight: 700;
+  padding: 0 0 0.3rem;
+}
+
+.frame-review-controls {
+  display: inline-flex;
+  gap: 0;
+  background: var(--surface-inset);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  padding: 0.18rem;
+}
+
+.frame-review-radio {
+  padding: 0.25rem 0.7rem;
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+
+.frame-review-radio input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.frame-review-radio.frame-review-radio--active {
+  background: var(--ink-strong);
+  color: var(--ink-inverse);
+}
+
+.frame-review-note textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: var(--surface-inset);
+  border-radius: var(--radius-sm);
+  padding: 0.45rem 0.6rem;
+  font-size: var(--fs-xs);
+  font-family: var(--font-body);
+  resize: vertical;
+}
+
+.frame-review-note span {
+  font-size: var(--fs-2xs);
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+  display: block;
+  margin-bottom: 0.25rem;
 }

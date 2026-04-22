@@ -427,6 +427,67 @@ fallback, and empty-overlay byte-compat.
 the UI. This slice covers the non-destructive half — archive hides
 a job without touching the filesystem.
 
+## 12d. UI audit from real screenshots — **done**
+
+**Shipped in:**
+- `Refine React UI from screenshot audit`
+
+**Why:** the premium redesign pass of `12c` was written from
+theory. Running `.venv/bin/python -m recap ui` against real jobs
+and capturing every React route at 1440 × 900 plus 390 × 844 via
+Playwright surfaced five concrete problems that the previous pass
+had missed:
+
+1. `StageTimeline` right rail on `/app/job/:id` rendered every
+   stage's full `extras` dictionary inline — 50–80 admin-console
+   rows on a rich-report job.
+2. `JobCard` carried seven competing UI items per card on the
+   library, turning the grid into a data table.
+3. Detail-page hero mixed a primary button, a ghost button, a
+   chip group, and a text link on the same row — no hierarchy.
+4. Transcript workspace sidebar rendered chapter summary /
+   bullets / action_items inline so the rail read as
+   documentation instead of navigation.
+5. Frame-review cards double-scaffolded the decision control
+   alongside a full note textarea on first paint.
+
+**What it gives users:**
+- Right rail on the detail page collapses ~50 % vertically on a
+  rich-report job; each stage is a one-line summary with the
+  previous raw artifact dump behind `Details N ▾`.
+- Library cards are readable at a glance: three small T / R / I
+  readiness dots replace the readiness sentence, the grid
+  stretches to `minmax(440 px, 1fr)`, and each card has one
+  primary button + a quiet action row.
+- Detail-page hero has one obvious primary CTA (`Open
+  transcript workspace`) with reports / legacy demoted to
+  secondary rows.
+- Chapter sidebar reads as nav: titles + timestamps always
+  visible, editorial outline behind a per-row disclosure.
+- Frame gallery tightened via CSS only — uniform 16 : 9 image
+  aspect, segmented-pill decision control, compact fieldset.
+- `source-root-chip` no longer clips long absolute paths.
+
+**Invariants preserved:**
+- No new runtime deps (Python or npm).
+- `recap/job.py STAGES` and `recap/cli.py cmd_run` composition
+  unchanged.
+- All 79 Vitest specs stay green — test-critical accessible
+  names (`Keep`, `Reject`, `Unset`, `Save review (n)`, `Legacy
+  detail page`, `Open job dashboard`, status radio labels) are
+  unchanged.
+- One small scoped CSS block reusing existing tokens — no new
+  palette, shadow, or elevation tokens.
+- Legacy HTML routes unchanged.
+
+**Process:** the audit itself is recorded in
+[CONTINUATION.md](../CONTINUATION.md) under "UI audit —
+2026-04-21 screenshot pass" with before screenshot paths at
+`/tmp/recap_ui_audit/before/` and after screenshot paths at
+`/tmp/recap_ui_audit/after/` (10 files each, 5 routes × 2
+viewports). Future UI passes should follow the same
+screenshot-first approach.
+
 ## 12c. Premium React UI redesign — **done**
 
 **Shipped in:**

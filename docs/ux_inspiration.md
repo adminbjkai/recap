@@ -177,6 +177,48 @@ When pulling a pattern from any of the above, write one sentence in the
 slice PR description that names which inspiration you borrowed and
 why. That paper trail keeps this document honest.
 
+## Patterns borrowed in the 2026-04-21 screenshot-audit pass
+
+Follow-up to the premium redesign pass that landed earlier the
+same day. The audit — captured with Playwright at 1440 × 900 and
+390 × 844 against real jobs — is recorded in
+[CONTINUATION.md](../CONTINUATION.md) under "UI audit —
+2026-04-21 screenshot pass"; each fix below ties one audit
+finding to one inspiration anchor.
+
+- **Right-rail stage timeline collapses `extras` behind a
+  per-stage disclosure.** The previous pass left
+  `StageTimeline` rendering every stage's `extras` dictionary as
+  a visible `<dl>`, turning the rail into a raw artifact dump.
+  *Source:* steipete/summarize's cache-aware artifact surface —
+  details on demand, summary by default. *Where:*
+  `StageTimeline.tsx` + `.timeline-extras-disclosure`.
+- **Readiness dots on JobCard.** T / R / I tri-dot pill pattern
+  (Transcript / Report / Insights, green-filled when ready)
+  replaces the readiness sentence. *Source:* Tabler compact
+  status indicators + Cap5 "library is glanceable" posture.
+  *Where:* `JobCard.tsx` + `.readiness-dot`,
+  `.readiness-dots`.
+- **Hero reports demoted to a Downloads row.** `Open transcript
+  workspace` remains the only primary button on the detail
+  hero; reports render on a secondary line as `Downloads HTML ·
+  Markdown · DOCX`. *Source:* CapSoftware/Cap's "one primary
+  action" rule for product surfaces. *Where:* `JobDetailPage.tsx`
+  + `.detail-hero-downloads`.
+- **Chapter sidebar is nav-first.** Per-row outline (summary,
+  bullets, action_items) collapsed behind an `Outline ▾`
+  disclosure; the editorial body lives in the dashboard Insights
+  preview where it belongs. *Source:* Cap5 chapter-nav sidebar;
+  steipete/summarize's split between navigation and narrative.
+  *Where:* `ChapterSidebar.tsx` + `.chapter-outline`.
+- **FrameCard segmented Keep / Reject / Unset control.** The
+  three radios were kept in the DOM (tests rely on them) but
+  restyled as a compact segmented pill. 16 : 9 image aspect
+  unifies the gallery. *Source:* editorial review board
+  patterns (steipete/summarize); Tabler segmented controls.
+  *Where:* `FrameCard.tsx` (no JSX change) +
+  `.frame-review-controls`, `.frame-review-radio`.
+
 ## Patterns borrowed in the 2026-04-21 premium redesign pass
 
 These are the concrete decisions taken when tightening the React

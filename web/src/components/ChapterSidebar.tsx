@@ -270,23 +270,31 @@ export default function ChapterSidebar({
                   >
                     Rename
                   </button>
-                  {chapter.summary ? (
-                    <p className="chapter-summary">{chapter.summary}</p>
-                  ) : null}
-                  {chapter.bullets && chapter.bullets.length > 0 ? (
-                    <ul className="chapter-bullets">
-                      {chapter.bullets.map((b, i) => (
-                        <li key={i}>{b}</li>
-                      ))}
-                    </ul>
-                  ) : null}
-                  {chapter.action_items &&
-                  chapter.action_items.length > 0 ? (
-                    <ul className="chapter-actions">
-                      {chapter.action_items.map((a, i) => (
-                        <li key={i}>{a}</li>
-                      ))}
-                    </ul>
+                  {chapter.summary ||
+                  (chapter.bullets && chapter.bullets.length > 0) ||
+                  (chapter.action_items &&
+                    chapter.action_items.length > 0) ? (
+                    <details className="chapter-outline">
+                      <summary>Outline</summary>
+                      {chapter.summary ? (
+                        <p className="chapter-summary">{chapter.summary}</p>
+                      ) : null}
+                      {chapter.bullets && chapter.bullets.length > 0 ? (
+                        <ul className="chapter-bullets">
+                          {chapter.bullets.map((b, i) => (
+                            <li key={i}>{b}</li>
+                          ))}
+                        </ul>
+                      ) : null}
+                      {chapter.action_items &&
+                      chapter.action_items.length > 0 ? (
+                        <ul className="chapter-actions">
+                          {chapter.action_items.map((a, i) => (
+                            <li key={i}>{a}</li>
+                          ))}
+                        </ul>
+                      ) : null}
+                    </details>
                   ) : null}
                 </div>
               )}

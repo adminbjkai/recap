@@ -21,6 +21,23 @@ function deriveDisplayTitle(job: JobSummary): string {
   return job.original_filename || job.job_id;
 }
 
+type ReadinessSlot = {
+  key: "T" | "R" | "I";
+  label: string;
+  ready: boolean;
+};
+
+function readinessSlots(job: JobSummary): ReadinessSlot[] {
+  const a = job.artifacts || {};
+  const haveReport =
+    Boolean(a.report_md) || Boolean(a.report_html) || Boolean(a.report_docx);
+  return [
+    { key: "T", label: "Transcript", ready: Boolean(a.transcript_json) },
+    { key: "R", label: "Report", ready: haveReport },
+    { key: "I", label: "Insights", ready: Boolean(a.insights_json) },
+  ];
+}
+
 function readinessSummary(job: JobSummary): {
   ready: boolean;
   text: string;
@@ -30,23 +47,19 @@ function readinessSummary(job: JobSummary): {
     Boolean(a.report_md) || Boolean(a.report_html) || Boolean(a.report_docx);
   const haveTranscript = Boolean(a.transcript_json);
   if (!haveTranscript) {
-    return { ready: false, text: "Transcript not ready yet" };
+    return { ready: false, text: "Transcript pending" };
   }
   if (!haveReport) {
-    return { ready: false, text: "Transcript ready · Report not generated" };
+    return { ready: false, text: "Transcript ready" };
   }
-  const extras: string[] = [];
-  if (a.insights_json) extras.push("Insights");
-  if (a.selected_frames_json) extras.push("Screenshots");
-  if (a.speaker_names_json) extras.push("Renamed speakers");
-  const tail = extras.length > 0 ? ` · ${extras.join(" · ")}` : "";
-  return { ready: true, text: `Report ready${tail}` };
+  return { ready: true, text: "Ready" };
 }
 
 export default function JobCard({ job, onSaveMetadata }: Props) {
   const displayTitle = deriveDisplayTitle(job);
   const status = statusLabel(job.status);
   const readiness = readinessSummary(job);
+  const slots = readinessSlots(job);
   const archived = !!job.archived;
   const project = job.project || null;
   const isCustomTitle =
@@ -153,12 +166,35 @@ export default function JobCard({ job, onSaveMetadata }: Props) {
                 </span>
               </>
             ) : null}
-            <span className="job-card-readiness">{readiness.text}</span>
+            <span
+              className="readiness-dots"
+              aria-label={`Readiness: ${readiness.text}`}
+              title={readiness.text}
+            >
+              {slots.map((slot) => (
+                <span
+                  key={slot.key}
+                  className={`readiness-dot${
+                    slot.ready ? " is-ready" : ""
+                  }`}
+                  aria-hidden
+                >
+                  {slot.key}
+                </span>
+              ))}
+              <span className="visually-hidden">
+                {slots
+                  .map(
+                    (s) => `${s.label} ${s.ready ? "ready" : "pending"}`,
+                  )
+                  .join(", ")}
+              </span>
+            </span>
             <span className="job-card-meta-sep" aria-hidden>
               ·
             </span>
             <span className="job-card-time" title={`Updated ${job.updated_at}`}>
-              Updated {formatJobDateTime(job.updated_at)}
+              {formatJobDateTime(job.updated_at)}
             </span>
           </p>
         </div>

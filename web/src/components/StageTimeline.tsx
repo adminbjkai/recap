@@ -95,6 +95,13 @@ export default function StageTimeline({ stages }: Props) {
     );
   }
 
+  const completed = ordered.filter(
+    (name) => statusKey(stages[name] || {}) === "completed",
+  ).length;
+  const failed = ordered.filter(
+    (name) => statusKey(stages[name] || {}) === "failed",
+  ).length;
+
   return (
     <section className="timeline-card" aria-label="Pipeline stages">
       <div className="section-heading">
@@ -102,19 +109,20 @@ export default function StageTimeline({ stages }: Props) {
           <p className="eyebrow">Pipeline</p>
           <h2>Stage timeline</h2>
         </div>
-        <span className="timeline-count">
-          {ordered.length} stage{ordered.length === 1 ? "" : "s"}
+        <span className="timeline-count" aria-label="Stage progress">
+          {completed} / {ordered.length} done
+          {failed > 0 ? ` · ${failed} failed` : ""}
         </span>
       </div>
       <ol className="timeline-list">
         {ordered.map((name) => {
           const stage = stages[name] || {};
           const status = statusKey(stage);
-          const started = stage.started_at
-            ? formatJobDateTime(stage.started_at)
-            : null;
           const finished = stage.finished_at
             ? formatJobDateTime(stage.finished_at)
+            : null;
+          const started = stage.started_at
+            ? formatJobDateTime(stage.started_at)
             : null;
           const extras = extraPairs(stage);
           return (
@@ -134,11 +142,13 @@ export default function StageTimeline({ stages }: Props) {
                     {status}
                   </span>
                 </header>
-                {(started || finished) && (
+                {(finished || started) && (
                   <p className="timeline-times">
-                    {started ? <span>Started {started}</span> : null}
-                    {started && finished ? <span className="sep">·</span> : null}
-                    {finished ? <span>Finished {finished}</span> : null}
+                    {finished ? (
+                      <span>Finished {finished}</span>
+                    ) : started ? (
+                      <span>Started {started}</span>
+                    ) : null}
                   </p>
                 )}
                 {status === "failed" && stage.error ? (
@@ -147,14 +157,24 @@ export default function StageTimeline({ stages }: Props) {
                   </p>
                 ) : null}
                 {extras.length > 0 ? (
-                  <dl className="timeline-extras">
-                    {extras.map(({ label, value }) => (
-                      <div key={label}>
-                        <dt>{label}</dt>
-                        <dd>{value}</dd>
-                      </div>
-                    ))}
-                  </dl>
+                  <details className="timeline-extras-disclosure">
+                    <summary>
+                      <span className="timeline-extras-summary-label">
+                        Details
+                      </span>
+                      <span className="timeline-extras-count">
+                        {extras.length}
+                      </span>
+                    </summary>
+                    <dl className="timeline-extras">
+                      {extras.map(({ label, value }) => (
+                        <div key={label}>
+                          <dt>{label}</dt>
+                          <dd>{value}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </details>
                 ) : null}
               </div>
             </li>
