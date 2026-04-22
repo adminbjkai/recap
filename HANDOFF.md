@@ -1890,6 +1890,90 @@ FFmpeg itself is never invoked by the verifier — every failure path
 is simulated by function-level monkey patches so CI has no media
 dependency and no wall-clock exposure.
 
+## UX: live job progress with safer polling (2026-04-21)
+
+After the screenshot audit landed, long jobs still felt opaque.
+The normalize stage was emitting rich heartbeat fields every
+~2 s (`command_mode`, `phase`, `percent`, `elapsed_seconds`,
+`output_bytes`, `input_duration_seconds`), the existing
+`/api/jobs/:id` summary already carried them through as stage
+entries, and the React app simply wasn't reading them back.
+The commit *Improve live job progress UX* is a frontend-only
+slice that surfaces them reassuringly and adds disciplined
+polling so running jobs feel alive without spamming requests.
+
+New frontend pieces:
+
+- **`web/src/lib/progress.ts`** — pure, test-friendly helpers
+  that derive a `ProgressSnapshot` from a `JobSummary`. The
+  snapshot captures: overall status (`running` | `completed` |
+  `failed` | `pending`), the current running stage, the first
+  failed stage (priority over running for banners), ordered
+  stage slots, completed / failed counts, the full normalize
+  extras object, and `runningElapsedSeconds` (via an injected
+  clock so tests stay deterministic). Also exports
+  `isJobActive(job)` for gating polling intervals and
+  `runningSummary(snap)` for the one-line "Normalize · 42%"
+  chip on `JobCard`.
+- **`web/src/components/JobProgressPanel.tsx`** — live-progress
+  card. Running state renders stage label + pulsing dot +
+  `N / M done` counter, an optional `<progress>`-equivalent bar
+  driven by `normalize.percent`, an Elapsed / Mode / Progress /
+  Output / Phase `<dl>` grid, and a compact pill row
+  highlighting the active stage. Completed state collapses to
+  a single `Completed · N / N stages` line; failed state shows
+  a red banner with the failed stage label and the stage's
+  one-line error. Pending renders a neutral "Waiting to start…"
+  line. `prefers-reduced-motion` falls back to a flat dot via
+  the global motion guard.
+- **`JobDetailPage` polling.** On mount, the page fetches the
+  job summary + insights + chapter list once. While the job is
+  running, a `useEffect` installs a 2.5 s poll of
+  `GET /api/jobs/:id` only; the interval tears down the moment
+  a completed / failed snapshot lands. `getTranscript`,
+  `getInsights`, `getChapters` are never re-fetched by the
+  polling loop — they're fetched once on mount and again
+  through `handleRunCompleted` when a run finishes. Static
+  endpoints (`/api/csrf`, `/api/engines`, `/api/sources`,
+  `/api/library` item endpoint, etc.) are never re-fetched
+  during polling.
+- **`JobsIndexPage` slow poll.** Refreshes `GET /api/jobs` +
+  `GET /api/library` every 5 s only when at least one visible
+  job is running; zero background cost on an idle library.
+- **`JobCard` running chip.** When the summary is running, a
+  small pulsing-dot chip (`Normalize · 42%` for normalize or
+  `Transcribe · 3/4` for stages without a percent) renders
+  below the title so the library stops reading "running" for
+  every long job.
+
+Backend: **no API changes.** The `/api/jobs/:id` summary already
+returns the full `stages` dict — the heartbeat fields from the
+normalize hardening slice just flow through. Host pinning,
+no-store JSON, CSRF, and the frozen run composition all stay
+untouched.
+
+Tests: Vitest grows from 79 → 91 specs in three new files:
+
+- `src/__tests__/progress.test.ts` — pure-function matrix over
+  stage ordering (known pipeline order with custom trailing
+  stages in alphabetical order), running snapshot with
+  normalize extras + 30 s elapsed from an injected clock,
+  fall-back to `Stage · N/M` when the current stage has no
+  percent, failed-over-running takes banner priority,
+  completed terminal state renders no running chip,
+  `isJobActive(null|undefined|completed|failed)` all return
+  `false`.
+- `src/__tests__/JobProgressPanel.test.tsx` — running card
+  with `command_mode` "remux" + 42 % bar + 4.0 MB output +
+  30 s elapsed; compact completed card; failed banner naming
+  the failed stage + the stall error; pending fallback line.
+- `src/__tests__/JobDetailPagePolling.test.tsx` — with
+  `vi.useFakeTimers()`, asserts a completed job never
+  re-fetches `/api/jobs/:id` after mount (0 extra fetches in
+  12.5 s) and a running job ticks at 2.5 s, catches the
+  running→completed flip, and stops polling immediately
+  thereafter (0 fetches in the next 10 s).
+
 ## UX: screenshot-audit pass (2026-04-21 follow-up)
 
 After the premium redesign pass shipped, a screenshot-driven

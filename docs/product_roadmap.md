@@ -427,6 +427,79 @@ fallback, and empty-overlay byte-compat.
 the UI. This slice covers the non-destructive half — archive hides
 a job without touching the filesystem.
 
+## 12e. Live job progress UX with safer polling — **done**
+
+**Shipped in:**
+- `Improve live job progress UX`
+
+**Why:** the normalize hardening slice (`957ed44`) started
+emitting rich heartbeat fields (`command_mode`, `phase`,
+`percent`, `elapsed_seconds`, `output_bytes`,
+`input_duration_seconds`) every ~2 s on a running job, and the
+screenshot audit slice (`06d2aac`) made the UI read cleanly —
+but long jobs still felt opaque. The user could not see what
+the server was doing. And the dashboard was still re-fetching
+every endpoint on mount with no live refresh, so a running job
+looked stuck even when it wasn't.
+
+**What it gives users:**
+- A `JobProgressPanel` card on `/app/job/:id` that shows the
+  current stage name + a pulsing dot, a `N / M done` counter,
+  a progress bar when `normalize.percent` is present, and a
+  small meta grid with Elapsed, Mode (remux / reencode),
+  Progress (% of input duration), Output bytes, and Phase.
+- Per-stage pill row that highlights the running stage, so the
+  user can see at a glance how far through the chain a
+  rich-report run has progressed.
+- Clean failure banner naming the failed stage and surfacing
+  the one-line error produced by the normalize hardening slice.
+- Compact single-line completed summary once the job terminates.
+- A running chip on `JobCard` in the library (`Normalize · 42%`
+  with a pulsing dot) so the library view no longer just says
+  "running" for a 20-minute job.
+
+**Polling behavior (the "safer" half):**
+- `JobDetailPage` polls `GET /api/jobs/:id` every **2.5 s**
+  while the job is running; the interval is torn down the
+  moment the snapshot lands as `completed` or `failed`. No
+  background traffic after termination until the user navigates
+  away and back.
+- `JobsIndexPage` polls `GET /api/jobs` + `GET /api/library`
+  every **5 s** only when at least one running job is on
+  screen; zero cost on an idle library.
+- Static endpoints — `/api/csrf`, `/api/engines`,
+  `/api/sources`, `/api/library` (library detail) — are never
+  re-fetched during polling. Only the summary endpoints that
+  actually change.
+- Transcript / insights / chapters are fetched once on mount
+  and again when a run completes via `handleRunCompleted` —
+  they don't change while a job is running and don't need
+  polling.
+
+**No API changes.** The existing `/api/jobs/:id` response
+already returned the full `stages` dict including every heartbeat
+field, so this slice is frontend-only.
+
+**Invariants preserved:**
+- `recap/job.py STAGES` and `recap/cli.py cmd_run` composition
+  unchanged.
+- No SSE / webhook / worker / queue / Docker / external service.
+- No new Python or npm runtime deps.
+- Host pinning, no-store JSON, CSRF unchanged (no new routes).
+- Legacy HTML routes unchanged.
+
+**Tests:** Vitest grows from 79 → 91 specs:
+- `progress.test.ts` — pure-function matrix over stage
+  ordering, running snapshot, failed-over-running, completed
+  terminal state, `isJobActive`, running-summary formatting.
+- `JobProgressPanel.test.tsx` — running card with normalize
+  extras + progress bar + elapsed timer (injected clock);
+  compact completed card; failed banner; pending fallback.
+- `JobDetailPagePolling.test.tsx` — with `vi.useFakeTimers()`,
+  proves a completed job never re-fetches the summary after
+  mount; proves a running job ticks at 2.5 s and tears down
+  the interval as soon as the snapshot becomes completed.
+
 ## 12d. UI audit from real screenshots — **done**
 
 **Shipped in:**

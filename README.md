@@ -655,6 +655,25 @@ for colors, typography, radii, elevation, and focus states, plus
 `prefers-reduced-motion` safeguards — no Tailwind and no component
 library.
 
+A **live-progress pass** followed the screenshot audit (2026-04-21,
+commit *Improve live job progress UX*). The React dashboard
+now surfaces a `JobProgressPanel` card while a job is running
+(current stage + pulsing dot, `N / M done` counter, progress
+bar when `normalize.percent` is present, Elapsed / Mode /
+Progress / Output / Phase meta grid, per-stage pill row), and
+collapses to a single `Completed · N / N stages` line once the
+job terminates. Failed stages surface a red banner with the
+stage label and the one-line error produced by the normalize
+hardening. The library `JobCard` gains a compact running chip
+(`Normalize · 42%`) so scans of the grid no longer show every
+long job as just "running". Polling is disciplined: the detail
+page polls `GET /api/jobs/:id` every 2.5 s only while the job
+is running and tears the interval down on a terminal snapshot;
+the library polls `GET /api/jobs` + `GET /api/library` every
+5 s only when at least one running job is visible. Static
+endpoints are never re-fetched. No backend or API changes
+shipped with this slice.
+
 A **screenshot-audit pass** followed the redesign (2026-04-21,
 commit *Refine React UI from screenshot audit*). Playwright
 captured every React route at 1440 × 900 and 390 × 844 against

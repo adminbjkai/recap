@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   getJobs,
@@ -8,7 +8,16 @@ import {
   type JobSummary,
   type LibrarySummary,
 } from "../lib/api";
+import { isJobActive } from "../lib/progress";
 import JobCard from "../components/JobCard";
+
+/**
+ * Slow poll: only refreshes the library listing when at least
+ * one running job is visible, and never faster than this
+ * interval. The detail page polls at 2.5 s; the library only
+ * needs to keep running-stage chips warm.
+ */
+const LIBRARY_POLL_INTERVAL_MS = 5000;
 
 type View = "active" | "archived";
 
@@ -98,6 +107,66 @@ export default function JobsIndexPage() {
   useEffect(() => {
     load(view);
   }, [load, view]);
+
+  // Slow poll only while at least one running job is on screen.
+  // We re-fetch the jobs list (not the library rollup — the project
+  // counts barely move between ticks and this keeps each tick to a
+  // single request). The interval self-cleans when every visible
+  // job is in a terminal state.
+  const libraryPollRef = useRef<number | null>(null);
+  const hasRunningJob = useMemo(() => {
+    if (state.status !== "loaded") return false;
+    return state.jobs.some((j) => isJobActive(j));
+  }, [state]);
+  useEffect(() => {
+    if (!hasRunningJob) return undefined;
+    let cancelled = false;
+    const tick = () => {
+      if (cancelled) return;
+      Promise.all([getJobs(view === "archived"), getLibrary()])
+        .then(([jobsPayload, library]) => {
+          if (cancelled) return;
+          const raw = Array.isArray(jobsPayload?.jobs)
+            ? jobsPayload.jobs
+            : [];
+          const filtered = raw.filter((j) =>
+            view === "archived" ? !!j.archived : !j.archived,
+          );
+          setState((curr) =>
+            curr.status === "loaded"
+              ? {
+                  status: "loaded",
+                  jobs: filtered,
+                  library,
+                  view: curr.view,
+                }
+              : curr,
+          );
+        })
+        .catch(() => {
+          // Swallow transient errors; the previous snapshot stays
+          // visible and the next tick retries.
+        })
+        .finally(() => {
+          if (cancelled) return;
+          libraryPollRef.current = window.setTimeout(
+            tick,
+            LIBRARY_POLL_INTERVAL_MS,
+          );
+        });
+    };
+    libraryPollRef.current = window.setTimeout(
+      tick,
+      LIBRARY_POLL_INTERVAL_MS,
+    );
+    return () => {
+      cancelled = true;
+      if (libraryPollRef.current != null) {
+        window.clearTimeout(libraryPollRef.current);
+        libraryPollRef.current = null;
+      }
+    };
+  }, [hasRunningJob, view]);
 
   const handleSaveJobMetadata = useCallback(
     async (jobId: string, patch: JobMetadataPatch) => {

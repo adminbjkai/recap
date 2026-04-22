@@ -84,6 +84,48 @@ Deferred from this pass (not blocking):
   the current skeleton shimmer is adequate for this pass.
 - Dark mode. Out of scope; noted in ux_inspiration.md.
 
+### What shipped in *Improve live job progress UX*
+
+Frontend-only slice that surfaces the normalize heartbeat
+fields the backend already emits, and introduces disciplined
+polling so running jobs feel alive without spamming requests.
+
+- **`web/src/lib/progress.ts`** — pure helpers that derive
+  `ProgressSnapshot`, `stageSlots`, `isJobActive`,
+  `runningSummary` from a `JobSummary`. Ordered stage slots
+  (known pipeline order + trailing alphabetical for unknown
+  stages), current / failed stage, completed / total counts,
+  normalize extras `{command_mode, phase, percent,
+  elapsed_seconds, output_bytes, input_duration_seconds}`,
+  running-elapsed-seconds via an injected clock.
+- **`web/src/components/JobProgressPanel.tsx`** — running /
+  completed / failed / pending card. Running renders stage +
+  pulsing dot + progress bar + Elapsed / Mode / Progress /
+  Output / Phase meta grid + per-stage pill row.
+- **`JobDetailPage`** polls `GET /api/jobs/:id` every 2.5 s
+  only while the job is running; tears the interval down on a
+  terminal snapshot. Transcript / insights / chapters are
+  fetched once on mount and again via `handleRunCompleted` —
+  never on the polling loop.
+- **`JobsIndexPage`** runs a 5 s library poll only when at
+  least one visible job is running; no background cost on an
+  idle library.
+- **`JobCard`** surfaces a compact running chip
+  (`Normalize · 42%` / `Transcribe · 3/4`) when the summary
+  is running, with a pulsing dot.
+- **No API changes.** `/api/jobs/:id` already returned the
+  full `stages` dict including every normalize heartbeat
+  field; the slice just reads them back.
+- **Tests.** Vitest grows from 79 → 91 specs:
+  `progress.test.ts` (pure-function matrix, 6 specs),
+  `JobProgressPanel.test.tsx` (running / completed / failed /
+  pending, 4 specs), `JobDetailPagePolling.test.tsx` (fake
+  timers proving completed never polls + running polls then
+  stops on flip, 2 specs).
+- **Invariants:** `recap/job.py STAGES` + `cmd_run` composition
+  unchanged; no SSE / webhook / worker / queue; no new Python
+  or npm runtime deps; legacy HTML routes unchanged.
+
 ### What shipped in *Refine React UI from screenshot audit*
 
 - **StageTimeline rewrite.** Each stage row now renders name +

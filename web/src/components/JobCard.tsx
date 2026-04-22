@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import type { JobMetadataPatch, JobSummary } from "../lib/api";
 import { formatJobDateTime } from "../lib/format";
+import { runningSummary, summarizeJobProgress } from "../lib/progress";
 
 type Props = {
   job: JobSummary;
@@ -64,6 +65,11 @@ export default function JobCard({ job, onSaveMetadata }: Props) {
   const project = job.project || null;
   const isCustomTitle =
     typeof job.custom_title === "string" && job.custom_title.trim().length > 0;
+  const progressSnap = summarizeJobProgress(job);
+  const runningLine =
+    progressSnap.overallStatus === "running"
+      ? runningSummary(progressSnap)
+      : null;
 
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState(
@@ -199,6 +205,13 @@ export default function JobCard({ job, onSaveMetadata }: Props) {
           </p>
         </div>
       </header>
+
+      {runningLine ? (
+        <p className="job-card-running" role="status" aria-live="polite">
+          <span className="job-card-running-dot" aria-hidden />
+          {runningLine}
+        </p>
+      ) : null}
 
       {job.error ? (
         <p className="job-card-error" role="status">

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   getChapters,
@@ -11,11 +11,22 @@ import {
   type JobSummary,
 } from "../lib/api";
 import { formatJobDateTime } from "../lib/format";
+import { isJobActive } from "../lib/progress";
 import ArtifactGrid from "../components/ArtifactGrid";
 import ChaptersCard from "../components/ChaptersCard";
 import InsightsPreview from "../components/InsightsPreview";
+import JobProgressPanel from "../components/JobProgressPanel";
 import RunActionsPanel from "../components/RunActionsPanel";
 import StageTimeline from "../components/StageTimeline";
+
+/**
+ * Polling cadence for a running job. 2.5 s matches
+ * `RunActionsPanel`'s `POLL_INTERVAL_MS` so the dashboard's
+ * two live surfaces stay in step. Once a job finishes we stop
+ * polling entirely — no background traffic after a completion /
+ * failure until the user navigates away and back.
+ */
+const JOB_POLL_INTERVAL_MS = 2500;
 
 type ChaptersCardState =
   | { status: "loading" }
@@ -142,6 +153,51 @@ export default function JobDetailPage() {
     loadInsights(id);
     loadChapters(id);
   }, [id, loadJob, loadInsights, loadChapters]);
+
+  // Live-progress polling: refresh the job summary every
+  // `JOB_POLL_INTERVAL_MS` while the job is running; stop the
+  // interval the moment a completed / failed snapshot lands.
+  // `transcript`, `insights`, and `chapters` are NOT re-fetched on
+  // this interval — they don't exist until the pipeline finishes
+  // writing them, and `transcript.json` / `chapter_candidates.json`
+  // are static once produced. Any refresh triggered by a run
+  // completing is handled by `handleRunCompleted`.
+  const pollTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!id) return undefined;
+    if (state.status !== "loaded") return undefined;
+    if (!isJobActive(state.job)) return undefined;
+    // Guard against overlap if a poll is slow: only schedule the
+    // next tick once the previous promise resolves.
+    let cancelled = false;
+    const tick = () => {
+      if (cancelled) return;
+      getJob(id)
+        .then((job) => {
+          if (cancelled) return;
+          setState({ status: "loaded", job });
+        })
+        .catch(() => {
+          // Swallow transient errors — the user will see the
+          // last-known snapshot and the next tick will retry.
+        })
+        .finally(() => {
+          if (cancelled) return;
+          pollTimerRef.current = window.setTimeout(
+            tick,
+            JOB_POLL_INTERVAL_MS,
+          );
+        });
+    };
+    pollTimerRef.current = window.setTimeout(tick, JOB_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      if (pollTimerRef.current != null) {
+        window.clearTimeout(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+    };
+  }, [id, state]);
 
   const handleRunCompleted = useCallback(
     (runType: "insights" | "rich-report") => {
@@ -337,6 +393,8 @@ export default function JobDetailPage() {
             {job.error}
           </p>
         ) : null}
+
+        <JobProgressPanel job={job} compact={true} />
 
         <div className="detail-hero-actions" role="group" aria-label="Job actions">
           <Link className="primary-button" to={transcriptUrl}>

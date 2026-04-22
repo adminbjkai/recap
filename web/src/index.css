@@ -5550,3 +5550,241 @@ body {
   display: block;
   margin-bottom: 0.25rem;
 }
+
+/* ------------------------------------------------------------
+ * Live progress (2026-04-21)
+ * Small scoped block for the JobProgressPanel + running chip on
+ * JobCard. Reuses existing tokens; no new palette.
+ * ---------------------------------------------------------- */
+
+.progress-panel {
+  background: var(--surface-inset);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 0.85rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  color: var(--ink);
+}
+
+.progress-panel--compact {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0.85rem;
+}
+
+.progress-panel--running {
+  background: var(--surface-1);
+  border-color: var(--line-strong);
+}
+
+.progress-panel--failed {
+  background: var(--danger-bg);
+  border-color: var(--danger);
+  color: var(--ink);
+}
+
+.progress-panel--completed .progress-panel-label,
+.progress-panel--pending .progress-panel-label {
+  color: var(--ink-muted);
+}
+
+.progress-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.progress-panel-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  color: var(--ink-strong);
+}
+
+.progress-panel-stage {
+  letter-spacing: -0.005em;
+}
+
+.progress-panel-count {
+  color: var(--ink-muted);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.progress-panel-count--warn {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.progress-panel-status {
+  color: var(--ink-muted);
+  font-weight: 500;
+}
+
+/* Pulsing dot — running state only; `prefers-reduced-motion`
+   falls back to a flat colored dot via the global guard. */
+.progress-panel-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 999px;
+  background: var(--brand);
+  flex-shrink: 0;
+  display: inline-block;
+  box-shadow: 0 0 0 0 rgba(177, 70, 23, 0.35);
+  animation: progress-panel-pulse 1.4s ease-in-out infinite;
+}
+
+.progress-panel--completed .progress-panel-dot {
+  background: var(--success);
+  animation: none;
+  box-shadow: none;
+}
+
+.progress-panel--failed .progress-panel-dot {
+  background: var(--danger);
+  animation: none;
+  box-shadow: none;
+}
+
+@keyframes progress-panel-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(177, 70, 23, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 0.55rem rgba(177, 70, 23, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(177, 70, 23, 0);
+  }
+}
+
+.progress-panel-bar {
+  width: 100%;
+  height: 0.4rem;
+  background: var(--surface-sunken);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.progress-panel-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--brand) 0%, #d48a00 100%);
+  transition: width 350ms var(--ease);
+  border-radius: 999px;
+}
+
+.progress-panel-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 0.55rem 0.9rem;
+  margin: 0;
+}
+
+.progress-panel-meta dt {
+  font-size: var(--fs-2xs);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  font-weight: 700;
+}
+
+.progress-panel-meta dd {
+  margin: 0.1rem 0 0;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--ink-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.progress-panel-mode {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.progress-panel-sub {
+  color: var(--ink-muted);
+  font-weight: 500;
+}
+
+.progress-panel-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+}
+
+.progress-panel-stages {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.progress-panel-stage-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.16rem 0.55rem;
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  background: var(--surface-inset);
+  color: var(--ink-muted);
+  border: 1px solid var(--line);
+}
+
+.progress-panel-stage-pill--completed {
+  background: var(--success-bg);
+  color: var(--success);
+  border-color: var(--success-ring);
+}
+
+.progress-panel-stage-pill--running {
+  background: var(--surface-1);
+  color: var(--ink-strong);
+  border-color: var(--brand);
+  box-shadow: 0 0 0 2px rgba(177, 70, 23, 0.14);
+}
+
+.progress-panel-stage-pill--failed {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+/* Running chip on JobCard (library). */
+.job-card-running {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0.1rem 0 0;
+  padding: 0.28rem 0.6rem;
+  border-radius: var(--radius-pill);
+  background: var(--surface-inset);
+  border: 1px solid var(--line);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--ink-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.job-card-running-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  background: var(--brand);
+  display: inline-block;
+  animation: progress-panel-pulse 1.4s ease-in-out infinite;
+}
