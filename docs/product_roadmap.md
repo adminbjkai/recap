@@ -390,13 +390,42 @@ regression cases covering segment correction, note-only,
 utterance correction via speaker label, malformed-overlay graceful
 fallback, and empty-overlay byte-compat.
 
-## 12. Folders / projects / archive
+## 12. Folders / projects / archive — **done**
 
-- Rename a job (edit `original_filename` + visible title).
-- Move a job between folders / projects.
-- Archive a job (hide from the default index, never delete).
-- Keep `jobs/<id>/` directory layout stable; organization lives in a
-  sidecar index file at the jobs-root level.
+**Shipped in:**
+- `Add job library organization`
+
+**What it gives users:**
+- A real personal library instead of a flat pile of job IDs.
+  Users can rename jobs, assign them to projects, and archive the
+  ones they don't want cluttering the Active view — all from the
+  React jobs index and job dashboard.
+- New `<jobs-root>/.recap_library.json` sidecar captures
+  `{job_id: {title?, project?, archived?}}` with atomic
+  `<file>.tmp` → `os.replace` writes. The job directory on disk
+  is never moved, renamed, or deleted — organization is
+  metadata-only, preserving the file-per-job invariant.
+- New API surfaces: `GET /api/library` (project rollups + active /
+  archived counts), `GET /api/jobs?include_archived=1` (opt-in),
+  and `POST /api/jobs/:id/metadata` (partial PATCH-style update
+  with Host pinning + CSRF + body cap).
+- Every job summary now carries `display_title`, `custom_title`,
+  `project`, `archived`.
+- React library view has Active / Archived tabs, project dropdown
+  filter, and inline Edit / Archive / Unarchive affordances per
+  job card. The dashboard hero has a "Rename / Project" panel and
+  matching Archive toggle. Archived jobs stay reachable by direct
+  URL.
+- Missing / malformed sidecar degrades silently to an empty
+  library; the React surface still works, the user just sees no
+  custom titles or projects.
+- `scripts/verify_api.py` grew from 85 → 102 checks covering every
+  validation path, partial PATCHes, archive filter, and malformed
+  sidecar graceful fallback.
+
+**Deferred (separate slice):** destructive delete of a job from
+the UI. This slice covers the non-destructive half — archive hides
+a job without touching the filesystem.
 
 ## 13. Live progress (SSE / polling) + webhooks
 

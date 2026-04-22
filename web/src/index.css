@@ -708,6 +708,102 @@ p {
   margin-top: 0.35rem;
 }
 
+.job-card-title-badge {
+  margin-left: 0.5rem;
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 0.08rem 0.45rem;
+  border: 1px solid var(--brand);
+  color: var(--brand);
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.65);
+  vertical-align: middle;
+}
+
+.job-card-title-badge--archived {
+  border-color: var(--ink-muted);
+  color: var(--ink-muted);
+  background: var(--surface-sunken);
+}
+
+.job-card.is-archived {
+  background: color-mix(in srgb, var(--surface-sunken) 45%, var(--surface-1));
+  border-style: dashed;
+}
+
+.job-card-project {
+  font-weight: 700;
+  padding: 0.05rem 0.55rem;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line-strong);
+  background: var(--surface-sunken);
+  color: var(--ink-strong);
+  font-size: var(--fs-2xs);
+  letter-spacing: 0.02em;
+}
+
+.job-card-editor {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.job-card-editor-field {
+  display: grid;
+  gap: 0.2rem;
+  font-size: var(--fs-2xs);
+  color: var(--ink-muted);
+}
+
+.job-card-editor-label {
+  font-weight: 800;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.job-card-editor-field input {
+  font: inherit;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 6px);
+  background: #fff;
+}
+
+.job-card-editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.job-card-editor-hint {
+  font-size: var(--fs-2xs);
+  color: var(--ink-muted);
+}
+
+.jobs-view-tabs {
+  display: inline-flex;
+  gap: 0.3rem;
+  padding: 0.2rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface-1);
+}
+
+.jobs-project-filter select {
+  font: inherit;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: #fff;
+  max-width: 220px;
+}
+
 .job-card-subline {
   margin: 0;
   display: flex;
@@ -1876,6 +1972,79 @@ p {
 
 .detail-hero-report-link {
   font-size: var(--fs-sm);
+}
+
+.detail-hero-title-badge {
+  margin-left: 0.5rem;
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid var(--brand);
+  color: var(--brand);
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.65);
+  vertical-align: middle;
+}
+
+.detail-hero-title-badge--archived {
+  border-color: var(--ink-muted);
+  color: var(--ink-muted);
+  background: var(--surface-sunken);
+}
+
+.detail-hero-organize,
+.detail-hero-archive {
+  font-size: var(--fs-sm);
+}
+
+.detail-hero-editor {
+  margin-top: 0.6rem;
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.9rem 1rem;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.detail-hero-editor-field {
+  display: grid;
+  gap: 0.2rem;
+  font-size: var(--fs-2xs);
+  color: var(--ink-muted);
+}
+
+.detail-hero-editor-label {
+  font-weight: 800;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.detail-hero-editor-field input {
+  font: inherit;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 6px);
+  background: #fff;
+}
+
+.detail-hero-editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.detail-hero-editor-hint {
+  font-size: var(--fs-2xs);
+  color: var(--ink-muted);
+}
+
+.detail-shell.is-archived .detail-hero {
+  border-style: dashed;
+  background: color-mix(in srgb, var(--surface-sunken) 40%, var(--surface-1));
 }
 
 .detail-hero-legacy {

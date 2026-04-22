@@ -190,16 +190,13 @@ The authoritative, versioned list lives in
 [docs/product_roadmap.md](docs/product_roadmap.md). At the time of
 this writing the next slices — in order — are:
 
-1. **Folders / projects / archive** (slice 12). Rename / move /
-   archive jobs via a sidecar index file; `jobs/<id>/` layout stays
-   stable.
-2. **Live progress (SSE / polling) + webhooks** (slice 13). Upgrade
+1. **Live progress (SSE / polling) + webhooks** (slice 13). Upgrade
    the 4b polling loop to a push transport when run budgets grow
    past a few minutes.
-3. **Linux self-host / deploy hardening** (slice 14). End-to-end
+2. **Linux self-host / deploy hardening** (slice 14). End-to-end
    host docs, a `systemd` unit, reverse-proxy notes covering Host
    pinning + CSRF, TLS guidance.
-4. **Single-user / reverse-proxy auth** (slice 15). Minimal auth
+3. **Single-user / reverse-proxy auth** (slice 15). Minimal auth
    surface so Recap can safely bind beyond `127.0.0.1`. Gated on
    slice 14.
 

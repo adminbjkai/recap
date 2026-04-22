@@ -1809,6 +1809,291 @@ def main() -> int:
         (job_dir / "insights.json").unlink()
         passed()
 
+        # -----------------------------------------------------------
+        # /api/library + /api/jobs/<id>/metadata — local library
+        # organization (project/folder/archive). The sidecar lives at
+        # <jobs_root>/.recap_library.json; writes happen under the
+        # process-wide library lock, atomic tmp → rename. Missing or
+        # malformed sidecar degrades to empty metadata.
+        # -----------------------------------------------------------
+        library_sidecar = jobs_root / ".recap_library.json"
+
+        case = "api-library-baseline-empty"
+        got = get_json(case, port, "/api/library")
+        if got.get("sidecar_present") is not False:
+            fail(case, f"sidecar should be absent: {got!r}")
+        if got.get("projects") != []:
+            fail(case, f"projects should be empty: {got!r}")
+        counts = got.get("counts") or {}
+        if counts.get("total") != 1:
+            fail(case, f"total jobs count wrong: {got!r}")
+        if counts.get("active") != 1 or counts.get("archived") != 0:
+            fail(case, f"active/archived split wrong: {got!r}")
+        passed()
+
+        case = "api-job-summary-adds-display-title-default"
+        summary = get_json(case, port, "/api/jobs/minimal_job")
+        if summary.get("display_title") != summary.get("original_filename"):
+            fail(case, f"display_title default fallback wrong: {summary!r}")
+        if summary.get("custom_title") is not None:
+            fail(case, f"custom_title should be None: {summary!r}")
+        if summary.get("project") is not None:
+            fail(case, f"project should be None: {summary!r}")
+        if summary.get("archived") is not False:
+            fail(case, f"archived should be False: {summary!r}")
+        if summary.get("urls", {}).get("metadata") != (
+            "/api/jobs/minimal_job/metadata"
+        ):
+            fail(case, f"urls.metadata wrong: {summary!r}")
+        passed()
+
+        case = "api-metadata-missing-csrf"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/metadata",
+            {"title": "Demo call"},
+        )
+        if status != 403:
+            fail(case, f"expected 403, got {status}: {got!r}")
+        expect_reason(case, got, "csrf")
+        passed()
+
+        case = "api-metadata-empty-body-rejected"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/metadata",
+            {},
+            token=token,
+        )
+        if status != 400:
+            fail(case, f"expected 400, got {status}: {got!r}")
+        expect_reason(case, got, "bad-schema")
+        passed()
+
+        case = "api-metadata-bad-title-type"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/metadata",
+            {"title": 42},
+            token=token,
+        )
+        if status != 400:
+            fail(case, f"expected 400, got {status}: {got!r}")
+        expect_reason(case, got, "bad-value")
+        passed()
+
+        case = "api-metadata-title-too-long"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/metadata",
+            {"title": "x" * 121},
+            token=token,
+        )
+        if status != 400:
+            fail(case, f"expected 400, got {status}: {got!r}")
+        expect_reason(case, got, "too-long")
+        passed()
+
+        case = "api-metadata-project-control-char"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/metadata",
+            {"project": "Demos\x01"},
+            token=token,
+        )
+        if status != 400:
+            fail(case, f"expected 400, got {status}: {got!r}")
+        expect_reason(case, got, "bad-value")
+        passed()
+
+        case = "api-metadata-bad-archived-type"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/metadata",
+            {"archived": "yes"},
+            token=token,
+        )
+        if status != 400:
+            fail(case, f"expected 400, got {status}: {got!r}")
+        expect_reason(case, got, "bad-value")
+        passed()
+
+        case = "api-metadata-no-such-job"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/does-not-exist/metadata",
+            {"title": "Nope"},
+            token=token,
+        )
+        if status != 404:
+            fail(case, f"expected 404, got {status}: {got!r}")
+        expect_reason(case, got, "no-such-job")
+        passed()
+
+        case = "api-metadata-title-project-save"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/metadata",
+            {"title": "  Demo call  ", "project": "  Client demos  "},
+            token=token,
+        )
+        if status != 200:
+            fail(case, f"expected 200, got {status}: {got!r}")
+        if got.get("display_title") != "Demo call":
+            fail(case, f"display_title not applied: {got!r}")
+        if got.get("custom_title") != "Demo call":
+            fail(case, f"custom_title not applied: {got!r}")
+        if got.get("project") != "Client demos":
+            fail(case, f"project not applied: {got!r}")
+        if got.get("archived") is not False:
+            fail(case, f"archived should remain False: {got!r}")
+        if not library_sidecar.is_file():
+            fail(case, "library sidecar was not created on first POST")
+        disk = json.loads(library_sidecar.read_text(encoding="utf-8"))
+        if disk.get("jobs", {}).get("minimal_job", {}).get(
+            "title"
+        ) != "Demo call":
+            fail(case, f"sidecar missing stored title: {disk!r}")
+        passed()
+
+        case = "api-library-lists-projects-after-save"
+        lib = get_json(case, port, "/api/library")
+        projects = lib.get("projects") or []
+        names = [p.get("name") for p in projects]
+        if "Client demos" not in names:
+            fail(case, f"projects missing Client demos: {lib!r}")
+        client = next(p for p in projects if p.get("name") == "Client demos")
+        if client.get("active") != 1 or client.get("archived") != 0:
+            fail(case, f"client demos rollup wrong: {client!r}")
+        if lib.get("sidecar_present") is not True:
+            fail(case, f"sidecar_present should be True: {lib!r}")
+        passed()
+
+        case = "api-metadata-archive-then-exclude-from-default"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/metadata",
+            {"archived": True},
+            token=token,
+        )
+        if status != 200:
+            fail(case, f"expected 200, got {status}: {got!r}")
+        if got.get("archived") is not True:
+            fail(case, f"archived did not flip True: {got!r}")
+        listing = get_json(case, port, "/api/jobs")
+        ids = [j.get("job_id") for j in (listing.get("jobs") or [])]
+        if "minimal_job" in ids:
+            fail(
+                case,
+                f"archived job leaked into default listing: {ids!r}",
+            )
+        if listing.get("include_archived") is not False:
+            fail(
+                case,
+                f"include_archived flag should be False by default: "
+                f"{listing!r}",
+            )
+        passed()
+
+        case = "api-jobs-include-archived-opt-in"
+        listing = get_json(
+            case, port, "/api/jobs?include_archived=1",
+        )
+        if listing.get("include_archived") is not True:
+            fail(case, f"include_archived echo wrong: {listing!r}")
+        ids = [j.get("job_id") for j in (listing.get("jobs") or [])]
+        if "minimal_job" not in ids:
+            fail(
+                case,
+                f"archived job missing from ?include_archived=1: {ids!r}",
+            )
+        # Direct per-job fetch must always include the archived job.
+        direct = get_json(case, port, "/api/jobs/minimal_job")
+        if direct.get("archived") is not True:
+            fail(case, "direct /api/jobs/<id> failed to reflect archive")
+        passed()
+
+        case = "api-library-counts-after-archive"
+        lib = get_json(case, port, "/api/library")
+        counts = lib.get("counts") or {}
+        if counts.get("archived") != 1 or counts.get("active") != 0:
+            fail(case, f"counts.archived should be 1: {lib!r}")
+        # The archived job's project rollup must now attribute to
+        # `archived`, not `active`.
+        client = next(
+            (p for p in (lib.get("projects") or []) if p.get("name") == "Client demos"),
+            None,
+        )
+        if client is None:
+            fail(case, "project vanished unexpectedly")
+        if client.get("active") != 0 or client.get("archived") != 1:
+            fail(case, f"rollup after archive wrong: {client!r}")
+        passed()
+
+        case = "api-metadata-unarchive-and-clear-project"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/metadata",
+            {"archived": False, "project": ""},
+            token=token,
+        )
+        if status != 200:
+            fail(case, f"expected 200, got {status}: {got!r}")
+        if got.get("archived") is not False:
+            fail(case, f"archived did not flip False: {got!r}")
+        if got.get("project") is not None:
+            fail(case, f"project empty-string did not clear: {got!r}")
+        if got.get("custom_title") != "Demo call":
+            fail(case, f"custom_title lost on partial PATCH: {got!r}")
+        passed()
+
+        case = "api-metadata-clear-title-reverts-display"
+        status, _, got = post_json(
+            port,
+            "/api/jobs/minimal_job/metadata",
+            {"title": ""},
+            token=token,
+        )
+        if status != 200:
+            fail(case, f"expected 200, got {status}: {got!r}")
+        if got.get("custom_title") is not None:
+            fail(case, f"custom_title should be cleared: {got!r}")
+        if got.get("display_title") != got.get("original_filename"):
+            fail(
+                case,
+                f"display_title should revert to original_filename: {got!r}",
+            )
+        # After clearing every field the sidecar's entry should be
+        # pruned (empty object), so the library doesn't accumulate
+        # dead rows.
+        disk = json.loads(library_sidecar.read_text(encoding="utf-8"))
+        if "minimal_job" in (disk.get("jobs") or {}):
+            fail(
+                case,
+                "sidecar still carries a row after every field was "
+                "cleared",
+            )
+        passed()
+
+        case = "api-library-malformed-graceful"
+        library_sidecar.write_text("{not json", encoding="utf-8")
+        got = get_json(case, port, "/api/library")
+        if got.get("projects") != []:
+            fail(case, f"malformed sidecar not graceful: {got!r}")
+        if got.get("counts", {}).get("total") != 1:
+            fail(
+                case,
+                f"malformed sidecar dropped job enumeration: {got!r}",
+            )
+        # And /api/jobs should still work, treating the job as
+        # unarchived + no custom metadata.
+        listing = get_json(case, port, "/api/jobs")
+        ids = [j.get("job_id") for j in (listing.get("jobs") or [])]
+        if "minimal_job" not in ids:
+            fail(case, "malformed sidecar dropped job from listing")
+        library_sidecar.unlink()
+        passed()
+
         print(f"OK: {CHECKS_PASSED} API checks passed")
         return 0
     finally:

@@ -574,6 +574,22 @@ _API_SPEAKER_KEY_RE = re.compile(r"^\d+$")
 _API_SPEAKER_NAME_MAX_LEN = 80
 _API_POST_BODY_MAX = 8192
 
+# Local library sidecar (project/folder/archive organization). Lives
+# at ``<jobs_root>/.recap_library.json`` so it is part of the same
+# backup / rsync set users already manage for jobs, but doesn't
+# mutate any per-job ``job.json``. The file is optional — a missing
+# or malformed sidecar gracefully falls back to empty metadata.
+_LIBRARY_FILE_NAME = ".recap_library.json"
+_API_LIBRARY_TITLE_MAX_LEN = 120
+_API_LIBRARY_PROJECT_MAX_LEN = 80
+
+# Process-wide serialization for library sidecar writes. The file is
+# tiny (a few KB at most), the write happens atomically via
+# ``<file>.tmp`` → ``os.replace``, and concurrent POSTs to different
+# jobs still need to share the same physical file — so we take a
+# single library-level lock for the duration of the write.
+_library_lock = threading.Lock()
+
 # Keys in chapter_titles.json are 1-based integer strings matching
 # chapter_candidates.json's `index` field. Values are user-editable
 # display titles, bounded at 120 chars so exporters don't overflow
@@ -1772,6 +1788,155 @@ def _read_job_json(job_dir: Path) -> dict | None:
     if not isinstance(data, dict):
         return None
     return data
+
+
+def _library_sidecar_path(jobs_root: Path) -> Path:
+    """Canonical location of the library metadata sidecar."""
+    return jobs_root / _LIBRARY_FILE_NAME
+
+
+def _library_value_contains_control(value: str) -> bool:
+    """Reject ASCII/Unicode control chars except plain tab.
+
+    Library titles and project names are one-line strings. Mirrors
+    the ``speaker_names.json`` / ``chapter_titles.json`` policy so
+    all overlay writes enforce the same character allowlist.
+    """
+    for ch in value:
+        if ch == "\t":
+            continue
+        if ord(ch) < 0x20 or ord(ch) == 0x7F:
+            return True
+    return False
+
+
+def _sanitize_library_entry(entry: object) -> dict | None:
+    """Return a cleaned library entry dict, or ``None`` to drop it.
+
+    Enforces bounded title/project length, control-char rejection,
+    and coerces ``archived`` to ``bool``. Fields that fail validation
+    are dropped silently rather than raising, so a hand-edited
+    sidecar with a single bad row still yields a usable library.
+    Entries with no surviving fields collapse to ``None``.
+    """
+    if not isinstance(entry, dict):
+        return None
+    cleaned: dict[str, object] = {}
+    raw_title = entry.get("title")
+    if isinstance(raw_title, str):
+        title = raw_title.strip()
+        if (
+            title
+            and len(title) <= _API_LIBRARY_TITLE_MAX_LEN
+            and not _library_value_contains_control(title)
+        ):
+            cleaned["title"] = title
+    raw_project = entry.get("project")
+    if isinstance(raw_project, str):
+        project = raw_project.strip()
+        if (
+            project
+            and len(project) <= _API_LIBRARY_PROJECT_MAX_LEN
+            and not _library_value_contains_control(project)
+        ):
+            cleaned["project"] = project
+    raw_archived = entry.get("archived")
+    if isinstance(raw_archived, bool) and raw_archived:
+        cleaned["archived"] = True
+    return cleaned or None
+
+
+def _load_library(
+    jobs_root: Path, logger_stream: IO | None = None,
+) -> dict:
+    """Read ``.recap_library.json``, or return the empty default.
+
+    Missing / malformed sidecar → ``{version: 1, updated_at: None,
+    jobs: {}}``. No exception leaks; a single ``[recap-ui] library
+    skipped: <reason>`` line is written to the server log and the
+    caller treats the library as empty. Per-entry validation uses
+    ``_sanitize_library_entry`` so partial corruption drops only the
+    bad rows.
+    """
+    default = {"version": 1, "updated_at": None, "jobs": {}}
+    path = _library_sidecar_path(jobs_root)
+    if not path.is_file():
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as e:
+        if logger_stream is not None:
+            logger_stream.write(
+                f"[recap-ui] library skipped: {e}\n"
+            )
+            logger_stream.flush()
+        return default
+    if not isinstance(data, dict):
+        if logger_stream is not None:
+            logger_stream.write(
+                "[recap-ui] library skipped: top-level not an object\n"
+            )
+            logger_stream.flush()
+        return default
+    jobs_raw = data.get("jobs") or {}
+    if not isinstance(jobs_raw, dict):
+        if logger_stream is not None:
+            logger_stream.write(
+                "[recap-ui] library skipped: 'jobs' not an object\n"
+            )
+            logger_stream.flush()
+        return default
+    clean: dict[str, dict] = {}
+    for k, v in jobs_raw.items():
+        if not isinstance(k, str) or not k:
+            continue
+        if Path(k).name != k or k in (".", ".."):
+            continue
+        entry = _sanitize_library_entry(v)
+        if entry is not None:
+            clean[k] = entry
+    updated_at = data.get("updated_at")
+    if not isinstance(updated_at, (str, type(None))):
+        updated_at = None
+    return {"version": 1, "updated_at": updated_at, "jobs": clean}
+
+
+def _write_library(jobs_root: Path, jobs_meta: dict[str, dict]) -> dict:
+    """Atomic write of ``.recap_library.json`` and return the doc."""
+    doc = {
+        "version": 1,
+        "updated_at": _now_iso(),
+        "jobs": dict(jobs_meta),
+    }
+    path = _library_sidecar_path(jobs_root)
+    tmp = path.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(doc, f, indent=2, sort_keys=True)
+        f.write("\n")
+    tmp.replace(path)
+    return doc
+
+
+def _library_entry_for_job(library: dict, job_id: str) -> dict:
+    """Return the sanitized library entry for ``job_id`` or ``{}``."""
+    entries = library.get("jobs") if isinstance(library, dict) else None
+    if not isinstance(entries, dict):
+        return {}
+    entry = entries.get(job_id)
+    return entry if isinstance(entry, dict) else {}
+
+
+def _display_title_for(
+    entry: dict, original_filename: object, job_id: str,
+) -> str:
+    """Effective display title: custom > original_filename > job_id."""
+    custom = entry.get("title") if isinstance(entry, dict) else None
+    if isinstance(custom, str) and custom.strip():
+        return custom.strip()
+    if isinstance(original_filename, str) and original_filename.strip():
+        return original_filename.strip()
+    return job_id
 
 
 def _list_jobs(jobs_root: Path) -> list[dict]:
@@ -2999,7 +3164,13 @@ def _make_handler(jobs_root: Path, sources_root: Path):
             except Exception:
                 pass
 
-        def _api_job_summary(self, job_id: str, job_dir: Path) -> dict:
+        def _api_job_summary(
+            self,
+            job_id: str,
+            job_dir: Path,
+            *,
+            library: dict | None = None,
+        ) -> dict:
             data = _read_job_json(job_dir) or {}
             artifacts = {
                 "transcript_json": (job_dir / "transcript.json").is_file(),
@@ -3059,7 +3230,40 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                 "transcript_notes_json": (
                     f"/job/{job_id}/transcript_notes.json"
                 ),
+                "metadata": f"/api/jobs/{job_id}/metadata",
+                "library": "/api/library",
             }
+            # Local library organization (title / project / archive).
+            # ``library`` is passed in by ``_api_list_jobs`` so we hit
+            # the sidecar once per listing; the single-job path falls
+            # back to loading it on demand.
+            lib = (
+                library
+                if isinstance(library, dict)
+                else _load_library(
+                    root_resolved,
+                    logger_stream=getattr(
+                        self.server, "logger_stream", None,
+                    ),
+                )
+            )
+            lib_entry = _library_entry_for_job(lib, job_id)
+            custom_title = (
+                lib_entry.get("title")
+                if isinstance(lib_entry.get("title"), str)
+                else None
+            )
+            project = (
+                lib_entry.get("project")
+                if isinstance(lib_entry.get("project"), str)
+                else None
+            )
+            archived = bool(lib_entry.get("archived"))
+            display_title = _display_title_for(
+                lib_entry,
+                data.get("original_filename"),
+                str(data.get("job_id") or job_id),
+            )
             return {
                 "job_id": data.get("job_id") or job_id,
                 "original_filename": data.get("original_filename"),
@@ -3071,20 +3275,106 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                 "stages": data.get("stages") or {},
                 "artifacts": artifacts,
                 "urls": urls,
+                "display_title": display_title,
+                "custom_title": custom_title,
+                "project": project,
+                "archived": archived,
             }
 
-        def _api_list_jobs(self) -> list[dict]:
+        def _api_list_jobs(
+            self, *, include_archived: bool = False,
+        ) -> list[dict]:
             """Return a sorted list of job summaries.
 
             Malformed `job.json` entries are already dropped by
             `_list_jobs`, so the frontend always receives parseable
-            summaries and doesn't have to guard each card.
+            summaries and doesn't have to guard each card. Archived
+            jobs are excluded by default; pass ``include_archived=
+            True`` to surface them (the React Archived view does
+            this).
             """
             entries = _list_jobs(root_resolved)
-            return [
-                self._api_job_summary(entry["job_id"], entry["dir"])
-                for entry in entries
+            library = _load_library(
+                root_resolved,
+                logger_stream=getattr(
+                    self.server, "logger_stream", None,
+                ),
+            )
+            out: list[dict] = []
+            for entry in entries:
+                summary = self._api_job_summary(
+                    entry["job_id"], entry["dir"], library=library,
+                )
+                if not include_archived and summary.get("archived"):
+                    continue
+                out.append(summary)
+            return out
+
+        def _api_library_summary(self) -> dict:
+            """GET /api/library payload.
+
+            Returns project rollups + counts so the React jobs index
+            can render a project filter and an archive toggle without
+            re-deriving them from the full listing. Does not mutate
+            any sidecar.
+            """
+            library = _load_library(
+                root_resolved,
+                logger_stream=getattr(
+                    self.server, "logger_stream", None,
+                ),
+            )
+            path = _library_sidecar_path(root_resolved)
+
+            # Build per-project rollups keyed by project name. Only
+            # jobs that actually exist on disk count; library entries
+            # for deleted jobs are preserved on disk but ignored for
+            # totals so the React UI doesn't dangle.
+            entries = _list_jobs(root_resolved)
+            existing_ids = {e["job_id"] for e in entries}
+            by_project: dict[str, dict[str, int]] = {}
+            counts = {"total": 0, "active": 0, "archived": 0}
+            for job_id in existing_ids:
+                entry = _library_entry_for_job(library, job_id)
+                project = entry.get("project") if isinstance(
+                    entry.get("project"), str,
+                ) else None
+                is_archived = bool(entry.get("archived"))
+                counts["total"] += 1
+                if is_archived:
+                    counts["archived"] += 1
+                else:
+                    counts["active"] += 1
+                project_key = project or ""
+                if project_key not in by_project:
+                    by_project[project_key] = {
+                        "total": 0, "active": 0, "archived": 0,
+                    }
+                by_project[project_key]["total"] += 1
+                if is_archived:
+                    by_project[project_key]["archived"] += 1
+                else:
+                    by_project[project_key]["active"] += 1
+            projects = [
+                {
+                    "name": name,
+                    "total": rollup["total"],
+                    "active": rollup["active"],
+                    "archived": rollup["archived"],
+                }
+                for name, rollup in by_project.items()
+                if name  # exclude the "no project" bucket from the
+                        # projects list; counts still carry totals.
             ]
+            projects.sort(key=lambda p: p["name"].lower())
+            return {
+                "version": library.get("version") or 1,
+                "updated_at": library.get("updated_at"),
+                "sidecar_path": str(path),
+                "sidecar_present": path.is_file(),
+                "counts": counts,
+                "projects": projects,
+            }
 
         def _api_sources_listing(self) -> dict:
             """GET /api/sources payload — discovery mirror of the
@@ -3184,10 +3474,33 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                 )
                 return
 
-            # GET /api/jobs
-            if segments == ["api", "jobs"]:
+            # GET /api/library
+            if segments == ["api", "library"]:
                 self._send_json(
-                    HTTPStatus.OK, {"jobs": self._api_list_jobs()},
+                    HTTPStatus.OK, self._api_library_summary(),
+                )
+                return
+
+            # GET /api/jobs (archived excluded by default; opt-in
+            # via ``?include_archived=1``).
+            if segments == ["api", "jobs"]:
+                include_archived = False
+                try:
+                    qs = urllib.parse.urlparse(self.path).query
+                    params = urllib.parse.parse_qs(qs)
+                    raw = params.get("include_archived", [""])[0]
+                    if raw in ("1", "true", "yes"):
+                        include_archived = True
+                except (ValueError, TypeError):
+                    include_archived = False
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "jobs": self._api_list_jobs(
+                            include_archived=include_archived,
+                        ),
+                        "include_archived": include_archived,
+                    },
                 )
                 return
 
@@ -4787,6 +5100,241 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                 pass
             self._send_json(HTTPStatus.OK, doc)
 
+        def _handle_api_job_metadata_post(self, job_id: str) -> None:
+            """POST /api/jobs/<id>/metadata — update library entry.
+
+            Body shape (partial; only present keys mutate the entry):
+
+                {"title": "...", "project": "...", "archived": true}
+
+            - ``title`` / ``project`` accept strings. Empty string
+              clears the field. Over-length (title > 120,
+              project > 80) or control-char values return 400.
+            - ``archived`` must be a boolean. Any other JSON type
+              returns 400.
+            - Keys not present in the body are preserved — this is
+              effectively a PATCH under a POST verb so browsers with
+              strict CORS preflight rules keep working with the
+              existing CSRF flow.
+
+            Reuses the shared safety primitives (Host pinning,
+            ``X-Recap-Token`` CSRF, ``_API_POST_BODY_MAX`` body cap)
+            and a process-wide ``_library_lock`` around the atomic
+            sidecar rewrite. Never mutates ``job.json`` and does not
+            move the on-disk directory (organization is metadata-only
+            in this slice). Returns the refreshed job summary so the
+            React client can update its state without a second
+            round-trip.
+            """
+            allowed_hosts = getattr(self.server, "allowed_hosts", frozenset())
+            got_host = self.headers.get("Host") or ""
+            if not allowed_hosts or not any(
+                secrets.compare_digest(got_host, allowed)
+                for allowed in allowed_hosts
+            ):
+                self._reject_api(
+                    HTTPStatus.FORBIDDEN, "host",
+                    "Host header mismatch.",
+                )
+                return
+
+            ct = (
+                self.headers.get("Content-Type") or ""
+            ).split(";")[0].strip()
+            if ct.lower() != "application/json":
+                self._reject_api(
+                    HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "content-type",
+                    "Content-Type must be application/json.",
+                )
+                return
+
+            raw_len = self.headers.get("Content-Length")
+            try:
+                content_length = int(raw_len) if raw_len is not None else -1
+            except ValueError:
+                content_length = -1
+            if content_length < 0:
+                self._reject_api(
+                    HTTPStatus.LENGTH_REQUIRED, "content-length-missing",
+                    "Content-Length is required.",
+                )
+                return
+            if content_length > _API_POST_BODY_MAX:
+                self._reject_api(
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "body-too-large",
+                    f"Request body exceeds {_API_POST_BODY_MAX} bytes.",
+                )
+                return
+
+            expected_token = getattr(self.server, "csrf_token", "") or ""
+            got_token = self.headers.get("X-Recap-Token") or ""
+            if not expected_token or not secrets.compare_digest(
+                got_token, expected_token,
+            ):
+                self._reject_api(
+                    HTTPStatus.FORBIDDEN, "csrf",
+                    "CSRF token missing or invalid.",
+                )
+                return
+
+            job_dir = _safe_job_dir(root_resolved, job_id)
+            if job_dir is None:
+                self._reject_api(
+                    HTTPStatus.NOT_FOUND, "no-such-job",
+                    "Job not found.",
+                )
+                return
+
+            raw = (
+                self.rfile.read(content_length) if content_length > 0
+                else b""
+            )
+            try:
+                parsed = json.loads(raw.decode("utf-8", "replace"))
+            except ValueError:
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "bad-json",
+                    "Body is not valid JSON.",
+                )
+                return
+            if not isinstance(parsed, dict):
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "bad-json",
+                    "Top-level JSON must be an object.",
+                )
+                return
+
+            # Only honor the allowlisted keys. Unknown keys are
+            # silently ignored so a forward-compat client can send
+            # extra metadata without tripping validation.
+            updates: dict[str, object] = {}
+            if "title" in parsed:
+                v = parsed["title"]
+                if not isinstance(v, str):
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "bad-value",
+                        "'title' must be a string.",
+                    )
+                    return
+                stripped = v.strip()
+                if len(stripped) > _API_LIBRARY_TITLE_MAX_LEN:
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "too-long",
+                        f"'title' exceeds "
+                        f"{_API_LIBRARY_TITLE_MAX_LEN} characters.",
+                    )
+                    return
+                if stripped and _library_value_contains_control(stripped):
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "bad-value",
+                        "'title' must not contain control characters.",
+                    )
+                    return
+                updates["title"] = stripped
+            if "project" in parsed:
+                v = parsed["project"]
+                if not isinstance(v, str):
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "bad-value",
+                        "'project' must be a string.",
+                    )
+                    return
+                stripped = v.strip()
+                if len(stripped) > _API_LIBRARY_PROJECT_MAX_LEN:
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "too-long",
+                        f"'project' exceeds "
+                        f"{_API_LIBRARY_PROJECT_MAX_LEN} characters.",
+                    )
+                    return
+                if stripped and _library_value_contains_control(stripped):
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "bad-value",
+                        "'project' must not contain control characters.",
+                    )
+                    return
+                updates["project"] = stripped
+            if "archived" in parsed:
+                v = parsed["archived"]
+                if not isinstance(v, bool):
+                    self._reject_api(
+                        HTTPStatus.BAD_REQUEST, "bad-value",
+                        "'archived' must be a boolean.",
+                    )
+                    return
+                updates["archived"] = v
+
+            if not updates:
+                self._reject_api(
+                    HTTPStatus.BAD_REQUEST, "bad-schema",
+                    "Body must contain at least one of: title, "
+                    "project, archived.",
+                )
+                return
+
+            # Merge under the library lock so concurrent metadata
+            # POSTs against different jobs don't race each other.
+            with _library_lock:
+                library = _load_library(
+                    root_resolved,
+                    logger_stream=getattr(
+                        self.server, "logger_stream", None,
+                    ),
+                )
+                entries = dict(library.get("jobs") or {})
+                current = dict(entries.get(job_id) or {})
+                if "title" in updates:
+                    if updates["title"]:
+                        current["title"] = updates["title"]
+                    else:
+                        current.pop("title", None)
+                if "project" in updates:
+                    if updates["project"]:
+                        current["project"] = updates["project"]
+                    else:
+                        current.pop("project", None)
+                if "archived" in updates:
+                    if updates["archived"]:
+                        current["archived"] = True
+                    else:
+                        current.pop("archived", None)
+                if current:
+                    entries[job_id] = current
+                else:
+                    entries.pop(job_id, None)
+                try:
+                    _write_library(root_resolved, entries)
+                except OSError as e:
+                    self._reject_api(
+                        HTTPStatus.INTERNAL_SERVER_ERROR, "write-failed",
+                        f"Failed to write library sidecar: "
+                        f"{type(e).__name__}",
+                    )
+                    return
+                refreshed_library = _load_library(
+                    root_resolved,
+                    logger_stream=getattr(
+                        self.server, "logger_stream", None,
+                    ),
+                )
+
+            # Log only metadata deltas — never the raw body.
+            try:
+                changed = ",".join(sorted(updates.keys()))
+                self.server.logger_stream.write(
+                    f"[recap-ui] saved library-metadata job={job_id} "
+                    f"fields={changed}\n"
+                )
+                self.server.logger_stream.flush()
+            except Exception:
+                pass
+            self._send_json(
+                HTTPStatus.OK,
+                self._api_job_summary(
+                    job_id, job_dir, library=refreshed_library,
+                ),
+            )
+
         def _handle_api_jobs_start(self) -> None:
             """POST /api/jobs/start — JSON body.
 
@@ -5898,6 +6446,15 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                 self._handle_api_transcript_notes_post(
                     early_segments[2],
                 )
+                return
+
+            if (
+                len(early_segments) == 4
+                and early_segments[0] == "api"
+                and early_segments[1] == "jobs"
+                and early_segments[3] == "metadata"
+            ):
+                self._handle_api_job_metadata_post(early_segments[2])
                 return
 
             if early_segments == ["api", "jobs", "start"]:

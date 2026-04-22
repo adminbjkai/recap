@@ -1,11 +1,25 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { getJobs, type JobSummary } from "../lib/api";
+import {
+  getJobs,
+  getLibrary,
+  saveJobMetadata,
+  type JobMetadataPatch,
+  type JobSummary,
+  type LibrarySummary,
+} from "../lib/api";
 import JobCard from "../components/JobCard";
+
+type View = "active" | "archived";
 
 type LoadState =
   | { status: "loading" }
-  | { status: "loaded"; jobs: JobSummary[] }
+  | {
+      status: "loaded";
+      jobs: JobSummary[];
+      library: LibrarySummary | null;
+      view: View;
+    }
   | { status: "error"; message: string };
 
 const STATUS_FILTERS = [
@@ -27,7 +41,13 @@ type Stats = {
 };
 
 function computeStats(jobs: JobSummary[]): Stats {
-  const s: Stats = { total: jobs.length, completed: 0, running: 0, failed: 0, pending: 0 };
+  const s: Stats = {
+    total: jobs.length,
+    completed: 0,
+    running: 0,
+    failed: 0,
+    pending: 0,
+  };
   for (const job of jobs) {
     const status = (job.status || "").toLowerCase();
     if (status === "completed") s.completed += 1;
@@ -38,58 +58,108 @@ function computeStats(jobs: JobSummary[]): Stats {
   return s;
 }
 
+const ALL_PROJECTS = "__all__";
+const NO_PROJECT = "__none__";
+
 export default function JobsIndexPage() {
   const [state, setState] = useState<LoadState>({ status: "loading" });
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [projectFilter, setProjectFilter] = useState<string>(ALL_PROJECTS);
+  const [view, setView] = useState<View>("active");
 
-  useEffect(() => {
-    let cancelled = false;
+  const load = useCallback((nextView: View) => {
     setState({ status: "loading" });
-    getJobs()
-      .then((payload) => {
-        if (cancelled) return;
-        const jobs = Array.isArray(payload?.jobs) ? payload.jobs : [];
-        setState({ status: "loaded", jobs });
+    // Archived view wants the full listing (server filter is default-
+    // exclude archived, so we pass include_archived=1 and then
+    // narrow client-side to the archived rows).
+    Promise.all([getJobs(nextView === "archived"), getLibrary()])
+      .then(([jobsPayload, library]) => {
+        const raw = Array.isArray(jobsPayload?.jobs) ? jobsPayload.jobs : [];
+        const filtered = raw.filter((j) =>
+          nextView === "archived" ? !!j.archived : !j.archived,
+        );
+        setState({
+          status: "loaded",
+          jobs: filtered,
+          library,
+          view: nextView,
+        });
       })
       .catch((err) => {
-        if (cancelled) return;
         setState({
           status: "error",
-          message: err instanceof Error ? err.message : "Could not load jobs.",
+          message:
+            err instanceof Error ? err.message : "Could not load jobs.",
         });
       });
-    return () => {
-      cancelled = true;
-    };
   }, []);
 
+  useEffect(() => {
+    load(view);
+  }, [load, view]);
+
+  const handleSaveJobMetadata = useCallback(
+    async (jobId: string, patch: JobMetadataPatch) => {
+      const updated = await saveJobMetadata(jobId, patch);
+      setState((curr) => {
+        if (curr.status !== "loaded") return curr;
+        // If the job changed archived state, drop it from the list
+        // when it no longer matches the current view.
+        const keepInView =
+          curr.view === "archived" ? !!updated.archived : !updated.archived;
+        const nextJobs = keepInView
+          ? curr.jobs.map((j) => (j.job_id === jobId ? updated : j))
+          : curr.jobs.filter((j) => j.job_id !== jobId);
+        return { ...curr, jobs: nextJobs };
+      });
+      // Refresh library rollups in the background so project counts
+      // stay accurate without forcing a full reload.
+      getLibrary()
+        .then((library) => {
+          setState((curr) =>
+            curr.status === "loaded" ? { ...curr, library } : curr,
+          );
+        })
+        .catch(() => undefined);
+    },
+    [],
+  );
+
   const filteredJobs = useMemo(() => {
-    if (state.status !== "loaded") return [];
+    if (state.status !== "loaded") return [] as JobSummary[];
     const needle = query.trim().toLowerCase();
     return state.jobs.filter((job) => {
       const status = (job.status || "").toLowerCase();
       if (statusFilter !== "all" && status !== statusFilter) {
         return false;
       }
+      if (projectFilter === NO_PROJECT) {
+        if (job.project) return false;
+      } else if (projectFilter !== ALL_PROJECTS) {
+        if (job.project !== projectFilter) return false;
+      }
       if (!needle) return true;
       const haystack = [
         job.job_id,
+        job.display_title,
+        job.custom_title ?? "",
         job.original_filename,
         job.source_path,
+        job.project ?? "",
       ]
         .filter(Boolean)
         .map((s) => String(s).toLowerCase());
       return haystack.some((s) => s.includes(needle));
     });
-  }, [state, query, statusFilter]);
+  }, [state, query, statusFilter, projectFilter]);
 
   if (state.status === "loading") {
     return (
       <main className="jobs-shell">
         <section className="hero-card skeleton-card" aria-busy="true">
-          <p className="eyebrow">Recap · Jobs</p>
-          <h1>Loading jobs…</h1>
+          <p className="eyebrow">Library</p>
+          <h1>Loading library…</h1>
           <div className="skeleton-line" />
           <div className="skeleton-line short" />
           <div className="skeleton-line" />
@@ -102,7 +172,7 @@ export default function JobsIndexPage() {
     return (
       <main className="jobs-shell">
         <section className="hero-card error-card">
-          <p className="eyebrow">Recap · Jobs</p>
+          <p className="eyebrow">Library</p>
           <h1>Unable to load jobs</h1>
           <p>{state.message}</p>
           <div className="job-card-actions">
@@ -118,6 +188,13 @@ export default function JobsIndexPage() {
   const stats = computeStats(state.jobs);
   const total = stats.total;
   const visible = filteredJobs.length;
+  const library = state.library;
+  const libraryCounts = library?.counts ?? {
+    total: total,
+    active: state.view === "active" ? total : 0,
+    archived: state.view === "archived" ? total : 0,
+  };
+  const projects = library?.projects ?? [];
 
   return (
     <main className="jobs-shell">
@@ -128,7 +205,9 @@ export default function JobsIndexPage() {
             <h1>Recordings &amp; reports</h1>
             <p className="jobs-hero-sub">
               {total === 0
-                ? "No recordings yet. Start one to see it here."
+                ? state.view === "archived"
+                  ? "No archived recordings."
+                  : "No recordings yet. Start one to see it here."
                 : `Showing ${visible} of ${total}`}
             </p>
           </div>
@@ -136,34 +215,56 @@ export default function JobsIndexPage() {
             New recording
           </Link>
         </div>
-        {total > 0 ? (
+        {libraryCounts.total > 0 ? (
           <ul className="jobs-hero-stats" aria-label="Job totals">
             <li className="jobs-stat">
-              <span className="jobs-stat-value">{stats.total}</span>
+              <span className="jobs-stat-value">{libraryCounts.total}</span>
               <span className="jobs-stat-label">Total</span>
             </li>
-            <li className="jobs-stat completed">
-              <span className="jobs-stat-value">{stats.completed}</span>
-              <span className="jobs-stat-label">Completed</span>
-            </li>
-            <li className="jobs-stat running">
-              <span className="jobs-stat-value">{stats.running}</span>
-              <span className="jobs-stat-label">Running</span>
-            </li>
-            <li className="jobs-stat failed">
-              <span className="jobs-stat-value">{stats.failed}</span>
-              <span className="jobs-stat-label">Failed</span>
+            <li className="jobs-stat">
+              <span className="jobs-stat-value">{libraryCounts.active}</span>
+              <span className="jobs-stat-label">Active</span>
             </li>
             <li className="jobs-stat">
-              <span className="jobs-stat-value">{stats.pending}</span>
-              <span className="jobs-stat-label">Pending</span>
+              <span className="jobs-stat-value">
+                {libraryCounts.archived}
+              </span>
+              <span className="jobs-stat-label">Archived</span>
             </li>
           </ul>
         ) : null}
       </section>
 
-      {total > 0 ? (
+      {libraryCounts.total > 0 ? (
         <section className="jobs-controls" aria-label="Filter jobs">
+          <div
+            className="jobs-view-tabs"
+            role="tablist"
+            aria-label="Library view"
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={view === "active"}
+              className={`status-pill ${view === "active" ? "active" : ""}`}
+              onClick={() => {
+                if (view !== "active") setView("active");
+              }}
+            >
+              Active ({libraryCounts.active})
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={view === "archived"}
+              className={`status-pill ${view === "archived" ? "active" : ""}`}
+              onClick={() => {
+                if (view !== "archived") setView("archived");
+              }}
+            >
+              Archived ({libraryCounts.archived})
+            </button>
+          </div>
           <label className="jobs-search">
             <span className="visually-hidden">Search jobs</span>
             <input
@@ -172,6 +273,22 @@ export default function JobsIndexPage() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
+          </label>
+          <label className="jobs-project-filter">
+            <span className="visually-hidden">Project</span>
+            <select
+              value={projectFilter}
+              onChange={(e) => setProjectFilter(e.target.value)}
+              aria-label="Project"
+            >
+              <option value={ALL_PROJECTS}>All projects</option>
+              <option value={NO_PROJECT}>No project</option>
+              {projects.map((p) => (
+                <option key={p.name} value={p.name}>
+                  {p.name} ({view === "archived" ? p.archived : p.active})
+                </option>
+              ))}
+            </select>
           </label>
           <div
             className="jobs-status-filter"
@@ -198,12 +315,30 @@ export default function JobsIndexPage() {
 
       {total === 0 ? (
         <section className="hero-card empty-card">
-          <p className="eyebrow">Get started</p>
-          <h2>Capture your first recording</h2>
+          <p className="eyebrow">
+            {state.view === "archived" ? "Archive" : "Get started"}
+          </p>
+          <h2>
+            {state.view === "archived"
+              ? "No archived recordings"
+              : "Capture your first recording"}
+          </h2>
           <p>
-            Open <Link className="text-link" to="/new">the start page</Link>{" "}
-            to record screen + audio in the browser, or pick a video file
-            from <code>--sources-root</code>. Completed runs appear here.
+            {state.view === "archived" ? (
+              <>
+                Nothing has been archived yet. Archive a job from its
+                dashboard when you want to hide it from the Active
+                view. Archived jobs stay on disk and are reachable
+                directly by URL.
+              </>
+            ) : (
+              <>
+                Open <Link className="text-link" to="/new">the start page</Link>{" "}
+                to record screen + audio in the browser, or pick a
+                video file from <code>--sources-root</code>. Completed
+                runs appear here.
+              </>
+            )}
           </p>
         </section>
       ) : visible === 0 ? (
@@ -211,13 +346,15 @@ export default function JobsIndexPage() {
           <p className="eyebrow">No matches</p>
           <h2>No jobs match those filters</h2>
           <p>
-            Try a different search term or status. You can also{" "}
+            Try a different search term, project, or status. You can
+            also{" "}
             <button
               type="button"
               className="text-link"
               onClick={() => {
                 setQuery("");
                 setStatusFilter("all");
+                setProjectFilter(ALL_PROJECTS);
               }}
               style={{ background: "none", border: 0, padding: 0 }}
             >
@@ -229,7 +366,13 @@ export default function JobsIndexPage() {
       ) : (
         <section className="jobs-grid" aria-label="Jobs">
           {filteredJobs.map((job) => (
-            <JobCard key={job.job_id} job={job} />
+            <JobCard
+              key={job.job_id}
+              job={job}
+              onSaveMetadata={(patch) =>
+                handleSaveJobMetadata(job.job_id, patch)
+              }
+            />
           ))}
         </section>
       )}

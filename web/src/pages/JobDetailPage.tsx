@@ -4,8 +4,10 @@ import {
   getChapters,
   getInsights,
   getJob,
+  saveJobMetadata,
   type ChapterListPayload,
   type InsightsLoadState,
+  type JobMetadataPatch,
   type JobSummary,
 } from "../lib/api";
 import { formatJobDateTime } from "../lib/format";
@@ -61,6 +63,13 @@ export default function JobDetailPage() {
   const [chaptersState, setChaptersState] = useState<ChaptersCardState>({
     status: "loading",
   });
+  const [editingMetadata, setEditingMetadata] = useState(false);
+  const [metadataDraft, setMetadataDraft] = useState<{
+    title: string;
+    project: string;
+  }>({ title: "", project: "" });
+  const [metadataSaving, setMetadataSaving] = useState(false);
+  const [metadataError, setMetadataError] = useState<string | null>(null);
 
   const loadJob = useCallback((jobId: string) => {
     return getJob(jobId)
@@ -151,6 +160,28 @@ export default function JobDetailPage() {
     [id, loadJob, loadInsights, loadChapters],
   );
 
+  const handleSaveMetadata = useCallback(
+    async (patch: JobMetadataPatch) => {
+      if (!id) return;
+      setMetadataSaving(true);
+      setMetadataError(null);
+      try {
+        const updated = await saveJobMetadata(id, patch);
+        setState({ status: "loaded", job: updated });
+        setEditingMetadata(false);
+      } catch (err) {
+        setMetadataError(
+          err instanceof Error
+            ? err.message
+            : "Could not save metadata.",
+        );
+      } finally {
+        setMetadataSaving(false);
+      }
+    },
+    [id],
+  );
+
   const metaChips = useMemo(() => {
     if (state.status !== "loaded") return [] as string[];
     const job = state.job;
@@ -201,7 +232,14 @@ export default function JobDetailPage() {
   }
 
   const { job } = state;
-  const title = job.original_filename || job.job_id;
+  const fallbackTitle = job.original_filename || job.job_id;
+  const title =
+    (typeof job.display_title === "string" && job.display_title.trim()) ||
+    fallbackTitle;
+  const isCustomTitle =
+    typeof job.custom_title === "string" && job.custom_title.trim().length > 0;
+  const project = job.project || null;
+  const archived = !!job.archived;
   const status = job.status || "unknown";
   const transcriptUrl = `/job/${encodeURIComponent(job.job_id)}/transcript`;
   const framesUrl = `/job/${encodeURIComponent(job.job_id)}/frames`;
@@ -229,13 +267,29 @@ export default function JobDetailPage() {
   const haveScreenshots = !!job.artifacts?.selected_frames_json;
 
   return (
-    <main className="detail-shell">
+    <main className={`detail-shell${archived ? " is-archived" : ""}`}>
       <header className="detail-hero">
         <div className="detail-hero-top">
           <div className="detail-hero-title-group">
             <p className="eyebrow">Job</p>
             <h1 className="detail-hero-title" title={title}>
               {title}
+              {isCustomTitle ? (
+                <span
+                  className="detail-hero-title-badge"
+                  title="Custom title saved in the local library"
+                >
+                  renamed
+                </span>
+              ) : null}
+              {archived ? (
+                <span
+                  className="detail-hero-title-badge detail-hero-title-badge--archived"
+                  title="Archived in the local library"
+                >
+                  archived
+                </span>
+              ) : null}
             </h1>
             <p className="detail-hero-subline">
               <span
@@ -244,6 +298,16 @@ export default function JobDetailPage() {
               >
                 {status}
               </span>
+              {project ? (
+                <>
+                  <span className="detail-hero-meta-sep" aria-hidden>
+                    ·
+                  </span>
+                  <span className="detail-chip" title={`Project: ${project}`}>
+                    {project}
+                  </span>
+                </>
+              ) : null}
               <span className="detail-hero-meta-sep" aria-hidden>
                 ·
               </span>
@@ -304,6 +368,35 @@ export default function JobDetailPage() {
               ))}
             </span>
           ) : null}
+          <button
+            type="button"
+            className="text-link detail-hero-organize"
+            onClick={() => {
+              setEditingMetadata((curr) => {
+                if (!curr) {
+                  setMetadataDraft({
+                    title: job.custom_title ?? "",
+                    project: job.project ?? "",
+                  });
+                  setMetadataError(null);
+                }
+                return !curr;
+              });
+            }}
+            aria-expanded={editingMetadata}
+          >
+            {editingMetadata ? "Close organize" : "Rename / Project"}
+          </button>
+          <button
+            type="button"
+            className="text-link detail-hero-archive"
+            onClick={() =>
+              handleSaveMetadata({ archived: !archived })
+            }
+            disabled={metadataSaving}
+          >
+            {archived ? "Unarchive" : "Archive"}
+          </button>
           <a
             className="text-link detail-hero-legacy"
             href={legacyDetail}
@@ -311,6 +404,84 @@ export default function JobDetailPage() {
             Legacy detail page
           </a>
         </div>
+
+        {editingMetadata ? (
+          <div
+            className="detail-hero-editor"
+            role="group"
+            aria-label="Edit library metadata"
+          >
+            <label className="detail-hero-editor-field">
+              <span className="detail-hero-editor-label">Title</span>
+              <input
+                type="text"
+                value={metadataDraft.title}
+                maxLength={120}
+                placeholder={fallbackTitle}
+                onChange={(e) =>
+                  setMetadataDraft((d) => ({
+                    ...d,
+                    title: e.target.value,
+                  }))
+                }
+                aria-label="Custom title"
+              />
+            </label>
+            <label className="detail-hero-editor-field">
+              <span className="detail-hero-editor-label">Project</span>
+              <input
+                type="text"
+                value={metadataDraft.project}
+                maxLength={80}
+                placeholder="e.g. Client demos"
+                onChange={(e) =>
+                  setMetadataDraft((d) => ({
+                    ...d,
+                    project: e.target.value,
+                  }))
+                }
+                aria-label="Project"
+              />
+            </label>
+            {metadataError ? (
+              <p className="form-error" role="status">
+                {metadataError}
+              </p>
+            ) : null}
+            <div className="detail-hero-editor-actions">
+              <button
+                type="button"
+                className="primary-button primary-button--sm"
+                onClick={() =>
+                  handleSaveMetadata({
+                    title: metadataDraft.title.trim(),
+                    project: metadataDraft.project.trim(),
+                  })
+                }
+                disabled={metadataSaving}
+                aria-busy={metadataSaving}
+              >
+                {metadataSaving ? "Saving…" : "Save"}
+              </button>
+              <button
+                type="button"
+                className="ghost-button ghost-button--sm"
+                onClick={() => {
+                  setEditingMetadata(false);
+                  setMetadataError(null);
+                }}
+                disabled={metadataSaving}
+              >
+                Cancel
+              </button>
+              <span className="detail-hero-editor-hint">
+                Organization is local to this Recap library. Clearing
+                a field removes it; the job directory on disk stays
+                put.
+              </span>
+            </div>
+          </div>
+        ) : null}
       </header>
 
       <section className="detail-grid">

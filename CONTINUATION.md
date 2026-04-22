@@ -109,6 +109,29 @@ does and produces, read `HANDOFF.md`.
   `X-Recap-Token`, body-size caps, and the existing per-job lock.
   The overlay never mutates `transcript.json`, and exporters do not
   read it yet.
+- **2026-04-21 library organization (projects / archive / rename,
+  slice 12).** New `<jobs-root>/.recap_library.json` sidecar maps
+  `{job_id: {title?, project?, archived?}}`; the job directory on
+  disk stays put — organization is metadata-only. Writes go
+  through an atomic `<file>.tmp` → `os.replace` under a
+  process-wide `_library_lock`. Missing / malformed sidecar
+  degrades silently to empty. `GET /api/jobs` excludes archived by
+  default; `?include_archived=1` surfaces them. Every job summary
+  now carries `display_title`, `custom_title`, `project`,
+  `archived`. New `GET /api/library` returns project rollups +
+  active / archived counts. New `POST /api/jobs/<id>/metadata`
+  accepts partial `{title?, project?, archived?}` updates with the
+  usual Host pinning + `X-Recap-Token` CSRF + body-size cap +
+  control-char rejection (title ≤ 120, project ≤ 80). React `/app/`
+  jobs index gained Active / Archived view tabs, a project
+  dropdown filter, and inline `Edit` / `Archive` / `Unarchive`
+  affordances on each card; React `/app/job/:id` hero has a
+  `Rename / Project` panel and an `Archive / Unarchive` text link.
+  Archived jobs still open via direct URL. No directory moves, no
+  mutation of `job.json`, no new runtime deps. `scripts/verify_api
+  .py` grows by 17 cases for 102 total; Vitest adds `JobCard`
+  library-organization tests + `JobsIndexPage` project-filter /
+  archive-view-toggle / archive-POST coverage for 79 total.
 - **2026-04-21 exports honor transcript notes (slice 9b).**
   `recap assemble`, `recap export-html`, and `recap export-docx`
   now read `transcript_notes.json` at render time and apply it per

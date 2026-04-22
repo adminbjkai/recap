@@ -1015,6 +1015,59 @@ Primary `GET` routes:
   (`recap assemble` / `export-html` / `export-docx` reading the
   overlay) is a deferred follow-up — today the overlay only affects
   the React surface.
+- **Library organization (projects / archive / rename, slice 12).**
+  A new `<jobs-root>/.recap_library.json` sidecar maps
+  ``{job_id: {title, project, archived}}``. Writes go through
+  `_write_library(jobs_root, entries)` — atomic
+  ``<file>.tmp`` → ``os.replace`` under a process-wide
+  ``_library_lock`` so concurrent POSTs against different jobs
+  don't race on the shared file. The job directory on disk is
+  never moved, renamed, or deleted; organization lives entirely
+  in the sidecar. Missing / malformed sidecar degrades silently
+  via ``_load_library`` to the empty default
+  ``{version: 1, updated_at: None, jobs: {}}``; a one-line
+  ``[recap-ui] library skipped: ...`` log entry identifies the
+  reason. Per-entry validation sanitizes title (string, ≤ 120
+  chars, no control chars except tab), project (string, ≤ 80 chars,
+  same control policy), and ``archived`` (strict bool). Empty
+  strings clear a field; entries with no remaining fields are
+  pruned on write. New public surfaces:
+  - ``GET /api/library`` returns
+    ``{version, updated_at, sidecar_path, sidecar_present,
+    counts: {total, active, archived},
+    projects: [{name, total, active, archived}]}``. Counts only
+    cover jobs that exist on disk — orphaned library entries are
+    ignored for rollups.
+  - ``GET /api/jobs`` excludes archived jobs by default; pass
+    ``?include_archived=1`` (accepts ``1``/``true``/``yes``) to
+    surface them. The response now carries
+    ``{jobs, include_archived}``.
+  - Every ``/api/jobs`` and ``/api/jobs/<id>`` summary gains
+    ``display_title`` (custom title → original_filename → job_id),
+    ``custom_title`` (string or null), ``project`` (string or
+    null), and ``archived`` (bool). ``urls.metadata`` points at
+    ``/api/jobs/<id>/metadata`` and ``urls.library`` at
+    ``/api/library``.
+  - ``POST /api/jobs/<id>/metadata`` is the single mutation. Same
+    safety primitives as the other overlay endpoints (Host
+    pinning, ``X-Recap-Token`` CSRF, ``_API_POST_BODY_MAX`` body
+    cap); validates only the allowlisted keys ``title``,
+    ``project``, ``archived`` (any other keys are silently
+    ignored); rejects wrong types with ``bad-value``, overlength
+    strings with ``too-long``, control chars with ``bad-value``,
+    and an empty request body with ``bad-schema``; returns the
+    refreshed job summary on success. Log line records only the
+    field names that changed; body + CSRF token are never logged.
+  - ``scripts/verify_api.py`` grows by 17 cases (baseline empty
+    library, default display_title fallback, missing CSRF,
+    empty-body, bad title type, title too long, control-char
+    project, bad archived type, no-such-job, happy-path title +
+    project save + sidecar persistence, project rollup after
+    save, archive + exclude-from-default, include_archived=1 opt-
+    in + direct /api/jobs/<id> still reflects archive, counts-
+    after-archive project rollup, unarchive + clear-project
+    partial PATCH, clear-title-reverts-display + sidecar row
+    pruned, malformed sidecar graceful) for 102 total.
 - **Exporters honor transcript notes (slice 9b).**
   `recap assemble`, `recap export-html`, and `recap export-docx`
   now read `transcript_notes.json` at render time via the new

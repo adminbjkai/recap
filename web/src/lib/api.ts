@@ -22,6 +22,44 @@ export type JobSummary = {
     speaker_names: string;
     [key: string]: string | undefined;
   };
+  // Library metadata (projects/folders/archive). Populated by the
+  // server from <jobs_root>/.recap_library.json; every field is
+  // optional so older API responses stay compatible.
+  display_title?: string;
+  custom_title?: string | null;
+  project?: string | null;
+  archived?: boolean;
+};
+
+export type JobMetadataPatch = {
+  title?: string;
+  project?: string;
+  archived?: boolean;
+};
+
+export type LibraryProjectRollup = {
+  name: string;
+  total: number;
+  active: number;
+  archived: number;
+};
+
+export type LibrarySummary = {
+  version: number;
+  updated_at: string | null;
+  sidecar_path: string;
+  sidecar_present: boolean;
+  counts: {
+    total: number;
+    active: number;
+    archived: number;
+  };
+  projects: LibraryProjectRollup[];
+};
+
+export type JobsListPayload = {
+  jobs: JobSummary[];
+  include_archived?: boolean;
 };
 
 export type InsightsActionItem = {
@@ -381,8 +419,55 @@ export function getJob(id: string): Promise<JobSummary> {
   return requestJson<JobSummary>(`/api/jobs/${encodeURIComponent(id)}`);
 }
 
-export function getJobs(): Promise<{ jobs: JobSummary[] }> {
-  return requestJson<{ jobs: JobSummary[] }>("/api/jobs");
+export function getJobs(
+  includeArchived = false,
+): Promise<JobsListPayload> {
+  const qs = includeArchived ? "?include_archived=1" : "";
+  return requestJson<JobsListPayload>(`/api/jobs${qs}`);
+}
+
+export function getLibrary(): Promise<LibrarySummary> {
+  return requestJson<LibrarySummary>("/api/library");
+}
+
+async function postJobMetadata(
+  id: string,
+  patch: JobMetadataPatch,
+  token: string,
+): Promise<Response> {
+  return fetch(
+    `/api/jobs/${encodeURIComponent(id)}/metadata`,
+    {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-Recap-Token": token,
+      },
+      body: JSON.stringify(patch),
+    },
+  );
+}
+
+export async function saveJobMetadata(
+  id: string,
+  patch: JobMetadataPatch,
+): Promise<JobSummary> {
+  let token = await getCsrf();
+  let response = await postJobMetadata(id, patch, token);
+  if (response.status === 403) {
+    token = await getCsrf(true);
+    response = await postJobMetadata(id, patch, token);
+  }
+  const body = await parseJson<JobSummary | ApiErrorBody>(response);
+  if (!response.ok) {
+    const apiBody = body as ApiErrorBody;
+    throw new Error(
+      apiBody.error || `${response.status} ${response.statusText}`,
+    );
+  }
+  return body as JobSummary;
 }
 
 export function getTranscript(id: string): Promise<TranscriptPayload> {

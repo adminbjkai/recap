@@ -699,6 +699,8 @@ GET  /api/jobs/<id>/speaker-names    current speaker-names overlay
 POST /api/jobs/<id>/speaker-names    update overlay (CSRF, Host-pinned)
 POST /api/jobs/start                 dispatch a new run (CSRF, Host-pinned)
 POST /api/recordings                 browser-recorded clip upload (CSRF, Host-pinned)
+GET  /api/library                    project/folder/archive rollups
+POST /api/jobs/<id>/metadata         update title/project/archive (CSRF, Host-pinned)
 POST /api/jobs/<id>/runs/insights    dispatch `recap insights` (CSRF, Host-pinned)
 GET  /api/jobs/<id>/runs/insights/last      latest insights run status (JSON)
 POST /api/jobs/<id>/runs/rich-report dispatch the 11-stage chain (CSRF, Host-pinned)
@@ -748,6 +750,57 @@ malformed files degrade to empty):
   }
 }
 ```
+
+### Library organization (projects / archive)
+
+Recap keeps a small library sidecar at
+`<jobs-root>/.recap_library.json` so the React surface can rename
+jobs, group them into projects, and archive the ones you don't
+want cluttering the Active view. The job directory on disk stays
+put — organization is **metadata-only** in this slice; no
+`jobs/<id>/` is ever moved, renamed, or deleted.
+
+Schema:
+
+```json
+{
+  "version": 1,
+  "updated_at": "2026-04-21T12:00:00Z",
+  "jobs": {
+    "<job_id>": {
+      "title": "Kickoff call",
+      "project": "Client demos",
+      "archived": false
+    }
+  }
+}
+```
+
+- `title` ≤ 120 chars, `project` ≤ 80 chars, `archived` must be a
+  boolean. Empty strings clear a field; a library entry with no
+  remaining fields is pruned on write.
+- Missing or malformed sidecar degrades silently to an empty
+  library — `GET /api/jobs` and `GET /api/library` still work, the
+  React app just shows no custom titles or projects.
+- `GET /api/jobs` excludes archived jobs by default; pass
+  `?include_archived=1` to surface them. Every job summary carries
+  `display_title`, `custom_title`, `project`, and `archived` so the
+  frontend renders the library view without a second round-trip.
+- `GET /api/library` returns `{counts, projects, sidecar_present,
+  sidecar_path}` so the jobs-index header shows active / archived
+  counts and a project filter without re-deriving them from the
+  full listing.
+- `POST /api/jobs/<id>/metadata` is the single mutation surface.
+  Host-pinned, CSRF-guarded, 8 KiB body cap, process-wide library
+  lock around the atomic `<file>.tmp` → `os.replace` write.
+  Partial PATCH-style updates — keys not present in the body are
+  preserved.
+- The jobs index has Active / Archived view tabs, a project
+  dropdown filter, inline "Edit" and "Archive / Unarchive"
+  affordances on every card, and a dedicated "Rename / Project"
+  block on the job dashboard. Copy reads *"Organization is local
+  to this Recap library"* so users know the sidecar is theirs, not
+  shared.
 
 Exporter integration lands alongside the overlay:
 `recap assemble` / `recap export-html` / `recap export-docx` read

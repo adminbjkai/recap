@@ -71,9 +71,22 @@ describe("JobsIndexPage", () => {
   beforeEach(() => {
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url.endsWith("/api/jobs")) {
+      if (url.includes("/api/jobs") && !url.includes("/api/jobs/")) {
         return new Response(
-          JSON.stringify({ jobs: [jobA, jobB] }),
+          JSON.stringify({ jobs: [jobA, jobB], include_archived: false }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.endsWith("/api/library")) {
+        return new Response(
+          JSON.stringify({
+            version: 1,
+            updated_at: null,
+            sidecar_path: "/tmp/.recap_library.json",
+            sidecar_present: false,
+            counts: { total: 2, active: 2, archived: 0 },
+            projects: [],
+          }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         );
       }
