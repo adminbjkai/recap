@@ -473,6 +473,72 @@ rejected) plus integration specs using a monkey-patched
 both record the skipped IDs on success and that a 40% miss
 rate fails cleanly with no `scenes.json` left behind.
 
+## 12g. Primary workflow + product defaults — **done**
+
+**Shipped in:**
+- `Perfect primary workflow and UI`
+
+**Why:** the app had accumulated many correct but manual
+knobs. Users had to pick a transcription engine, pick an
+insights provider, and then run *Generate insights* and
+*Generate rich report* as two separate clicks. This slice
+makes the normal path one click, using the best available
+provider, while keeping power-user controls inside an
+Advanced disclosure.
+
+**What it gives users:**
+- **Zero-touch provider defaults.** `GET /api/engines`
+  promotes `default: "deepgram"` when `DEEPGRAM_API_KEY` is
+  set; new `GET /api/insights-providers` promotes
+  `default: "groq"` when `GROQ_API_KEY` is set. Neither
+  endpoint ever echoes the key value.
+- **One primary CTA on the job dashboard.** The
+  *Generate final document* button fetches the insights
+  provider default on mount and chains
+  `POST /api/jobs/:id/runs/insights` → (on success)
+  `POST /api/jobs/:id/runs/rich-report` in one flow, with
+  a single Step 1/2 progress message. The old per-run
+  subcards move into an Advanced disclosure.
+- **One primary CTA on /app/new.** The full engine radio
+  list lives inside an Advanced disclosure; the user sees
+  a plain-English line naming the default engine instead.
+- **Quieter chrome.** `AppShell` drops the Legacy link
+  from the top nav and keeps it only as a quiet footer
+  text link. Legacy HTML routes remain live and reachable.
+- **Cleaner surface palette.** Shifts the premium-pass
+  tokens from warm cream / beige to cool near-neutral
+  off-white. The brand terracotta is preserved for primary
+  actions and accents so Cap-inspired identity survives.
+- **Video player polish.** `playsInline` keeps mobile
+  Safari from forcing fullscreen on the transcript
+  workspace; `controlsList="nodownload"` keeps the
+  download chrome off the player so the workspace reads
+  as a review surface.
+
+**Invariants preserved:**
+- `recap/job.py STAGES` and `recap/cli.py cmd_run`
+  composition unchanged.
+- No new runtime deps (Python or npm).
+- `/api/jobs/start` / `/api/jobs/:id/runs/insights` /
+  `/api/jobs/:id/runs/rich-report` unchanged in shape.
+- Legacy HTML routes unchanged.
+
+**Tests:** `scripts/verify_api.py` grows from 102 → 105
+cases (insights-providers availability + two defaults-flip
+cases via a second short-lived server that injects fake
+cloud keys). Vitest grows from 91 → 98 specs: new
+`RunActionsFinalDocument.test.tsx` (4 specs), new
+`AppShell.test.tsx` (2 specs), plus one added NewJobPage
+spec for the Advanced-closed-by-default behavior.
+
+**Full validation matrix deferred** — the user asked for
+minimum checks only. Remaining to run by hand:
+`.venv/bin/python scripts/verify_reports.py` ×2,
+`.venv/bin/python scripts/verify_ui.py` ×2, a second run
+of `.venv/bin/python scripts/verify_api.py`,
+`cd web && npm audit --audit-level=moderate`, and the full
+screenshot audit.
+
 ## 12e. Live job progress UX with safer polling — **done**
 
 **Shipped in:**

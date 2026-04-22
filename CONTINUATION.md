@@ -919,6 +919,29 @@ change. 79/79 Vitest specs stay green. After-screenshots are in
   exist.
 - `HANDOFF.md` is the definitive closeout document. It reflects the code
   on disk today.
+- **Primary workflow + product defaults (2026-04-22).**
+  Backend: `/api/engines` now flips `default` to `"deepgram"`
+  when `DEEPGRAM_API_KEY` is set; new `/api/insights-providers`
+  mirrors the shape and flips `default` to `"groq"` when
+  `GROQ_API_KEY` is set. Neither endpoint echoes the key.
+  Frontend: `NewJobPage` reads the server default and the
+  engine list collapses behind an Advanced `<details>`;
+  `RunActionsPanel` gains a primary "Generate final
+  document" CTA that chains insights(default provider) →
+  rich-report; the per-run Generate buttons + provider
+  selector + force checkbox move into an Advanced
+  disclosure; `AppShell` drops the top-bar Legacy link for
+  a quiet footer link; `VideoPlayer` gains `playsInline` +
+  `controlsList="nodownload"`. Visual: premium-pass tokens
+  shift warm cream → cool near-neutral off-white; brand
+  terracotta preserved for primary actions. `scripts/verify_api.py`
+  grows 102 → 105 cases (insights-providers +
+  deepgram/groq defaults-flip with fake keys). Vitest
+  grows 91 → 98 specs (new RunActionsFinalDocument + AppShell
+  tests, one NewJobPage Advanced-closed spec). WhisperX
+  pruned from README + TASKS as out-of-scope. Full
+  validation matrix deferred; see roadmap entry 12g for
+  exact commands.
 - **Scenes extraction tolerates silent save_images misses (2026-04-21).**
   A real job failed at `recap scenes` with
   `RuntimeError: save_images did not produce a frame for scene(s)

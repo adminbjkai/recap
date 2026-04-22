@@ -121,6 +121,66 @@ describe("NewJobPage", () => {
     expect((second as HTMLInputElement).checked).toBe(true);
   });
 
+  it("keeps the Advanced disclosure closed by default and defers engine choice to the server default", async () => {
+    installFetch((url) => {
+      if (url.endsWith("/api/sources")) {
+        return jsonResponse({
+          sources_root: "/tmp/sources",
+          sources_root_exists: true,
+          extensions: [".mp4"],
+          sources: [
+            {
+              name: "demo.mp4",
+              size_bytes: 100,
+              modified_at: "2026-04-19T10:00:00Z",
+            },
+          ],
+        });
+      }
+      if (url.endsWith("/api/engines")) {
+        return jsonResponse({
+          engines: [
+            {
+              id: "faster-whisper",
+              label: "faster-whisper (default, local)",
+              category: "local",
+              default: false,
+              available: true,
+            },
+            {
+              id: "deepgram",
+              label: "deepgram (cloud; diarized speakers)",
+              category: "cloud",
+              default: true,
+              available: true,
+              note: "Deepgram available.",
+            },
+          ],
+          // Backend now flips the default to deepgram when the
+          // key is set; the UI should reflect that without the
+          // user touching Advanced.
+          default: "deepgram",
+        });
+      }
+      return new Response("{}", { status: 404 });
+    });
+    renderWithRoutes();
+    await screen.findByText("demo.mp4");
+    // Copy surfaces which engine is in use. Deepgram's label
+    // appears both in the default-line strong tag and in the
+    // Advanced radio list, which is fine — we just assert at
+    // least one is present.
+    expect(
+      screen.getAllByText(/deepgram \(cloud/i).length,
+    ).toBeGreaterThan(0);
+    // Advanced <details> is closed on first paint.
+    const details = document.querySelector<HTMLDetailsElement>(
+      "details.advanced-disclosure",
+    );
+    expect(details).toBeTruthy();
+    expect(details!.open).toBe(false);
+  });
+
   it("disables the Deepgram engine when the server reports it unavailable", async () => {
     installFetch((url) => {
       if (url.endsWith("/api/sources")) {

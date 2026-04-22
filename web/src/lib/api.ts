@@ -130,6 +130,19 @@ export type EnginesPayload = {
   default: string;
 };
 
+export type InsightsProviderEntry = {
+  id: string;
+  label: string;
+  category: string;
+  available: boolean;
+  note?: string;
+};
+
+export type InsightsProvidersPayload = {
+  providers: InsightsProviderEntry[];
+  default: string;
+};
+
 export type StartSourceSpec =
   | { kind: "sources-root"; name: string }
   | { kind: "absolute-path"; path: string };
@@ -520,6 +533,10 @@ export function getSources(): Promise<SourcesPayload> {
 
 export function getEngines(): Promise<EnginesPayload> {
   return requestJson<EnginesPayload>("/api/engines");
+}
+
+export function getInsightsProviders(): Promise<InsightsProvidersPayload> {
+  return requestJson<InsightsProvidersPayload>("/api/insights-providers");
 }
 
 async function postStartJob(

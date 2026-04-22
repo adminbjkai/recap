@@ -24,7 +24,7 @@ Markdown / HTML / DOCX exports.
 
 1. Ingest uploaded or completed recordings and create a per-job workspace.
 2. Normalize media with FFmpeg into analysis-ready video and audio artifacts.
-3. Transcribe speech with faster-whisper by default, or WhisperX when higher timestamp precision is required.
+3. Transcribe speech with faster-whisper (local default) or Deepgram (cloud, diarized, default when `DEEPGRAM_API_KEY` is set).
 4. Propose chapters from transcript shifts, pauses, speaker changes, and scene boundaries.
 5. Extract one representative frame per detected scene.
 6. Deduplicate and score frames with pHash, SSIM, OCR novelty, and OpenCLIP transcript alignment.
@@ -35,7 +35,7 @@ Markdown / HTML / DOCX exports.
 
 - Capture and ingestion: OBS Studio, Screenpipe, or Cap
 - Media processing: FFmpeg
-- Transcription: faster-whisper, WhisperX
+- Transcription: faster-whisper (local default), Deepgram (cloud)
 - Scene detection: PySceneDetect
 - Deduplication: ImageHash, scikit-image
 - OCR: Tesseract

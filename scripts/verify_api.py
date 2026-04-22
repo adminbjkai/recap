@@ -206,7 +206,12 @@ def start_ui(
         "--sources-root", str(sources_root),
     ]
     env = os.environ.copy()
+    # Scrub cloud-provider keys from the verifier subprocess unless a
+    # specific case re-injects them via ``extra_env``. This keeps the
+    # "default is local/offline when no key is set" invariant tested
+    # on every run.
     env.pop("DEEPGRAM_API_KEY", None)
+    env.pop("GROQ_API_KEY", None)
     # The /api/jobs/start dispatch test relies on the test-only shim
     # documented in recap/ui.py so the verifier can prove validation
     # without spawning a real recap ingest + recap run pair. All other
@@ -318,6 +323,28 @@ def main() -> int:
         as_text = json.dumps(payload)
         if "DEEPGRAM_API_KEY=" in as_text or " sk-" in as_text:
             fail(case, "engines payload appears to leak a key value")
+        passed()
+
+        case = "api-insights-providers-reports-availability"
+        payload = get_json(case, port, "/api/insights-providers")
+        providers = payload.get("providers") or []
+        by_id = {p.get("id"): p for p in providers}
+        if "mock" not in by_id or "groq" not in by_id:
+            fail(case, f"providers missing entries: {providers!r}")
+        if by_id["mock"].get("available") is not True:
+            fail(case, f"mock must be available: {providers!r}")
+        # Verifier subprocess scrubs GROQ_API_KEY from env, so Groq
+        # must report unavailable and the default must be "mock".
+        if by_id["groq"].get("available") is not False:
+            fail(case, f"groq should be unavailable: {providers!r}")
+        if payload.get("default") != "mock":
+            fail(case, f"default provider wrong: {payload!r}")
+        as_text = json.dumps(payload)
+        if "GROQ_API_KEY=" in as_text or "gsk_" in as_text:
+            fail(
+                case,
+                "insights-providers payload appears to leak a key value",
+            )
         passed()
 
         case = "api-start-missing-csrf"
@@ -2093,6 +2120,76 @@ def main() -> int:
             fail(case, "malformed sidecar dropped job from listing")
         library_sidecar.unlink()
         passed()
+
+        # Second short-lived server: verify that /api/engines and
+        # /api/insights-providers correctly promote the cloud default
+        # when DEEPGRAM_API_KEY / GROQ_API_KEY are present. The rest
+        # of this suite runs with both keys scrubbed, so this is the
+        # only place we prove the "zero-touch cloud default" branch.
+        key_port = free_port()
+        key_proc = start_ui(
+            jobs_root,
+            key_port,
+            sources_root,
+            extra_env={
+                "DEEPGRAM_API_KEY": "fake-test-key-deepgram",
+                "GROQ_API_KEY": "fake-test-key-groq",
+            },
+        )
+        try:
+            wait_for_server(key_port)
+
+            case = "api-engines-default-flips-to-deepgram-when-key-set"
+            payload = get_json(case, key_port, "/api/engines")
+            engines = payload.get("engines") or []
+            by_id = {e.get("id"): e for e in engines}
+            if by_id.get("deepgram", {}).get("available") is not True:
+                fail(
+                    case,
+                    f"deepgram should be available with key set: "
+                    f"{engines!r}",
+                )
+            if payload.get("default") != "deepgram":
+                fail(
+                    case,
+                    f"default engine should flip to deepgram when "
+                    f"key is set; got {payload!r}",
+                )
+            as_text = json.dumps(payload)
+            if "fake-test-key" in as_text:
+                fail(
+                    case,
+                    "engines payload leaked the fake key value",
+                )
+            passed()
+
+            case = "api-insights-providers-default-flips-to-groq"
+            payload = get_json(
+                case, key_port, "/api/insights-providers",
+            )
+            providers = payload.get("providers") or []
+            by_id = {p.get("id"): p for p in providers}
+            if by_id.get("groq", {}).get("available") is not True:
+                fail(
+                    case,
+                    f"groq should be available with key set: "
+                    f"{providers!r}",
+                )
+            if payload.get("default") != "groq":
+                fail(
+                    case,
+                    f"default provider should flip to groq when "
+                    f"key is set; got {payload!r}",
+                )
+            as_text = json.dumps(payload)
+            if "fake-test-key" in as_text:
+                fail(
+                    case,
+                    "insights-providers payload leaked the fake key",
+                )
+            passed()
+        finally:
+            stop_ui(key_proc)
 
         print(f"OK: {CHECKS_PASSED} API checks passed")
         return 0

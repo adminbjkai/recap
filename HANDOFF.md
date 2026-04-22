@@ -1974,6 +1974,97 @@ FFmpeg itself is never invoked by the verifier — every failure path
 is simulated by function-level monkey patches so CI has no media
 dependency and no wall-clock exposure.
 
+## Product defaults + primary workflow (2026-04-22)
+
+A focused product-defaults slice: automate the 80% path,
+push the knobs behind Advanced, keep power-user access
+intact.
+
+Backend (minimal):
+
+- `GET /api/engines` flips `default: "deepgram"` when
+  `DEEPGRAM_API_KEY` is set in the server env, otherwise
+  stays `"faster-whisper"`. Key value is never surfaced.
+- New `GET /api/insights-providers` (read-only, 200, no
+  CSRF) returns `{providers: [...], default: "groq"|"mock"}`
+  with the same availability + note shape as
+  `/api/engines`. `default: "groq"` when `GROQ_API_KEY` is
+  set, else `"mock"`.
+- `POST /api/jobs/start`, `POST /api/jobs/:id/runs/insights`,
+  `POST /api/jobs/:id/runs/rich-report` are all unchanged.
+
+Frontend:
+
+- `NewJobPage` reads `engines.default` as the preselected
+  engine. The full engine radio list collapses behind a
+  new `<details class="advanced-disclosure">` block; the
+  default engine is named in a plain-English sentence
+  above the disclosure.
+- `RunActionsPanel` fetches `/api/insights-providers` on
+  mount and preselects the default. A new primary
+  "Generate final document" card posts insights with the
+  default provider, watches its `/runs/insights/last`
+  status, and when the insights run reports `success`
+  automatically posts `/runs/rich-report` and watches its
+  status. A single Step 1/2 message narrates the chain.
+  The previous per-run cards + provider selector + force
+  checkbox live inside an Advanced disclosure.
+- `AppShell` drops the Legacy link from the primary nav
+  entirely. A new footer (`<footer class="recap-app-footer">`)
+  carries a quiet `Legacy dashboard` text link so the
+  stdlib HTML surface stays reachable without competing
+  with the React primary workspace.
+- `VideoPlayer` adds `playsInline` (mobile Safari no
+  longer force-fullscreens on play) and
+  `controlsList="nodownload"` (keeps the download chrome
+  off the workspace).
+
+Visual:
+
+- The premium-pass `:root` overrides shift from warm-cream
+  (`#f8f4ec`, `#efeadc`, etc.) to cool near-neutral
+  off-white (`#f6f6f3`, `#ecece8`, `#f2f2ef`). Ink and line
+  tokens picked up a cool tint too. The brand terracotta
+  (`#b14617`) is unchanged — Cap-inspired identity survives.
+- Body background is now a single cool linear-gradient
+  wash from `#f9f9f6` → `#ecece8`, replacing the warm
+  cream gradient.
+
+Tests:
+
+- `scripts/verify_api.py` grows 102 → 105 cases. The base
+  server (with keys scrubbed) proves the `mock` / `faster-
+  whisper` default-local behavior. A second short-lived
+  server, started with `DEEPGRAM_API_KEY` + `GROQ_API_KEY`
+  set to fake test values, proves both endpoints flip to
+  their cloud defaults and that no key value is leaked
+  into either payload.
+- Vitest grows 91 → 98 specs: `RunActionsFinalDocument.test.tsx`
+  (4 specs — Groq default respected, mock fallback,
+  Advanced closed by default, chain posts insights →
+  rich-report and surfaces "Final document generated"),
+  `AppShell.test.tsx` (2 specs — Legacy absent from
+  primary nav, legacy link present in footer), plus one
+  NewJobPage spec for Advanced-closed + default-line copy.
+
+Invariants preserved:
+
+- `recap/job.py STAGES` and `recap/cli.py cmd_run`
+  composition unchanged.
+- No new runtime deps.
+- No changes to `recap/stages/*`, `scripts/fixtures/*`,
+  `requirements.txt`, `pyproject.toml`.
+- Legacy HTML routes unchanged.
+
+**Full validation matrix deferred** per user scope
+reduction. Commands to run on return:
+`.venv/bin/python scripts/verify_reports.py` (×2),
+`.venv/bin/python scripts/verify_ui.py` (×2), a second run
+of `.venv/bin/python scripts/verify_api.py`,
+`cd web && npm audit --audit-level=moderate`, plus the
+full Playwright-driven screenshot pass at 1440 × 900 and
+390 × 844 on all five routes.
+
 ## UX: live job progress with safer polling (2026-04-21)
 
 After the screenshot audit landed, long jobs still felt opaque.

@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  getInsightsProviders,
   getInsightsRun,
   getRichReportRun,
   startInsightsRun,
   startRichReportRun,
   type InsightsProvider,
+  type InsightsProvidersPayload,
   type InsightsRunStatus,
   type RichReportRunStatus,
 } from "../lib/api";
@@ -17,6 +19,13 @@ export type RunActionsPanelProps = {
 };
 
 const POLL_INTERVAL_MS = 2500;
+
+type ChainStep =
+  | "idle"
+  | "insights"
+  | "rich-report"
+  | "done"
+  | "failed";
 
 function describeInsightsStatus(
   status: InsightsRunStatus | null,
@@ -85,6 +94,8 @@ export default function RunActionsPanel({
   const [richStatus, setRichStatus] = useState<RichReportRunStatus | null>(
     null,
   );
+  const [providers, setProviders] =
+    useState<InsightsProvidersPayload | null>(null);
   const [provider, setProvider] = useState<InsightsProvider>("mock");
   const [forceRerun, setForceRerun] = useState(false);
   const [insightsSubmitting, setInsightsSubmitting] = useState(false);
@@ -92,9 +103,31 @@ export default function RunActionsPanel({
   const [insightsError, setInsightsError] = useState<string | null>(null);
   const [richError, setRichError] = useState<string | null>(null);
   const [showRichDetails, setShowRichDetails] = useState(false);
+  const [chainStep, setChainStep] = useState<ChainStep>("idle");
+  const [chainError, setChainError] = useState<string | null>(null);
 
   const insightsPrevRef = useRef<string | null>(null);
   const richPrevRef = useRef<string | null>(null);
+
+  // Fetch the default insights provider once on mount. If Groq is
+  // available in the server environment, the dropdown + chain flip
+  // to "groq"; otherwise we stay on "mock". Provider availability
+  // is surfaced from /api/insights-providers which never echoes the
+  // key itself.
+  useEffect(() => {
+    let cancelled = false;
+    getInsightsProviders()
+      .then((payload) => {
+        if (cancelled) return;
+        setProviders(payload);
+        const def = payload.default === "groq" ? "groq" : "mock";
+        setProvider(def);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const refreshInsightsStatus = useCallback(async () => {
     try {
@@ -199,7 +232,7 @@ export default function RunActionsPanel({
     setRichSubmitting(false);
     if (result.kind === "error") {
       setRichError(result.message);
-      return;
+      return { ok: false, message: result.message } as const;
     }
     setRichStatus({
       job_id: jobId,
@@ -213,7 +246,85 @@ export default function RunActionsPanel({
     richPrevRef.current = "in-progress";
     setShowRichDetails(true);
     refreshRichStatus();
+    return { ok: true } as const;
   }, [jobId, refreshRichStatus]);
+
+  // "Generate final document" — one-click chain: insights (using the
+  // server's default provider: Groq when available, otherwise mock)
+  // then rich-report. The effect below watches both statuses and
+  // progresses chainStep when each step completes.
+  const handleGenerateFinalDocument = useCallback(async () => {
+    setChainError(null);
+    setChainStep("insights");
+    setInsightsError(null);
+    setInsightsSubmitting(true);
+    const result = await startInsightsRun(jobId, {
+      provider,
+      force: forceRerun,
+    });
+    setInsightsSubmitting(false);
+    if (result.kind === "error") {
+      setInsightsError(result.message);
+      setChainError(result.message);
+      setChainStep("failed");
+      return;
+    }
+    setInsightsStatus({
+      job_id: jobId,
+      run_type: "insights",
+      status: "in-progress",
+      started_at: result.response.started_at,
+      provider: result.response.provider,
+      force: result.response.force,
+    });
+    insightsPrevRef.current = "in-progress";
+    refreshInsightsStatus();
+  }, [jobId, provider, forceRerun, refreshInsightsStatus]);
+
+  // Chain advance: when insights success lands while we're in the
+  // chain, kick rich-report. When either step fails, surface the
+  // error and stop.
+  useEffect(() => {
+    if (chainStep === "insights") {
+      const s = insightsStatus?.status;
+      if (s === "success") {
+        setChainStep("rich-report");
+        // Fire-and-forget; handleStartRichReport updates error state.
+        void handleStartRichReport().then((res) => {
+          if (res && !res.ok) {
+            setChainError(res.message ?? "Rich report failed to start.");
+            setChainStep("failed");
+          }
+        });
+      } else if (s === "failure") {
+        setChainError(
+          insightsStatus?.stderr
+            ? "Insights stage failed; see stderr below."
+            : "Insights stage failed.",
+        );
+        setChainStep("failed");
+      }
+    } else if (chainStep === "rich-report") {
+      const s = richStatus?.status;
+      if (s === "success") {
+        setChainStep("done");
+      } else if (s === "failure") {
+        setChainError(
+          richStatus?.failed_stage
+            ? `Rich report failed at stage: ${richStatus.failed_stage}.`
+            : "Rich report failed.",
+        );
+        setChainStep("failed");
+      }
+    }
+  }, [
+    chainStep,
+    insightsStatus?.status,
+    insightsStatus?.stderr,
+    richStatus?.status,
+    richStatus?.failed_stage,
+    handleStartRichReport,
+  ]);
 
   const insightsBusy =
     insightsSubmitting || insightsStatus?.status === "in-progress";
@@ -221,6 +332,20 @@ export default function RunActionsPanel({
     richSubmitting || richStatus?.status === "in-progress";
   const anyBusy = insightsBusy || richBusy;
 
+  const chainRunning =
+    chainStep === "insights" || chainStep === "rich-report";
+  const chainDone = chainStep === "done";
+  const chainFailed = chainStep === "failed";
+  const defaultProvider = providers?.default === "groq" ? "groq" : "mock";
+  const finalPrimaryLabel = chainRunning
+    ? chainStep === "insights"
+      ? "Generating insights…"
+      : "Running rich report…"
+    : chainDone
+      ? "Update final document"
+      : insightsPresent
+        ? "Update final document"
+        : "Generate final document";
   return (
     <section
       className="run-actions-card"
@@ -228,10 +353,65 @@ export default function RunActionsPanel({
     >
       <div className="section-heading">
         <div>
-          <p className="eyebrow">Actions</p>
+          <p className="eyebrow">Final document</p>
           <h2>Generate &amp; enrich</h2>
         </div>
       </div>
+
+      <div className="run-action-subcard run-action-final" aria-label="Final document">
+        <p className="run-action-sub">
+          One click to generate (or refresh) the full Recap document
+          set: insights with{" "}
+          <strong>
+            {defaultProvider === "groq" ? "Groq" : "Mock"}
+          </strong>
+          {" "}then chapters, screenshots, captions, and the HTML /
+          Markdown / DOCX exports.
+        </p>
+        {chainError ? (
+          <p className="form-error" role="status">
+            {chainError}
+          </p>
+        ) : null}
+        {chainDone ? (
+          <p className="save-toast" role="status">
+            Final document generated.
+          </p>
+        ) : null}
+        <div className="run-action-cta-row">
+          <button
+            type="button"
+            className="primary-button"
+            onClick={handleGenerateFinalDocument}
+            disabled={chainRunning || anyBusy}
+            aria-busy={chainRunning}
+          >
+            {finalPrimaryLabel}
+          </button>
+          <span className="run-action-timestamp">
+            Uses {defaultProvider === "groq" ? "Groq (cloud)" : "Mock (offline)"}
+            {" · "}
+            advanced below
+          </span>
+        </div>
+        {chainRunning ? (
+          <p className="run-action-note">
+            {chainStep === "insights"
+              ? "Step 1 of 2 · writing insights.json…"
+              : "Step 2 of 2 · scenes → … → export-docx"}
+          </p>
+        ) : null}
+      </div>
+
+      <details className="advanced-disclosure">
+        <summary>
+          <span className="advanced-disclosure-label">
+            Advanced
+          </span>
+          <span className="advanced-disclosure-hint">
+            Run steps individually, pick a provider, or force re-generate
+          </span>
+        </summary>
 
       <div className="run-action-subcard" aria-label="Insights action">
         <div className="run-action-header">
@@ -456,6 +636,7 @@ export default function RunActionsPanel({
           </p>
         </details>
       </div>
+      </details>
     </section>
   );
 }

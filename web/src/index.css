@@ -4324,28 +4324,29 @@ p {
  * ------------------------------------------------------------ */
 
 :root {
-  /* Calmer warm palette.  The base is still warm off-white, the
-     accent is still the Cap-inspired terracotta, but surfaces /
-     shadows / radii step down in weight so the product feels
-     editorial rather than dashboard-y. */
-  --surface-0: #f8f4ec;
+  /* 2026-04-22: cooler, cleaner neutral off-white to move the UI
+     away from the "Claude beige" look. The accent stays Cap-
+     inspired terracotta so the brand identity survives, but
+     surfaces + ink + lines now read as near-neutral rather than
+     cream. */
+  --surface-0: #f6f6f3;
   --surface-1: #ffffff;
   --surface-2: #ffffff;
-  --surface-sunken: #efeadc;
-  --surface-inset: #fbf6ea;
+  --surface-sunken: #ecece8;
+  --surface-inset: #f2f2ef;
 
-  --ink-strong: #18140f;
-  --ink: #2a241d;
-  --ink-muted: #6d6458;
-  --ink-soft: #8c8375;
-  --ink-inverse: #fffaf1;
+  --ink-strong: #121316;
+  --ink: #23262c;
+  --ink-muted: #5c616b;
+  --ink-soft: #8a8f98;
+  --ink-inverse: #fbfbf8;
 
-  --line: rgba(40, 28, 12, 0.08);
-  --line-strong: rgba(40, 28, 12, 0.18);
+  --line: rgba(24, 26, 32, 0.08);
+  --line-strong: rgba(24, 26, 32, 0.18);
 
   --brand: #b14617;
   --brand-strong: #8a3513;
-  --brand-tint: rgba(177, 70, 23, 0.10);
+  --brand-tint: rgba(177, 70, 23, 0.08);
 
   /* Softer shadows — no heavy double-drop. */
   --shadow-1: 0 1px 2px rgba(18, 12, 6, 0.05);
@@ -4379,10 +4380,11 @@ p {
 }
 
 body {
-  /* Flatten the background to a single gentle warm wash. The
-     previous radial gradient added competing visual weight. */
+  /* Cooler single-wash background to move the surface away from
+     the previous warm-cream / beige feel. The accent terracotta
+     is preserved for primary actions and brand identity. */
   background:
-    linear-gradient(180deg, #fbf7ed 0%, #f5efe3 65%, #efeadc 100%);
+    linear-gradient(180deg, #f9f9f6 0%, #f3f3f0 60%, #ecece8 100%);
 }
 
 /* --- AppShell topbar ---------------------------------------- */
@@ -5787,4 +5789,138 @@ body {
   background: var(--brand);
   display: inline-block;
   animation: progress-panel-pulse 1.4s ease-in-out infinite;
+}
+
+/* ------------------------------------------------------------
+ * Primary-workflow pass (2026-04-22)
+ * One primary CTA per page; Advanced disclosures for power-user
+ * settings; quiet app footer replacing the top-bar Legacy link.
+ * Small, targeted rules — no new tokens.
+ * ---------------------------------------------------------- */
+
+.advanced-disclosure {
+  background: var(--surface-inset);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 0;
+  margin-top: 0.75rem;
+}
+
+.advanced-disclosure > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 0.7rem 1rem;
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  font-weight: 600;
+  color: var(--ink-strong);
+  user-select: none;
+}
+
+.advanced-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.advanced-disclosure > summary::after {
+  content: "▾";
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+  margin-left: auto;
+}
+
+.advanced-disclosure[open] > summary::after {
+  content: "▴";
+}
+
+.advanced-disclosure-label {
+  font-size: var(--fs-xs);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--brand);
+  font-weight: 800;
+}
+
+.advanced-disclosure-hint {
+  color: var(--ink-muted);
+  font-weight: 500;
+  font-size: var(--fs-sm);
+}
+
+.advanced-disclosure[open] {
+  padding-bottom: 0.5rem;
+}
+
+.advanced-disclosure > :not(summary) {
+  padding: 0 1rem 0.25rem;
+}
+
+.engine-default-line {
+  color: var(--ink-muted);
+  font-size: var(--fs-sm);
+  margin: 0;
+}
+
+.engine-default-line strong {
+  color: var(--ink-strong);
+}
+
+/* Primary "Final document" card inside RunActionsPanel. */
+.run-action-final {
+  background: var(--surface-1);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  padding: 1rem 1.15rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.run-action-final .run-action-sub {
+  color: var(--ink-muted);
+  font-size: var(--fs-sm);
+  margin: 0;
+}
+
+.run-action-final .run-action-cta-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.run-action-final .primary-button {
+  padding: 0.6rem 1.15rem;
+  font-size: 1rem;
+}
+
+.run-action-final .run-action-note {
+  color: var(--ink-muted);
+  font-size: var(--fs-sm);
+  margin: 0.1rem 0 0;
+}
+
+/* Quiet app footer (replaces the top-bar Legacy link). */
+.recap-app-footer {
+  max-width: 1180px;
+  margin: 1.5rem auto 2rem;
+  padding: 0 1.5rem;
+  color: var(--ink-soft);
+  font-size: var(--fs-xs);
+  text-align: center;
+}
+
+.recap-app-footer p {
+  margin: 0;
+}
+
+.recap-app-footer-link {
+  color: var(--ink-muted);
+  text-decoration: none;
+}
+
+.recap-app-footer-link:hover {
+  color: var(--ink-strong);
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }

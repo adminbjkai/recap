@@ -3425,7 +3425,12 @@ def _make_handler(jobs_root: Path, sources_root: Path):
             which engines are available in this server's environment.
 
             Never surfaces the value of ``DEEPGRAM_API_KEY``; only
-            whether it is set. Matches legacy ``render_new`` copy.
+            whether it is set. When `DEEPGRAM_API_KEY` is present, the
+            default engine is promoted to ``deepgram`` so a zero-touch
+            new-recording flow picks the higher-quality diarized
+            provider without the user having to dig into Advanced
+            settings. Otherwise we fall back to ``faster-whisper`` for
+            the fully-local default.
             """
             deepgram_key_present = bool(os.environ.get("DEEPGRAM_API_KEY"))
             engines: list[dict[str, object]] = []
@@ -3448,9 +3453,52 @@ def _make_handler(jobs_root: Path, sources_root: Path):
                     entry["available"] = False
                     entry["note"] = "Not configured."
                 engines.append(entry)
+            default = "deepgram" if deepgram_key_present else "faster-whisper"
             return {
                 "engines": engines,
-                "default": "faster-whisper",
+                "default": default,
+            }
+
+        def _api_insights_providers_listing(self) -> dict:
+            """GET /api/insights-providers payload — mirrors the shape
+            of ``/api/engines`` for the dashboard's "Generate final
+            document" action. Reports whether the Groq provider is
+            available (``GROQ_API_KEY`` env set) and which provider is
+            the default. Never surfaces the key itself.
+
+            This endpoint is read-only, 200-or-500, no CSRF, no body.
+            """
+            groq_key_present = bool(os.environ.get("GROQ_API_KEY"))
+            providers: list[dict[str, object]] = [
+                {
+                    "id": "groq",
+                    "label": "Groq (cloud; GPT-OSS by default)",
+                    "category": "cloud",
+                    "available": groq_key_present,
+                    "note": (
+                        "Groq available — GROQ_API_KEY detected in the "
+                        "server's environment."
+                        if groq_key_present
+                        else "Set GROQ_API_KEY in the server's "
+                        "environment to enable Groq."
+                    ),
+                },
+                {
+                    "id": "mock",
+                    "label": "Mock (offline, deterministic)",
+                    "category": "local",
+                    "available": True,
+                    "note": (
+                        "Runs locally; produces a deterministic "
+                        "placeholder insight set derived from the "
+                        "transcript."
+                    ),
+                },
+            ]
+            default = "groq" if groq_key_present else "mock"
+            return {
+                "providers": providers,
+                "default": default,
             }
 
         def _api_get(self, segments: list[str]) -> None:
@@ -3471,6 +3519,14 @@ def _make_handler(jobs_root: Path, sources_root: Path):
             if segments == ["api", "engines"]:
                 self._send_json(
                     HTTPStatus.OK, self._api_engines_listing(),
+                )
+                return
+
+            # GET /api/insights-providers
+            if segments == ["api", "insights-providers"]:
+                self._send_json(
+                    HTTPStatus.OK,
+                    self._api_insights_providers_listing(),
                 )
                 return
 

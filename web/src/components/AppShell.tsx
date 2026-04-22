@@ -6,10 +6,10 @@ type Props = {
 };
 
 /**
- * Topbar chrome.  Kept intentionally quiet: wordmark + one primary
- * CTA. Secondary links (Library, Legacy) are subordinate so the
- * primary "New recording" action is the obvious next step on every
- * page.
+ * Top-bar chrome.  Intentionally quiet: wordmark + one primary
+ * CTA ("New recording"). Legacy HTML dashboards are still
+ * reachable via direct URL and via the footer text link; they do
+ * not compete with the primary React surface.
  */
 export default function AppShell({ children }: Props) {
   return (
@@ -32,17 +32,22 @@ export default function AppShell({ children }: Props) {
             <Link className="recap-topnav-link primary" to="/new">
               New recording
             </Link>
-            <a
-              className="recap-topnav-fallback"
-              href="/"
-              title="Legacy stdlib HTML dashboard"
-            >
-              Legacy
-            </a>
           </nav>
         </div>
       </header>
       {children}
+      <footer className="recap-app-footer" role="contentinfo">
+        <p>
+          Recap · local-first video documentation ·{" "}
+          <a
+            className="recap-app-footer-link"
+            href="/"
+            title="Legacy stdlib HTML dashboard"
+          >
+            Legacy dashboard
+          </a>
+        </p>
+      </footer>
     </div>
   );
 }

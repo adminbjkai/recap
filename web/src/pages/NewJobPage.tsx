@@ -348,50 +348,82 @@ export default function NewJobPage() {
               <h2>Engine</h2>
             </div>
           </div>
-          <ul
-            className="engine-list"
-            role="radiogroup"
-            aria-label="Transcription engine"
-          >
-            {state.engines.map((entry) => {
-              const checked = engine === entry.id;
-              const disabled = !entry.available;
+          <p className="engine-default-line">
+            {(() => {
+              const def = state.engines.find(
+                (e) => e.id === state.defaultEngine,
+              );
+              const label = def?.label ?? state.defaultEngine;
               return (
-                <li key={entry.id}>
-                  <label
-                    className={`engine-row ${
-                      checked ? "checked" : ""
-                    } ${disabled ? "disabled" : ""}`}
-                  >
-                    <input
-                      type="radio"
-                      name="engine"
-                      value={entry.id}
-                      checked={checked}
-                      disabled={disabled}
-                      onChange={() => setEngine(entry.id)}
-                    />
-                    <span className="engine-row-body">
-                      <span className="engine-row-title">
-                        <span className="engine-row-label">{entry.label}</span>
-                        <span className="engine-row-tag">
-                          {entry.category}
+                <>
+                  Using <strong>{label}</strong> by default
+                  {state.defaultEngine === "deepgram" ? (
+                    <> — Deepgram detected in the server environment.</>
+                  ) : (
+                    <> — local and fully offline.</>
+                  )}
+                </>
+              );
+            })()}
+          </p>
+          <details className="advanced-disclosure">
+            <summary>
+              <span className="advanced-disclosure-label">
+                Advanced
+              </span>
+              <span className="advanced-disclosure-hint">
+                Pick a different engine
+              </span>
+            </summary>
+            <ul
+              className="engine-list"
+              role="radiogroup"
+              aria-label="Transcription engine"
+            >
+              {state.engines.map((entry) => {
+                const checked = engine === entry.id;
+                const disabled = !entry.available;
+                return (
+                  <li key={entry.id}>
+                    <label
+                      className={`engine-row ${
+                        checked ? "checked" : ""
+                      } ${disabled ? "disabled" : ""}`}
+                    >
+                      <input
+                        type="radio"
+                        name="engine"
+                        value={entry.id}
+                        checked={checked}
+                        disabled={disabled}
+                        onChange={() => setEngine(entry.id)}
+                      />
+                      <span className="engine-row-body">
+                        <span className="engine-row-title">
+                          <span className="engine-row-label">
+                            {entry.label}
+                          </span>
+                          <span className="engine-row-tag">
+                            {entry.category}
+                          </span>
+                          {disabled ? (
+                            <span className="engine-row-badge">
+                              Unavailable
+                            </span>
+                          ) : null}
                         </span>
-                        {disabled ? (
-                          <span className="engine-row-badge">
-                            Unavailable
+                        {entry.note ? (
+                          <span className="engine-row-note">
+                            {entry.note}
                           </span>
                         ) : null}
                       </span>
-                      {entry.note ? (
-                        <span className="engine-row-note">{entry.note}</span>
-                      ) : null}
-                    </span>
-                  </label>
-                </li>
-              );
-            })}
-          </ul>
+                    </label>
+                  </li>
+                );
+              })}
+            </ul>
+          </details>
         </section>
 
         <section
