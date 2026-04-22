@@ -1632,6 +1632,322 @@ def check_scenes_interrupt_marks_failed() -> None:
         shutil.rmtree(scratch, ignore_errors=True)
 
 
+def check_normalize_mode_decision() -> None:
+    """Pure-function guard on ``_decide_normalize_mode``. The fast path
+    must only trigger for MP4/MOV containers with H.264+yuv420p video
+    and AAC (or no) audio; anything else must fall back to reencode.
+
+    Also asserts ``RECAP_NORMALIZE_NO_FASTPATH=1`` hard-disables remux.
+    """
+    case = "normalize-mode-decision"
+    sys.path.insert(0, str(REPO_ROOT))
+    import os as os_mod
+    from recap.stages import normalize as normalize_mod
+
+    def _probe(
+        format_name: str,
+        vcodec: str = "h264",
+        pix_fmt: str = "yuv420p",
+        width: int = 1920,
+        acodec: str | None = "aac",
+    ) -> dict:
+        streams: list[dict] = [
+            {
+                "codec_type": "video",
+                "codec_name": vcodec,
+                "pix_fmt": pix_fmt,
+                "width": width,
+            }
+        ]
+        if acodec is not None:
+            streams.append({"codec_type": "audio", "codec_name": acodec})
+        return {"format": {"format_name": format_name}, "streams": streams}
+
+    cases = (
+        ("mp4+h264+aac => remux",
+         _probe("mov,mp4,m4a,3gp,3g2,mj2"), "remux"),
+        ("bare mp4 container => remux",
+         _probe("mp4"), "remux"),
+        ("mp4+h264 no-audio => remux",
+         _probe("mp4", acodec=None), "remux"),
+        ("mp4+hevc => reencode",
+         _probe("mp4", vcodec="hevc"), "reencode"),
+        ("mp4+h264+opus => reencode",
+         _probe("mp4", acodec="opus"), "reencode"),
+        ("mp4+yuv444p => reencode",
+         _probe("mp4", pix_fmt="yuv444p"), "reencode"),
+        ("mp4+width=0 => reencode",
+         _probe("mp4", width=0), "reencode"),
+        ("webm => reencode",
+         _probe("matroska,webm", vcodec="vp9"), "reencode"),
+        ("missing format => reencode",
+         {"streams": []}, "reencode"),
+        ("non-dict probe => reencode",
+         [], "reencode"),  # type: ignore[arg-type]
+    )
+    for label, probe, expected in cases:
+        got = normalize_mod._decide_normalize_mode(probe)
+        if got != expected:
+            fail(case, f"{label}: got {got!r}, expected {expected!r}")
+
+    # Env escape: NO_FASTPATH forces reencode even on a perfect input.
+    prev = os_mod.environ.get("RECAP_NORMALIZE_NO_FASTPATH")
+    os_mod.environ["RECAP_NORMALIZE_NO_FASTPATH"] = "1"
+    try:
+        got = normalize_mod._decide_normalize_mode(
+            _probe("mov,mp4,m4a,3gp,3g2,mj2")
+        )
+        if got != "reencode":
+            fail(
+                case,
+                f"RECAP_NORMALIZE_NO_FASTPATH=1 should force reencode; "
+                f"got {got!r}",
+            )
+    finally:
+        if prev is None:
+            os_mod.environ.pop("RECAP_NORMALIZE_NO_FASTPATH", None)
+        else:
+            os_mod.environ["RECAP_NORMALIZE_NO_FASTPATH"] = prev
+
+    passed()
+
+
+def check_normalize_failure_cleans_tmp_and_marks_failed() -> None:
+    """Regression guard: when the ffmpeg runner raises
+    ``NormalizeError``, the stage must end in ``failed`` state, any
+    ``analysis.mp4.tmp`` / ``audio.wav.tmp`` / ``metadata.json.tmp``
+    must be unlinked, and the final ``analysis.mp4`` must NOT be
+    promoted. Simulates the failure by monkey-patching
+    ``_run_ffmpeg_streaming`` to write a stub tmp then raise.
+    """
+    case = "normalize-failure-cleans-tmp"
+    sys.path.insert(0, str(REPO_ROOT))
+    from recap import job as job_mod
+    from recap.stages import normalize as normalize_mod
+
+    scratch = Path(tempfile.mkdtemp(prefix="recap_normalize_fail_"))
+    try:
+        job_dir = scratch / "job"
+        job_dir.mkdir()
+        # A plausible "original.mp4" so find_original() returns it.
+        (job_dir / "original.mp4").write_bytes(b"not-a-real-mp4")
+        # Pre-seed metadata.json so the failure is isolated to the
+        # ffmpeg step; probe stays a simple reencode-shaped dict.
+        (job_dir / "metadata.json").write_text(json.dumps({
+            "format": {"format_name": "mp4", "duration": "12.0"},
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "codec_name": "hevc",
+                    "pix_fmt": "yuv420p",
+                    "width": 1920,
+                }
+            ],
+        }))
+        (job_dir / "job.json").write_text(json.dumps({
+            "job_id": "scratch",
+            "created_at": "2026-04-21T00:00:00Z",
+            "updated_at": "2026-04-21T00:00:00Z",
+            "status": "pending",
+            "source_path": None,
+            "original_filename": None,
+            "stages": {
+                "ingest": {"status": "completed"},
+                "normalize": {"status": "pending"},
+                "transcribe": {"status": "pending"},
+                "assemble": {"status": "pending"},
+            },
+            "error": None,
+        }))
+        paths = job_mod.open_job(job_dir)
+
+        original_runner = normalize_mod._run_ffmpeg_streaming
+        def _fake_stall(cmd, out_tmp, timeout_s, stall_s, heartbeat=None):
+            # Simulate a partially-written tmp before the stall.
+            Path(out_tmp).write_bytes(b"partial-bytes")
+            raise normalize_mod.NormalizeError(
+                "ffmpeg stalled: no output growth or stderr activity for 90s"
+            )
+        normalize_mod._run_ffmpeg_streaming = _fake_stall
+        try:
+            raised = False
+            try:
+                # force=False so the pre-seeded metadata.json is reused;
+                # we're isolating the ffmpeg-runner failure, not ffprobe.
+                normalize_mod.run(paths, force=False)
+            except normalize_mod.NormalizeError:
+                raised = True
+            if not raised:
+                fail(case, "normalize.run() did not re-raise NormalizeError")
+        finally:
+            normalize_mod._run_ffmpeg_streaming = original_runner
+
+        state = json.loads((job_dir / "job.json").read_text())
+        ne = state.get("stages", {}).get("normalize") or {}
+        if ne.get("status") != "failed":
+            fail(
+                case,
+                f"stages.normalize.status={ne.get('status')!r}, "
+                f"expected 'failed'",
+            )
+        if "stalled" not in (ne.get("error") or ""):
+            fail(
+                case,
+                f"stages.normalize.error should mention stall; got "
+                f"{ne.get('error')!r}",
+            )
+        if (job_dir / "analysis.mp4").exists():
+            fail(case, "analysis.mp4 was promoted despite ffmpeg failure")
+        for leftover in (
+            "analysis.mp4.tmp",
+            "audio.wav.tmp",
+            "metadata.json.tmp",
+        ):
+            if (job_dir / leftover).exists():
+                fail(case, f"{leftover} left behind after failure")
+        passed()
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def check_normalize_invalid_output_not_promoted() -> None:
+    """Regression guard: if the ffmpeg subprocess exits 0 but the tmp
+    file is not a readable video (corrupt, truncated, wrong shape),
+    ``_validate_analysis`` must reject it, the stage must end FAILED,
+    no ``analysis.mp4`` may be promoted, and the tmp is cleaned up.
+    """
+    case = "normalize-invalid-output-not-promoted"
+    sys.path.insert(0, str(REPO_ROOT))
+    from recap import job as job_mod
+    from recap.stages import normalize as normalize_mod
+
+    scratch = Path(tempfile.mkdtemp(prefix="recap_normalize_bad_"))
+    try:
+        job_dir = scratch / "job"
+        job_dir.mkdir()
+        (job_dir / "original.mp4").write_bytes(b"not-a-real-mp4")
+        (job_dir / "metadata.json").write_text(json.dumps({
+            "format": {"format_name": "mp4", "duration": "5.0"},
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "codec_name": "h264",
+                    "pix_fmt": "yuv420p",
+                    "width": 640,
+                },
+                {"codec_type": "audio", "codec_name": "aac"},
+            ],
+        }))
+        (job_dir / "job.json").write_text(json.dumps({
+            "job_id": "scratch",
+            "created_at": "2026-04-21T00:00:00Z",
+            "updated_at": "2026-04-21T00:00:00Z",
+            "status": "pending",
+            "source_path": None,
+            "original_filename": None,
+            "stages": {
+                "ingest": {"status": "completed"},
+                "normalize": {"status": "pending"},
+                "transcribe": {"status": "pending"},
+                "assemble": {"status": "pending"},
+            },
+            "error": None,
+        }))
+        paths = job_mod.open_job(job_dir)
+
+        original_runner = normalize_mod._run_ffmpeg_streaming
+        original_validate = normalize_mod._validate_analysis
+        def _ok_runner(cmd, out_tmp, timeout_s, stall_s, heartbeat=None):
+            Path(out_tmp).write_bytes(b"garbage-not-an-mp4")
+        def _fail_validate(tmp):
+            raise normalize_mod.NormalizeError(
+                "analysis validation failed: no usable video stream"
+            )
+        normalize_mod._run_ffmpeg_streaming = _ok_runner
+        normalize_mod._validate_analysis = _fail_validate
+        try:
+            raised = False
+            try:
+                # force=False so the pre-seeded metadata.json is reused;
+                # we're isolating the validation failure.
+                normalize_mod.run(paths, force=False)
+            except normalize_mod.NormalizeError:
+                raised = True
+            if not raised:
+                fail(case, "normalize.run() did not re-raise NormalizeError")
+        finally:
+            normalize_mod._run_ffmpeg_streaming = original_runner
+            normalize_mod._validate_analysis = original_validate
+
+        if (job_dir / "analysis.mp4").exists():
+            fail(case, "analysis.mp4 promoted despite validation failure")
+        if (job_dir / "analysis.mp4.tmp").exists():
+            fail(case, "analysis.mp4.tmp left behind after validation failure")
+
+        state = json.loads((job_dir / "job.json").read_text())
+        ne = state.get("stages", {}).get("normalize") or {}
+        if ne.get("status") != "failed":
+            fail(
+                case,
+                f"stages.normalize.status={ne.get('status')!r}, "
+                f"expected 'failed'",
+            )
+        if "validation" not in (ne.get("error") or ""):
+            fail(
+                case,
+                f"stages.normalize.error should mention validation; got "
+                f"{ne.get('error')!r}",
+            )
+        passed()
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def check_normalize_stages_and_cmd_run_unchanged() -> None:
+    """Static pin: ``recap/job.py`` ``STAGES`` and ``recap/cli.py``
+    ``cmd_run`` composition are frozen. Any change must be an explicit
+    user-gated act, not a side effect of a normalize slice.
+    """
+    case = "normalize-stages-and-cmd-run-unchanged"
+    sys.path.insert(0, str(REPO_ROOT))
+    from recap import job as job_mod
+
+    expected_stages = ("ingest", "normalize", "transcribe", "assemble")
+    if job_mod.STAGES != expected_stages:
+        fail(
+            case,
+            f"recap.job.STAGES changed; expected {expected_stages!r}, "
+            f"got {job_mod.STAGES!r}",
+        )
+
+    cli_text = (REPO_ROOT / "recap" / "cli.py").read_text(encoding="utf-8")
+    start = cli_text.find("def cmd_run(")
+    end = cli_text.find("\ndef ", start + 1)
+    if start == -1 or end == -1:
+        fail(case, "could not locate cmd_run in recap/cli.py")
+    body = cli_text[start:end]
+    # cmd_run must call exactly the four pinned stages in order, and
+    # must not reference opt-in stages (scenes/dedupe/window/similarity/
+    # chapters/rank/shortlist/verify/insights).
+    required_calls = (
+        "normalize.run(",
+        "transcribe.run(",
+        "assemble.run(",
+    )
+    for needle in required_calls:
+        if needle not in body:
+            fail(case, f"cmd_run no longer calls {needle!r}")
+    forbidden = (
+        "scenes.run(", "dedupe.run(", "window.run(", "similarity.run(",
+        "chapters.run(", "rank.run(", "shortlist.run(", "verify.run(",
+        "insights.run(",
+    )
+    for needle in forbidden:
+        if needle in body:
+            fail(case, f"cmd_run unexpectedly references {needle!r}")
+    passed()
+
+
 def main() -> int:
     if not FIXTURE_ROOT.exists():
         fail("fixture", f"committed fixture not found at {FIXTURE_ROOT}")
@@ -1666,6 +1982,10 @@ def main() -> int:
     check_transcript_notes_malformed_ignored()
     check_transcript_notes_empty_overlay_byte_compat()
     check_scenes_interrupt_marks_failed()
+    check_normalize_mode_decision()
+    check_normalize_failure_cleans_tmp_and_marks_failed()
+    check_normalize_invalid_output_not_promoted()
+    check_normalize_stages_and_cmd_run_unchanged()
 
     print(f"OK: {CHECKS_PASSED} checks passed")
     return 0

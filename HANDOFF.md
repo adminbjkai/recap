@@ -1791,6 +1791,105 @@ stages (`dedupe`, `similarity`, `rank`, `shortlist`, `verify`) may
 exhibit the same behavior on Ctrl-C but are left unchanged here.
 Addressing them belongs in a follow-up reliability pass.
 
+## Reliability: normalize hardening + MP4 fast path
+
+`recap/stages/normalize.py` was rewritten end-to-end to address a real
+production incident: a ~56-minute 4K MP4 got stuck with FFmpeg pinned
+at 100% CPU, `analysis.mp4` never growing past a half-written tmp,
+`job.json` frozen at `normalize=running`, and the partial output
+unreadable ("moov atom not found"). The old code ran FFmpeg via
+`subprocess.run(check=True, capture_output=True)` — no streaming, no
+stall detection, no atomic tmp, no output validation — so a hung /
+killed run could silently land a corrupt `analysis.mp4` at the final
+path and poison every downstream stage. The new shape:
+
+- **Atomic outputs.** Each of `metadata.json`, `analysis.mp4`, and
+  `audio.wav` is produced at `<target>.tmp` first and promoted with
+  `os.replace(tmp, target)` only after the FFmpeg subprocess exits
+  cleanly **and** a shape-check `ffprobe` pass on the tmp confirms a
+  readable video or pcm_s16le audio stream. A hung, killed, or
+  otherwise failed run can never leave a bad file at the final path.
+- **Fast path for compatible MP4.** A new pure helper
+  `_decide_normalize_mode(probe)` inspects ffprobe JSON and returns
+  `"remux"` when the container is MP4/MOV with H.264 + `yuv420p` video
+  and AAC-or-absent audio; anything else — HEVC, VP9, `yuv444p`, Opus,
+  WebM, malformed probe — falls back to `"reencode"`. The remux path
+  runs `ffmpeg -c copy -map 0 -movflags +faststart` and finishes in
+  seconds for an already-compatible 56-minute recording. The
+  re-encode path keeps the existing `libx264 veryfast crf=23` + `aac
+  128k` + `yuv420p` + `+faststart` profile. `audio.wav` is always
+  extracted separately with the same 16 kHz mono `pcm_s16le` command
+  as before.
+- **Stall guard + wall-clock timeout.** A new `_run_ffmpeg_streaming`
+  runs FFmpeg via `subprocess.Popen` with stdout→`/dev/null` and
+  stderr drained by a background daemon thread into a bounded tail
+  buffer. The main thread polls every 500 ms for `proc.poll()`, tmp
+  file size growth, and last-stderr-line timestamp. When neither the
+  tmp bytes nor FFmpeg's stderr has moved for `RECAP_NORMALIZE_STALL`
+  seconds (default 90) the process is killed and the stage fails with
+  `ffmpeg stalled: no output growth or stderr activity for Ns`. A
+  hard wall-clock cap `RECAP_NORMALIZE_TIMEOUT` (default 7200s / 2h)
+  fires `ffmpeg wall-clock timeout after Ns`.
+- **Progress heartbeats.** Roughly every 2 seconds the runner calls
+  `update_stage(paths, "normalize", RUNNING, extra=...)` with
+  `command_mode` (`"remux"` or `"reencode"`), `elapsed_seconds`,
+  `output_bytes`, `phase` (`"analysis"` / `"audio"` / `"probe"`),
+  and — when ffprobe knew the input duration — `percent` +
+  `input_duration_seconds`. `write_job()` bumps `updated_at`, so the
+  React `/app/job/:id` dashboard shows motion on a long run instead
+  of appearing frozen.
+- **Clean failure.** A top-level `try/except` cascade unlinks every
+  `*.tmp` on `NormalizeError`, `CalledProcessError`, or any other
+  exception, marks the stage FAILED via `update_stage(..., error=...)`
+  with a concise one-line message, and re-raises so the CLI exits
+  non-zero. A retry starts from a clean slate with no stale `*.tmp`.
+- **Env escapes:** `RECAP_NORMALIZE_TIMEOUT`, `RECAP_NORMALIZE_STALL`,
+  and `RECAP_NORMALIZE_NO_FASTPATH=1` (force full re-encode even on a
+  perfect input — debug escape).
+
+Invariants explicitly preserved:
+
+- `recap/job.py STAGES == ("ingest", "normalize", "transcribe",
+  "assemble")` unchanged. A static pin in `scripts/verify_reports.py`
+  rejects drift.
+- `recap/cli.py cmd_run` composition unchanged. The same static pin
+  confirms `cmd_run` calls `normalize.run` / `transcribe.run` /
+  `assemble.run` and no opt-in stage.
+- No new Python runtime deps; `recap/job.py` itself is untouched; no
+  fixture bytes changed.
+
+`scripts/verify_reports.py` grew from 60 → 64 checks with four new
+regression cases:
+
+- **`normalize-mode-decision`** — a pure-function matrix over MP4 /
+  bare-mp4 / MOV containers, H.264 / HEVC codecs, `yuv420p` /
+  `yuv444p` pixel formats, AAC / Opus / no-audio streams, zero-width
+  video, WebM, and non-dict probes. Also flips
+  `RECAP_NORMALIZE_NO_FASTPATH=1` and asserts a perfect input is
+  forced back to `reencode`.
+- **`normalize-failure-cleans-tmp`** — pre-seeds a scratch job dir
+  with `original.mp4`, `metadata.json`, and `job.json`; monkey-patches
+  `normalize._run_ffmpeg_streaming` to write a partial tmp and raise
+  `NormalizeError("ffmpeg stalled: ...")`; asserts the run re-raises,
+  `stages.normalize.status == "failed"` with "stalled" in the error,
+  `analysis.mp4` was never promoted, and
+  `analysis.mp4.tmp` / `audio.wav.tmp` / `metadata.json.tmp` are all
+  gone.
+- **`normalize-invalid-output-not-promoted`** — monkey-patches the
+  runner to exit cleanly with garbage in the tmp, then
+  monkey-patches `_validate_analysis` to reject; asserts the stage
+  ends FAILED with a "validation" error, `analysis.mp4` is not
+  promoted, and the tmp is unlinked.
+- **`normalize-stages-and-cmd-run-unchanged`** — static pin that
+  `recap.job.STAGES == ("ingest", "normalize", "transcribe",
+  "assemble")` and that `cmd_run` in `recap/cli.py` calls
+  `normalize.run`, `transcribe.run`, `assemble.run` and no opt-in
+  stage (`scenes.run`, `dedupe.run`, ..., `insights.run`).
+
+FFmpeg itself is never invoked by the verifier — every failure path
+is simulated by function-level monkey patches so CI has no media
+dependency and no wall-clock exposure.
+
 ## Hardening: offline golden-path validation script
 
 `scripts/verify_reports.py` is a small stdlib+`python-docx` script

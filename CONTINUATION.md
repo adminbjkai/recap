@@ -762,7 +762,23 @@ does and produces, read `HANDOFF.md`.
 Phase 1:
 
 - Stage 1 — Ingest (`original.<ext>`, `job.json`)
-- Stage 2 — Normalize (`metadata.json`, `analysis.mp4`, `audio.wav`)
+- Stage 2 — Normalize (`metadata.json`, `analysis.mp4`, `audio.wav`;
+  hardened 2026-04-21: every output is `<target>.tmp` → `os.replace`
+  after an `ffprobe` shape-check, with a fast-path
+  `ffmpeg -c copy -movflags +faststart` when ffprobe reports MP4/MOV +
+  H.264 + `yuv420p` + AAC-or-absent and a full `libx264 veryfast
+  crf=23 / aac 128k / yuv420p / +faststart` re-encode otherwise; new
+  `_run_ffmpeg_streaming` drives FFmpeg under a stderr-drain thread
+  with a `RECAP_NORMALIZE_STALL`-second stall guard (default 90s —
+  kills the process when neither tmp bytes nor stderr move) and a
+  `RECAP_NORMALIZE_TIMEOUT`-second wall-clock cap (default 7200s); a
+  ~2s heartbeat calls `update_stage(paths, "normalize", RUNNING,
+  extra=...)` with `command_mode`, `elapsed_seconds`, `output_bytes`,
+  `phase`, and — when the input duration is known — `percent` +
+  `input_duration_seconds`, so `updated_at` advances and the React
+  dashboard reflects motion; failures unlink every `*.tmp` and mark
+  the stage FAILED with a one-line error; env escape
+  `RECAP_NORMALIZE_NO_FASTPATH=1` forces re-encode for debugging)
 - Stage 3 — Transcribe (`transcript.json`, `transcript.srt`, faster-whisper
   only, with the narrow function-level swap seam documented in
   `recap/stages/transcribe.py`)

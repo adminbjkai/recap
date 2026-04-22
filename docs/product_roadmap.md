@@ -427,6 +427,82 @@ fallback, and empty-overlay byte-compat.
 the UI. This slice covers the non-destructive half — archive hides
 a job without touching the filesystem.
 
+## 12b. Normalize reliability + MP4 fast path — **done**
+
+**Shipped in:**
+- `Harden normalize and add MP4 fast path`
+
+**Why:** a real job for a ~56-minute 4K MP4 hung during `recap
+normalize`. FFmpeg sat pinned at 100% CPU, `analysis.mp4` never grew
+past a partial tmp, `job.json` stayed at `normalize=running`, and the
+half-written output on disk was unreadable ("moov atom not found"). A
+restart couldn't tell whether normalize had succeeded or failed.
+
+**What it gives users:**
+- **Atomic outputs.** Every normalize output — `metadata.json`,
+  `analysis.mp4`, `audio.wav` — is written to `<target>.tmp` and
+  promoted with `os.replace` **only after** FFmpeg exits cleanly and a
+  follow-up `ffprobe` validates the tmp. A hung/killed/corrupt run
+  never leaves a bad file at the final path.
+- **Fast path for compatible MP4.** A new pure helper
+  `_decide_normalize_mode(probe)` inspects the ffprobe JSON and returns
+  `"remux"` when the source is MP4/MOV with H.264 + yuv420p video and
+  AAC (or no) audio, else `"reencode"`. The remux branch runs
+  `ffmpeg -c copy -map 0 -movflags +faststart`, so an already-compatible
+  56-minute recording finishes in seconds instead of re-encoding. The
+  re-encode branch keeps the existing `libx264 veryfast crf=23` +
+  `aac 128k` + `yuv420p` + `+faststart` profile.
+- **Stall guard + wall-clock timeout.** New
+  `_run_ffmpeg_streaming` drives FFmpeg via `subprocess.Popen` with a
+  dedicated stderr-drain thread. Every 500 ms the main thread samples
+  the tmp file size plus the last-stderr timestamp; if neither moves
+  for `RECAP_NORMALIZE_STALL` seconds (default 90) the process is
+  killed and the stage fails with `ffmpeg stalled: ...`. A hard
+  wall-clock cap `RECAP_NORMALIZE_TIMEOUT` (default 2 hours) fires
+  `ffmpeg wall-clock timeout after ...`.
+- **Progress heartbeats.** Roughly every 2 seconds the runner calls
+  `update_stage(paths, "normalize", RUNNING, extra=...)` with
+  `command_mode` (`"remux"` or `"reencode"`), `elapsed_seconds`,
+  `output_bytes`, `phase` (`"analysis"` / `"audio"`), and — when
+  ffprobe knew the input duration — `percent` + `input_duration_seconds`.
+  `write_job()` bumps `updated_at`, so the React UI sees motion during
+  long runs.
+- **Clean failure.** Any exception (FFmpeg nonzero, stall, timeout,
+  ffprobe validation) unlinks every `*.tmp` in a `finally` block and
+  marks the stage FAILED with a short one-line error. No stale
+  `analysis.mp4` is left for a subsequent `transcribe` to choke on.
+- **Env escapes:** `RECAP_NORMALIZE_TIMEOUT`, `RECAP_NORMALIZE_STALL`,
+  and `RECAP_NORMALIZE_NO_FASTPATH=1` (force full re-encode even on a
+  perfect input, for debugging).
+
+**Tests:** `scripts/verify_reports.py` grew by four regression checks
+for 60 → 64 total:
+- `normalize-mode-decision` — pure-function matrix over MP4/MOV +
+  H.264/HEVC + yuv420p/yuv444p + AAC/Opus/no-audio + WebM +
+  malformed-probe cases, plus the `RECAP_NORMALIZE_NO_FASTPATH` env
+  escape.
+- `normalize-failure-cleans-tmp` — monkey-patches
+  `_run_ffmpeg_streaming` to write a partial tmp then raise
+  `NormalizeError`, asserts `stages.normalize.status == "failed"`,
+  the error mentions "stalled", `analysis.mp4` was **not** promoted,
+  and `analysis.mp4.tmp` / `audio.wav.tmp` / `metadata.json.tmp` are
+  all gone.
+- `normalize-invalid-output-not-promoted` — monkey-patches the runner
+  to exit cleanly with garbage in the tmp, patches
+  `_validate_analysis` to reject it, asserts the stage ends FAILED
+  with a "validation" error, `analysis.mp4` is not promoted, and
+  `analysis.mp4.tmp` is unlinked.
+- `normalize-stages-and-cmd-run-unchanged` — static pin that
+  `recap.job.STAGES == ("ingest", "normalize", "transcribe",
+  "assemble")` and `cmd_run` in `recap/cli.py` calls
+  `normalize.run` / `transcribe.run` / `assemble.run` and no opt-in
+  stage.
+
+**Invariants preserved:** no new Python runtime deps; `recap/job.py
+STAGES` unchanged; `recap/cli.py cmd_run` composition unchanged;
+`recap run` remains Phase-1-only; legacy HTML routes unchanged; no
+fixture bytes changed.
+
 ## 13. Live progress (SSE / polling) + webhooks
 
 - Server-Sent Events channel or long-poll endpoint for job progress

@@ -297,7 +297,7 @@ Per-stage commands (useful for re-running a single stage, or resuming):
 
 ```bash
 .venv/bin/python -m recap ingest     --source recording.mp4
-.venv/bin/python -m recap normalize  --job jobs/<job_id>
+.venv/bin/python -m recap normalize  --job jobs/<job_id>   # MP4 fast path + stall guard
 .venv/bin/python -m recap transcribe --job jobs/<job_id> --model small
 .venv/bin/python -m recap scenes     --job jobs/<job_id>
 .venv/bin/python -m recap dedupe     --job jobs/<job_id>
@@ -312,6 +312,48 @@ Per-stage commands (useful for re-running a single stage, or resuming):
 .venv/bin/python -m recap export-docx --job jobs/<job_id>
 .venv/bin/python -m recap status     --job jobs/<job_id>
 ```
+
+#### Normalize reliability + MP4 fast path
+
+`recap normalize` is the second pipeline stage and historically the
+slowest — the production bug that motivated the current behavior was a
+56-minute 4K MP4 that sat pinned at 100% CPU with a half-written
+`analysis.mp4` and no error. The stage now:
+
+- **Writes every output atomically.** `metadata.json`, `analysis.mp4`,
+  and `audio.wav` are each written to a `<target>.tmp` sibling and
+  promoted with `os.replace` only after FFmpeg exits cleanly **and** a
+  shape-check `ffprobe` confirms the tmp is readable. A hung / killed /
+  corrupt run can never leave a bad file at the final path.
+- **Takes a fast path for compatible MP4.** When `ffprobe` reports an
+  MP4/MOV container with H.264 + yuv420p video and AAC-or-absent audio,
+  normalize runs `ffmpeg -c copy -map 0 -movflags +faststart` instead
+  of re-encoding. An already-compatible 56-minute recording finishes in
+  seconds. Anything else falls back to the conservative
+  `libx264 veryfast crf=23` + `aac 128k` + `yuv420p` profile.
+- **Fails cleanly on a stall or timeout.** FFmpeg is run via
+  `subprocess.Popen` with a stderr-drain thread; if neither the tmp
+  file size nor FFmpeg's stderr changes for `RECAP_NORMALIZE_STALL`
+  seconds (default 90), the process is killed and the stage fails with
+  `ffmpeg stalled: ...`. A wall-clock `RECAP_NORMALIZE_TIMEOUT`
+  (default 2 hours) caps total runtime.
+- **Shows progress.** Every ~2 seconds while running, normalize calls
+  `update_stage(paths, "normalize", RUNNING, extra=...)` with
+  `command_mode` (`"remux"` or `"reencode"`), `elapsed_seconds`,
+  `output_bytes`, `phase`, and — when the input duration is known —
+  `percent` + `input_duration_seconds`. `updated_at` advances, so the
+  React UI shows motion.
+- **Cleans up on failure.** On any exception every `*.tmp` is unlinked
+  in a `finally` block, the stage is marked FAILED with a one-line
+  error, and a retry starts from a clean slate.
+
+Environment overrides:
+
+| Var                             | Default | Effect                                                |
+|---------------------------------|---------|-------------------------------------------------------|
+| `RECAP_NORMALIZE_TIMEOUT`       | `7200`  | Hard wall-clock cap for a single normalize run (s).   |
+| `RECAP_NORMALIZE_STALL`         | `90`    | Stall window — no output growth + no stderr for N s.  |
+| `RECAP_NORMALIZE_NO_FASTPATH=1` | off     | Force full re-encode even on an already-compatible MP4. |
 
 `recap scenes` is the Stage 5 (Phase 2) entry point and is not invoked
 by `recap run`. It writes `scenes.json` and `candidate_frames/`. If
