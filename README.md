@@ -363,6 +363,19 @@ loop, the stage records `stages.scenes.status = "failed"` with a
 from that attempt, and re-raises the interrupt so the shell exits as
 usual. Re-run `recap scenes --job <path>` to retry; with `--force` it
 also removes any previous `scenes.json` before starting.
+
+If PySceneDetect's `save_images` silently skips a small number of
+scenes (an occasional backend quirk observed on long recordings),
+`recap scenes` now tolerates up to 25% of scenes being missed — it
+drops the affected scenes from `scenes.json#scenes`, records them
+under a new top-level `scenes.json#skipped_scenes` array (plus
+`skipped_count`), surfaces the count + the scene-index list on
+`job.json#stages.scenes.{skipped_scene_count, skipped_scene_ids}`,
+and continues. The threshold is overridable via
+`RECAP_SCENES_MAX_MISSING_RATIO` (any float in `[0, 1]`). When the
+miss ratio exceeds the threshold or every scene was skipped, the
+stage fails cleanly with a one-line error naming the ratio and the
+missing indices.
 `recap dedupe` is the pHash + SSIM duplicate-marking and Tesseract OCR
 novelty-scoring slice and is also not invoked by `recap run`; it reads
 `scenes.json` plus the JPEGs in `candidate_frames/` and writes

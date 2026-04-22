@@ -919,6 +919,28 @@ change. 79/79 Vitest specs stay green. After-screenshots are in
   exist.
 - `HANDOFF.md` is the definitive closeout document. It reflects the code
   on disk today.
+- **Scenes extraction tolerates silent save_images misses (2026-04-21).**
+  A real job failed at `recap scenes` with
+  `RuntimeError: save_images did not produce a frame for scene(s)
+  [214, 218, 219, 220]` — 4 skipped out of 200+, and the hard-
+  raise threw away every clean frame plus the partial
+  `scenes.json`. `recap/stages/scenes.py` now splits pre-built
+  scene records into `(kept, skipped)` via a new pure helper
+  `partition_scene_records(pre_scenes, max_missing_ratio)`.
+  Default threshold is 25%, overridable via
+  `RECAP_SCENES_MAX_MISSING_RATIO`. Skipped scene IDs land in
+  `scenes.json#{skipped_count, skipped_scenes}` and in
+  `job.json#stages.scenes.{skipped_scene_count,
+  skipped_scene_ids}`. Downstream stages (`dedupe`, `window`,
+  `similarity`, `rank`, `shortlist`, `verify`) are unchanged —
+  they never see the dropped scenes, so their existing
+  `frame_file` coherence checks continue to fire. The stage
+  still fails cleanly on zero survivors or miss-ratio > threshold
+  with a descriptive `save_images missed N/M scene(s) (X% >
+  25%); missing=[...]` error. `scripts/verify_reports.py` grows
+  by 6 regression cases for 70 total; no new runtime deps;
+  `recap/job.py STAGES` + `cmd_run` composition unchanged; no
+  fixture bytes changed.
 - **React app premium redesign pass (2026-04-21).** Frontend-only
   follow-up after the normalize hardening: `web/src/index.css`
   gains a cohesive token-override section at the bottom (calmer

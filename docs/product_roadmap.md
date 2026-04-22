@@ -427,6 +427,52 @@ fallback, and empty-overlay byte-compat.
 the UI. This slice covers the non-destructive half — archive hides
 a job without touching the filesystem.
 
+## 12f. Scenes extraction hardened for skipped frames — **done**
+
+**Shipped in:**
+- `Harden scenes extraction for skipped frames`
+
+**Why:** a real job failed at `recap scenes` with
+`RuntimeError: save_images did not produce a frame for scene(s)
+[214, 218, 219, 220]`, throwing away 200+ frames PySceneDetect
+had extracted cleanly and leaving no `scenes.json` behind. The
+rich-report chain couldn't recover.
+
+**What it gives users:**
+- `recap scenes` now tolerates up to 25% of scenes missing a
+  frame (configurable via `RECAP_SCENES_MAX_MISSING_RATIO`).
+- Skipped scene IDs are recorded in `scenes.json` under
+  `skipped_count` + `skipped_scenes`, and in the job state
+  `stages.scenes.extra` block as `skipped_scene_count` +
+  `skipped_scene_ids` for UI observability.
+- Downstream stages (`dedupe`, `window`, `similarity`, `rank`,
+  `shortlist`, `verify`) never see the dropped scenes, so
+  their existing `frame_file` coherence checks still fire
+  reliably.
+- The stage still fails cleanly when zero frames are produced
+  or the miss ratio exceeds the threshold, with a descriptive
+  one-line error: `save_images missed 4/10 scene(s) (40% >
+  25%); missing=[2, 4, 6, 8]. Set
+  RECAP_SCENES_MAX_MISSING_RATIO to raise the tolerance.`
+
+**Invariants preserved:**
+- `recap/job.py STAGES` and `recap/cli.py cmd_run` composition
+  unchanged.
+- No new runtime deps.
+- `scripts/fixtures/*` untouched.
+- Legacy HTML routes unchanged.
+- No downstream stage code changed — they already fail cleanly
+  on a missing `frame_file`, we just stopped including scenes
+  without one.
+
+**Tests:** `scripts/verify_reports.py` grows from 64 → 70 with
+six new cases: pure-helper matrix (small miss tolerated /
+high-ratio rejected / zero-survivors rejected / empty-input
+rejected) plus integration specs using a monkey-patched
+`_detect_and_extract` that prove `scenes.json` + `job.json`
+both record the skipped IDs on success and that a 40% miss
+rate fails cleanly with no `scenes.json` left behind.
+
 ## 12e. Live job progress UX with safer polling — **done**
 
 **Shipped in:**

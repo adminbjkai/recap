@@ -10,14 +10,35 @@ Outputs:
 - `scenes.json`: detector config, scene list with start/end timestamps and
   frame numbers, the path of the extracted frame for each scene, and a
   `fallback` flag indicating whether the single-scene fallback was used.
-- `candidate_frames/<image>.jpg`: one frame per scene.
+  Scenes whose frame extraction was silently dropped by
+  ``save_images`` are **not** included in ``scenes`` (downstream
+  stages depend on every entry having a usable ``frame_file``).
+  Those scenes are recorded instead under a new top-level
+  ``skipped_scenes`` list so the information is auditable from
+  disk.
+- `candidate_frames/<image>.jpg`: one frame per surviving scene.
 
 Skipped if outputs already exist (unless `force=True`).
+
+Resilience:
+  ``save_images`` (PySceneDetect's image extractor) occasionally
+  misses a small number of scenes — the upstream bug filed against
+  this repo reported
+  ``save_images did not produce a frame for scene(s) [214, 218, 219, 220]``
+  while 200+ frames were produced cleanly. Previously the stage
+  raised a ``RuntimeError`` on any missing frame, throwing away
+  every successfully-produced frame. The stage now tolerates a
+  small miss rate, records skipped scene IDs, and continues
+  with available frames. It still fails cleanly when zero frames
+  were produced or when the miss ratio exceeds a conservative
+  threshold (default 25%, env-overridable via
+  ``RECAP_SCENES_MAX_MISSING_RATIO``).
 """
 
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -26,6 +47,82 @@ from ..job import COMPLETED, FAILED, RUNNING, JobPaths, update_stage
 
 # Default ContentDetector threshold. PySceneDetect's recommended baseline.
 DEFAULT_THRESHOLD = 27.0
+
+# Upper bound on the fraction of scenes ``save_images`` is allowed to
+# silently skip before the stage fails. Keep this conservative — a
+# large miss rate usually indicates a corrupted video, not a backend
+# hiccup. Env override ``RECAP_SCENES_MAX_MISSING_RATIO`` accepts a
+# float in [0, 1]; values outside that range fall back to the default.
+DEFAULT_MAX_MISSING_RATIO = 0.25
+
+
+def _max_missing_ratio() -> float:
+    raw = os.environ.get("RECAP_SCENES_MAX_MISSING_RATIO")
+    if raw is None or raw == "":
+        return DEFAULT_MAX_MISSING_RATIO
+    try:
+        val = float(raw)
+    except ValueError:
+        return DEFAULT_MAX_MISSING_RATIO
+    if val < 0 or val > 1:
+        return DEFAULT_MAX_MISSING_RATIO
+    return val
+
+
+def partition_scene_records(
+    pre_scenes: list[dict],
+    max_missing_ratio: float = DEFAULT_MAX_MISSING_RATIO,
+) -> tuple[list[dict], list[dict]]:
+    """Split pre-built scene dicts into (kept, skipped).
+
+    Pure helper: takes a list of scene dicts (each already carrying
+    ``index``, start / end seconds + frames, ``midpoint_seconds``,
+    and an **optional** ``frame_file`` — ``None`` or missing when
+    ``save_images`` skipped the scene) and returns:
+
+    - ``kept``: scenes whose ``frame_file`` is a non-empty string.
+      These are the only scenes downstream stages will see.
+    - ``skipped``: scenes that lacked a ``frame_file``; stripped
+      of the ``frame_file`` key so the payload is smaller and
+      cannot be mistaken for a usable scene.
+
+    Raises ``RuntimeError`` when:
+
+    - The input is empty (no scenes at all), or
+    - Every scene was skipped, or
+    - ``len(skipped) / len(pre_scenes) > max_missing_ratio``.
+
+    The error messages are deliberately human-readable and include
+    both the skipped scene IDs and the ratio so the surfaced CLI /
+    UI error is immediately actionable.
+    """
+    total = len(pre_scenes)
+    if total == 0:
+        raise RuntimeError("scenes stage produced no scenes")
+    kept: list[dict] = []
+    skipped: list[dict] = []
+    for scene in pre_scenes:
+        frame_file = scene.get("frame_file")
+        if isinstance(frame_file, str) and frame_file:
+            kept.append(scene)
+        else:
+            trimmed = {k: v for k, v in scene.items() if k != "frame_file"}
+            skipped.append(trimmed)
+    if not kept:
+        ids = [s.get("index") for s in skipped]
+        raise RuntimeError(
+            f"save_images produced no frames for any of the "
+            f"{total} detected scene(s); missing={ids}"
+        )
+    ratio = len(skipped) / total if total else 0.0
+    if ratio > max_missing_ratio:
+        ids = [s.get("index") for s in skipped]
+        raise RuntimeError(
+            f"save_images missed {len(skipped)}/{total} scene(s) "
+            f"({ratio:.0%} > {max_missing_ratio:.0%}); missing={ids}. "
+            "Set RECAP_SCENES_MAX_MISSING_RATIO to raise the tolerance."
+        )
+    return kept, skipped
 
 
 def _detect_and_extract(video_path: Path, frames_dir: Path, threshold: float) -> dict:
@@ -57,16 +154,15 @@ def _detect_and_extract(video_path: Path, frames_dir: Path, threshold: float) ->
     )
 
     # save_images keys the returned dict by 0-based scene position, while the
-    # `$SCENE_NUMBER` template renders 1-based.
-    scenes: list[dict] = []
-    missing: list[int] = []
+    # `$SCENE_NUMBER` template renders 1-based. Build the full pre-filter
+    # list first, then hand it to ``partition_scene_records`` to tolerate
+    # a small fraction of silent ``save_images`` misses.
+    pre_scenes: list[dict] = []
     for i, (start, end) in enumerate(scene_list):
         files = saved.get(i, [])
         frame_name = files[0] if files else None
-        if not frame_name:
-            missing.append(i + 1)
         midpoint = (start.get_seconds() + end.get_seconds()) / 2.0
-        scenes.append(
+        pre_scenes.append(
             {
                 "index": i + 1,
                 "start_seconds": start.get_seconds(),
@@ -77,10 +173,10 @@ def _detect_and_extract(video_path: Path, frames_dir: Path, threshold: float) ->
                 "frame_file": frame_name,
             }
         )
-    if missing:
-        raise RuntimeError(
-            f"save_images did not produce a frame for scene(s) {missing}"
-        )
+
+    scenes, skipped_scenes = partition_scene_records(
+        pre_scenes, _max_missing_ratio(),
+    )
 
     return {
         "video": video_path.name,
@@ -90,6 +186,8 @@ def _detect_and_extract(video_path: Path, frames_dir: Path, threshold: float) ->
         "scene_count": len(scenes),
         "frames_dir": frames_dir.name,
         "scenes": scenes,
+        "skipped_count": len(skipped_scenes),
+        "skipped_scenes": skipped_scenes,
     }
 
 
@@ -122,17 +220,15 @@ def run(paths: JobPaths, force: bool = False, threshold: float = DEFAULT_THRESHO
     if not force and _outputs_exist(paths):
         with open(paths.scenes_json) as f:
             data = json.load(f)
-        update_stage(
-            paths,
-            "scenes",
-            COMPLETED,
-            extra={
-                "scenes": data.get("scene_count", len(data.get("scenes", []))),
-                "fallback": bool(data.get("fallback", False)),
-                "frames_dir": paths.candidate_frames_dir.name,
-                "skipped": True,
-            },
-        )
+        extras = {
+            "scenes": data.get("scene_count", len(data.get("scenes", []))),
+            "fallback": bool(data.get("fallback", False)),
+            "frames_dir": paths.candidate_frames_dir.name,
+            "skipped": True,
+        }
+        if isinstance(data.get("skipped_count"), int):
+            extras["skipped_scene_count"] = data["skipped_count"]
+        update_stage(paths, "scenes", COMPLETED, extra=extras)
         return data
 
     update_stage(paths, "scenes", RUNNING)
@@ -150,17 +246,20 @@ def run(paths: JobPaths, force: bool = False, threshold: float = DEFAULT_THRESHO
             json.dump(data, f, indent=2, sort_keys=True)
         tmp.replace(paths.scenes_json)
 
-        update_stage(
-            paths,
-            "scenes",
-            COMPLETED,
-            extra={
-                "scenes": data["scene_count"],
-                "fallback": data.get("fallback", False),
-                "frames_dir": paths.candidate_frames_dir.name,
-                "threshold": threshold,
-            },
-        )
+        extras: dict = {
+            "scenes": data["scene_count"],
+            "fallback": data.get("fallback", False),
+            "frames_dir": paths.candidate_frames_dir.name,
+            "threshold": threshold,
+        }
+        if data.get("skipped_count"):
+            extras["skipped_scene_count"] = data["skipped_count"]
+            extras["skipped_scene_ids"] = [
+                s.get("index")
+                for s in data.get("skipped_scenes", [])
+                if isinstance(s.get("index"), int)
+            ]
+        update_stage(paths, "scenes", COMPLETED, extra=extras)
         return data
     except KeyboardInterrupt:
         # Ctrl-C during PySceneDetect's cv2 frame loop would otherwise

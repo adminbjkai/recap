@@ -1791,6 +1791,90 @@ stages (`dedupe`, `similarity`, `rank`, `shortlist`, `verify`) may
 exhibit the same behavior on Ctrl-C but are left unchanged here.
 Addressing them belongs in a follow-up reliability pass.
 
+## Reliability: scenes stage tolerates silent save_images misses
+
+A real production job failed at `recap scenes` with
+`RuntimeError: save_images did not produce a frame for scene(s)
+[214, 218, 219, 220]` — four dropped frames out of 200+, and the
+previous hard-raise threw away every successfully-extracted
+frame plus the partial `scenes.json`. The rich-report chain
+couldn't recover without a full re-run.
+
+`recap/stages/scenes.py` was refactored around a new pure
+helper:
+
+```python
+def partition_scene_records(
+    pre_scenes: list[dict],
+    max_missing_ratio: float = DEFAULT_MAX_MISSING_RATIO,
+) -> tuple[list[dict], list[dict]]:
+```
+
+The helper splits pre-built scene dicts into `(kept, skipped)`.
+`kept` is the list downstream stages see — every entry carries a
+non-empty `frame_file`. `skipped` records the dropped scene
+indices + timing info **without** `frame_file`, so it's
+unmistakably not a usable scene. `_detect_and_extract` now
+builds the full pre-scene list first (including `frame_file =
+None` for anything `save_images` silently skipped) and hands it
+to the helper.
+
+The helper raises `RuntimeError` when:
+
+- The input is empty (no scenes detected at all — in practice
+  the caller's single-scene fallback prevents this, but we
+  enforce the invariant anyway);
+- Every scene was skipped (no survivors);
+- `len(skipped) / len(pre_scenes) > max_missing_ratio`.
+
+Otherwise it returns cleanly. Default threshold is 25%;
+`RECAP_SCENES_MAX_MISSING_RATIO` accepts any float in `[0, 1]`
+and falls back to the default on parse error or out-of-range.
+
+Output shape: `scenes.json` gains two new top-level fields:
+
+- `skipped_count: int` — the count of silently-dropped scenes.
+- `skipped_scenes: list[dict]` — one dict per dropped scene
+  with its index + timing info (no `frame_file`).
+
+`job.json stages.scenes.extra` picks up:
+
+- `skipped_scene_count: int` (same value, exposed to UI);
+- `skipped_scene_ids: list[int]` — the dropped indices for
+  quick scanning.
+
+Downstream stages (`dedupe`, `window`, `similarity`, `rank`,
+`shortlist`, `verify`) are **not** touched. They already fail
+cleanly when a scene lacks `frame_file`, so by dropping skipped
+scenes from the `scenes` list entirely we preserve every
+existing coherence check without needing per-stage updates.
+
+`scripts/verify_reports.py` grows from 64 → 70 checks:
+
+- `scenes-partition-tolerates-small-misses` — 20% miss on 10
+  scenes passes; `skipped` entries have `frame_file` stripped;
+  kept IDs are `[1, 2, 3, 5, 6, 8, 9, 10]`.
+- `scenes-partition-rejects-high-miss-ratio` — 40% miss raises
+  with `"missed 4/10"` + `"missing="` in the message.
+- `scenes-partition-requires-at-least-one-frame` — 100% miss
+  raises even with a permissive 1.0 ratio.
+- `scenes-partition-empty-input` — empty pre-scenes list raises.
+- `scenes-run-records-skipped-in-job-json` — monkey-patched
+  `_detect_and_extract` produces 10 scenes with 2 silently
+  skipped; asserts `scenes.json` carries `skipped_count=2` +
+  `skipped_scenes=[{index: 4,...}, {index: 7,...}]` and
+  `job.json stages.scenes` carries `skipped_scene_count=2` +
+  `skipped_scene_ids=[4, 7]`.
+- `scenes-run-fails-on-excessive-misses` — monkey-patched
+  `_detect_and_extract` produces 10 scenes with 4 missing
+  (40%); asserts `scenes.run` raises, `scenes.json` is never
+  written, and `stages.scenes.status == "failed"` with the
+  helper's `"missed 4/10"` detail in the error.
+
+FFmpeg / PySceneDetect are never invoked by the verifier — every
+failure path is simulated via function-level monkey patches so
+CI has no media dependency.
+
 ## Reliability: normalize hardening + MP4 fast path
 
 `recap/stages/normalize.py` was rewritten end-to-end to address a real

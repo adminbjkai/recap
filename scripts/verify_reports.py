@@ -1903,6 +1903,381 @@ def check_normalize_invalid_output_not_promoted() -> None:
         shutil.rmtree(scratch, ignore_errors=True)
 
 
+def check_scenes_partition_tolerates_small_misses() -> None:
+    """Regression guard: ``partition_scene_records`` must tolerate a
+    small number of silent ``save_images`` misses, drop the skipped
+    scenes from the returned list, and record them in a separate
+    ``skipped`` list. Downstream stages already fail cleanly when a
+    scene lacks ``frame_file``, so keeping those scenes in the
+    primary list was the original bug.
+
+    Pure-function check — no PySceneDetect, no FFmpeg.
+    """
+    case = "scenes-partition-tolerates-small-misses"
+    sys.path.insert(0, str(REPO_ROOT))
+    from recap.stages import scenes as scenes_mod
+
+    # Build 10 pre-scene records, with save_images having silently
+    # skipped scenes 4, 7 (20% miss rate — under the 25% default).
+    pre = [
+        {
+            "index": i,
+            "start_seconds": float(i - 1),
+            "end_seconds": float(i),
+            "start_frame": (i - 1) * 30,
+            "end_frame": i * 30,
+            "midpoint_seconds": (i - 1) + 0.5,
+            "frame_file": None if i in (4, 7) else f"scene-{i:03d}.jpg",
+        }
+        for i in range(1, 11)
+    ]
+    kept, skipped = scenes_mod.partition_scene_records(pre, 0.25)
+    if len(kept) != 8:
+        fail(case, f"kept count: expected 8, got {len(kept)}")
+    if len(skipped) != 2:
+        fail(case, f"skipped count: expected 2, got {len(skipped)}")
+    kept_ids = [s["index"] for s in kept]
+    skipped_ids = [s["index"] for s in skipped]
+    if kept_ids != [1, 2, 3, 5, 6, 8, 9, 10]:
+        fail(case, f"kept ids wrong: {kept_ids!r}")
+    if skipped_ids != [4, 7]:
+        fail(case, f"skipped ids wrong: {skipped_ids!r}")
+    # Skipped entries MUST NOT carry a frame_file — downstream stages
+    # only see the kept list, but we still want skipped entries to be
+    # unmistakable as "no frame available".
+    for s in skipped:
+        if "frame_file" in s:
+            fail(case, f"skipped entry {s['index']} still carries frame_file")
+    # Sanity: every kept entry has a usable frame_file.
+    for s in kept:
+        if not isinstance(s.get("frame_file"), str) or not s["frame_file"]:
+            fail(
+                case,
+                f"kept entry {s['index']} has empty / missing frame_file",
+            )
+    passed()
+
+
+def check_scenes_partition_rejects_high_miss_ratio() -> None:
+    """Regression guard: ``partition_scene_records`` must fail cleanly
+    when the miss ratio exceeds ``max_missing_ratio``. A 40% miss rate
+    under the default 25% tolerance should raise ``RuntimeError``
+    rather than silently produce an under-sized scene list.
+    """
+    case = "scenes-partition-rejects-high-miss-ratio"
+    sys.path.insert(0, str(REPO_ROOT))
+    from recap.stages import scenes as scenes_mod
+
+    # 10 pre-scenes, 4 missing = 40% ratio. Default threshold 25%.
+    pre = [
+        {
+            "index": i,
+            "start_seconds": float(i - 1),
+            "end_seconds": float(i),
+            "start_frame": (i - 1) * 30,
+            "end_frame": i * 30,
+            "midpoint_seconds": (i - 1) + 0.5,
+            "frame_file": (
+                None if i in (2, 4, 6, 8) else f"scene-{i:03d}.jpg"
+            ),
+        }
+        for i in range(1, 11)
+    ]
+    try:
+        scenes_mod.partition_scene_records(pre, 0.25)
+    except RuntimeError as e:
+        msg = str(e)
+        if "4/10" not in msg and "missed 4" not in msg:
+            fail(case, f"RuntimeError missing '4/10' detail: {msg!r}")
+        if "missing=" not in msg:
+            fail(case, f"RuntimeError missing 'missing=' detail: {msg!r}")
+        passed()
+        return
+    fail(case, "partition_scene_records did not raise on 40% miss ratio")
+
+
+def check_scenes_partition_requires_at_least_one_frame() -> None:
+    """Regression guard: ``partition_scene_records`` must raise when
+    every scene is missing a frame (100% miss), regardless of the
+    configured ``max_missing_ratio``. Without a single surviving
+    frame there is nothing to hand downstream.
+    """
+    case = "scenes-partition-requires-at-least-one-frame"
+    sys.path.insert(0, str(REPO_ROOT))
+    from recap.stages import scenes as scenes_mod
+
+    pre = [
+        {
+            "index": i,
+            "start_seconds": float(i - 1),
+            "end_seconds": float(i),
+            "start_frame": (i - 1) * 30,
+            "end_frame": i * 30,
+            "midpoint_seconds": (i - 1) + 0.5,
+            "frame_file": None,
+        }
+        for i in range(1, 4)
+    ]
+    try:
+        # Even with a very permissive ratio, zero survivors must fail.
+        scenes_mod.partition_scene_records(pre, 1.0)
+    except RuntimeError as e:
+        if "no frames" not in str(e):
+            fail(
+                case, f"RuntimeError missing 'no frames' detail: {e!r}"
+            )
+        passed()
+        return
+    fail(case, "partition_scene_records did not raise on zero survivors")
+
+
+def check_scenes_partition_empty_input() -> None:
+    """Regression guard: an empty scene list (detector produced no
+    scenes at all, not even a fallback) must raise — the caller in
+    ``_detect_and_extract`` builds a single-scene fallback so this
+    path should in practice never trigger, but we enforce the
+    invariant for robustness.
+    """
+    case = "scenes-partition-empty-input"
+    sys.path.insert(0, str(REPO_ROOT))
+    from recap.stages import scenes as scenes_mod
+
+    try:
+        scenes_mod.partition_scene_records([], 0.25)
+    except RuntimeError as e:
+        if "no scenes" not in str(e):
+            fail(case, f"RuntimeError missing 'no scenes' detail: {e!r}")
+        passed()
+        return
+    fail(case, "partition_scene_records did not raise on empty input")
+
+
+def check_scenes_run_records_skipped_in_job_json() -> None:
+    """Regression guard: when ``_detect_and_extract`` returns a result
+    that includes a ``skipped_count > 0``, the run wrapper must
+    surface that in both ``scenes.json`` on disk and in the job
+    state's ``stages.scenes.extra`` block so the UI can display it.
+
+    Monkey-patches ``_detect_and_extract`` to simulate a run where
+    ``save_images`` missed 2 of 10 scenes (under the 25% default
+    threshold) and asserts the resulting artifacts record both
+    ``skipped_count`` and the individual skipped scene IDs.
+    """
+    case = "scenes-run-records-skipped-in-job-json"
+    sys.path.insert(0, str(REPO_ROOT))
+    from recap import job as job_mod
+    from recap.stages import scenes as scenes_mod
+
+    scratch = Path(tempfile.mkdtemp(prefix="recap_scenes_skipped_"))
+    try:
+        job_dir = scratch / "job"
+        job_dir.mkdir()
+        # `analysis.mp4` must exist so the pre-flight check passes.
+        (job_dir / "analysis.mp4").write_bytes(b"")
+        (job_dir / "job.json").write_text(json.dumps({
+            "job_id": "scratch",
+            "created_at": "2026-04-21T00:00:00Z",
+            "updated_at": "2026-04-21T00:00:00Z",
+            "status": "pending",
+            "source_path": None,
+            "original_filename": None,
+            "stages": {
+                "ingest": {"status": "completed"},
+                "normalize": {"status": "completed"},
+                "transcribe": {"status": "completed"},
+                "assemble": {"status": "completed"},
+            },
+            "error": None,
+        }))
+        paths = job_mod.open_job(job_dir)
+
+        def _fake_detect_and_extract(
+            video_path, frames_dir, threshold,
+        ):  # noqa: ANN001 — matches real signature
+            # Build 10 pre-scenes with scenes 4 and 7 missing, then
+            # run the real partition helper so we exercise exactly
+            # the same splitting logic the production path uses.
+            frames_dir.mkdir(parents=True, exist_ok=True)
+            pre = []
+            for i in range(1, 11):
+                missing = i in (4, 7)
+                frame_name = None if missing else f"scene-{i:03d}.jpg"
+                if not missing:
+                    # Emit a token byte for the file so
+                    # `_outputs_exist` on the next run passes.
+                    (frames_dir / frame_name).write_bytes(b"x")
+                pre.append({
+                    "index": i,
+                    "start_seconds": float(i - 1),
+                    "end_seconds": float(i),
+                    "start_frame": (i - 1) * 30,
+                    "end_frame": i * 30,
+                    "midpoint_seconds": (i - 1) + 0.5,
+                    "frame_file": frame_name,
+                })
+            kept, skipped = scenes_mod.partition_scene_records(
+                pre, scenes_mod._max_missing_ratio(),
+            )
+            return {
+                "video": "analysis.mp4",
+                "detector": "ContentDetector",
+                "threshold": threshold,
+                "fallback": False,
+                "scene_count": len(kept),
+                "frames_dir": frames_dir.name,
+                "scenes": kept,
+                "skipped_count": len(skipped),
+                "skipped_scenes": skipped,
+            }
+
+        original = scenes_mod._detect_and_extract
+        scenes_mod._detect_and_extract = _fake_detect_and_extract
+        try:
+            scenes_mod.run(paths, force=False)
+        finally:
+            scenes_mod._detect_and_extract = original
+
+        # scenes.json must carry both the kept list AND the skipped
+        # provenance block.
+        data = json.loads((job_dir / "scenes.json").read_text())
+        if data.get("scene_count") != 8:
+            fail(
+                case,
+                f"scenes.json scene_count={data.get('scene_count')!r}, "
+                f"expected 8",
+            )
+        if data.get("skipped_count") != 2:
+            fail(
+                case,
+                f"scenes.json skipped_count={data.get('skipped_count')!r}, "
+                f"expected 2",
+            )
+        sk_ids = [s["index"] for s in data.get("skipped_scenes") or []]
+        if sk_ids != [4, 7]:
+            fail(case, f"skipped_scenes ids wrong: {sk_ids!r}")
+
+        state = json.loads((job_dir / "job.json").read_text())
+        extra = state.get("stages", {}).get("scenes") or {}
+        if extra.get("status") != "completed":
+            fail(
+                case,
+                f"stages.scenes.status={extra.get('status')!r}, "
+                f"expected 'completed'",
+            )
+        if extra.get("skipped_scene_count") != 2:
+            fail(
+                case,
+                f"stages.scenes.skipped_scene_count={extra.get('skipped_scene_count')!r}, "
+                f"expected 2",
+            )
+        if extra.get("skipped_scene_ids") != [4, 7]:
+            fail(
+                case,
+                f"stages.scenes.skipped_scene_ids={extra.get('skipped_scene_ids')!r}, "
+                f"expected [4, 7]",
+            )
+        passed()
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def check_scenes_run_fails_on_excessive_misses() -> None:
+    """Regression guard: when ``_detect_and_extract`` can't clear the
+    miss-ratio threshold, ``run()`` must mark the stage FAILED with
+    the partition-helper's descriptive error message rather than
+    silently producing an under-sized scene list.
+    """
+    case = "scenes-run-fails-on-excessive-misses"
+    sys.path.insert(0, str(REPO_ROOT))
+    from recap import job as job_mod
+    from recap.stages import scenes as scenes_mod
+
+    scratch = Path(tempfile.mkdtemp(prefix="recap_scenes_excessive_"))
+    try:
+        job_dir = scratch / "job"
+        job_dir.mkdir()
+        (job_dir / "analysis.mp4").write_bytes(b"")
+        (job_dir / "job.json").write_text(json.dumps({
+            "job_id": "scratch",
+            "created_at": "2026-04-21T00:00:00Z",
+            "updated_at": "2026-04-21T00:00:00Z",
+            "status": "pending",
+            "source_path": None,
+            "original_filename": None,
+            "stages": {
+                "ingest": {"status": "completed"},
+                "normalize": {"status": "completed"},
+                "transcribe": {"status": "completed"},
+                "assemble": {"status": "completed"},
+            },
+            "error": None,
+        }))
+        paths = job_mod.open_job(job_dir)
+
+        def _fake_detect_and_extract(
+            video_path, frames_dir, threshold,
+        ):  # noqa: ANN001
+            frames_dir.mkdir(parents=True, exist_ok=True)
+            # 40% miss ratio, default threshold is 25% — must fail.
+            pre = [
+                {
+                    "index": i,
+                    "start_seconds": float(i - 1),
+                    "end_seconds": float(i),
+                    "start_frame": (i - 1) * 30,
+                    "end_frame": i * 30,
+                    "midpoint_seconds": (i - 1) + 0.5,
+                    "frame_file": (
+                        None if i in (2, 4, 6, 8)
+                        else f"scene-{i:03d}.jpg"
+                    ),
+                }
+                for i in range(1, 11)
+            ]
+            return scenes_mod.partition_scene_records(
+                pre, scenes_mod._max_missing_ratio(),
+            )
+
+        original = scenes_mod._detect_and_extract
+        scenes_mod._detect_and_extract = _fake_detect_and_extract
+        try:
+            raised = False
+            try:
+                scenes_mod.run(paths, force=False)
+            except RuntimeError:
+                raised = True
+            if not raised:
+                fail(
+                    case,
+                    "scenes.run did not raise RuntimeError on a 40% miss",
+                )
+        finally:
+            scenes_mod._detect_and_extract = original
+
+        if (job_dir / "scenes.json").exists():
+            fail(
+                case,
+                "scenes.json was written despite partition failing",
+            )
+        state = json.loads((job_dir / "job.json").read_text())
+        sc = state.get("stages", {}).get("scenes") or {}
+        if sc.get("status") != "failed":
+            fail(
+                case,
+                f"stages.scenes.status={sc.get('status')!r}, "
+                f"expected 'failed'",
+            )
+        msg = sc.get("error") or ""
+        if "missed 4/10" not in msg:
+            fail(
+                case,
+                f"stages.scenes.error missing 'missed 4/10' detail: {msg!r}",
+            )
+        passed()
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
 def check_normalize_stages_and_cmd_run_unchanged() -> None:
     """Static pin: ``recap/job.py`` ``STAGES`` and ``recap/cli.py``
     ``cmd_run`` composition are frozen. Any change must be an explicit
@@ -1982,6 +2357,12 @@ def main() -> int:
     check_transcript_notes_malformed_ignored()
     check_transcript_notes_empty_overlay_byte_compat()
     check_scenes_interrupt_marks_failed()
+    check_scenes_partition_tolerates_small_misses()
+    check_scenes_partition_rejects_high_miss_ratio()
+    check_scenes_partition_requires_at_least_one_frame()
+    check_scenes_partition_empty_input()
+    check_scenes_run_records_skipped_in_job_json()
+    check_scenes_run_fails_on_excessive_misses()
     check_normalize_mode_decision()
     check_normalize_failure_cleans_tmp_and_marks_failed()
     check_normalize_invalid_output_not_promoted()
