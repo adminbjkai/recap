@@ -187,9 +187,9 @@ export default function NewJobPage() {
         <p className="eyebrow">Recap · New job</p>
         <h1>Start a recap</h1>
         <p className="new-job-hero-sub">
-          Point Recap at a video, pick a transcription engine, and land
-          on the job dashboard while it runs. Processing stays local-
-          first; cloud engines are opt-in.
+          Record the screen directly in the browser, or point Recap at
+          a file you already have. Processing stays local-first; cloud
+          engines are opt-in.
         </p>
       </header>
 
@@ -398,26 +398,33 @@ export default function NewJobPage() {
           className="new-job-card next-card"
           aria-label="What happens next"
         >
-          <p className="eyebrow">3 · What happens next</p>
-          <ol className="next-steps">
-            <li>
-              <strong>Ingest</strong> — the source file is copied into a
-              new job directory under <code>jobs/</code>.
-            </li>
-            <li>
-              <strong>Normalize</strong> — FFmpeg produces
-              <code> analysis.mp4</code> and <code>audio.wav</code>.
-            </li>
-            <li>
-              <strong>Transcribe</strong> — faster-whisper or Deepgram
-              writes <code>transcript.json</code>.
-            </li>
-            <li>
-              <strong>Assemble</strong> — a Markdown <code>report.md</code>{" "}
-              is generated. Structured insights and rich reports are
-              still opt-in via the CLI.
-            </li>
-          </ol>
+          <details className="next-steps-disclosure">
+            <summary>
+              <span className="eyebrow">3 · What happens next</span>
+              <span className="next-steps-summary">
+                Ingest → normalize → transcribe → assemble.
+              </span>
+            </summary>
+            <ol className="next-steps">
+              <li>
+                <strong>Ingest</strong> — the source file is copied into a
+                new job directory under <code>jobs/</code>.
+              </li>
+              <li>
+                <strong>Normalize</strong> — FFmpeg produces
+                <code> analysis.mp4</code> and <code>audio.wav</code>.
+              </li>
+              <li>
+                <strong>Transcribe</strong> — faster-whisper or Deepgram
+                writes <code>transcript.json</code>.
+              </li>
+              <li>
+                <strong>Assemble</strong> — a Markdown{" "}
+                <code>report.md</code> is generated. Structured insights
+                and rich reports are still opt-in via the CLI.
+              </li>
+            </ol>
+          </details>
         </section>
 
         <section
@@ -453,18 +460,17 @@ export default function NewJobPage() {
                 ? "Starting…"
                 : "Start job"}
             </button>
-            <Link className="ghost-button" to="/">
+            <Link className="text-link" to="/">
               Cancel
             </Link>
-            <a className="ghost-button" href="/new">
+            <a className="text-link launch-legacy" href="/new">
               Use legacy /new
             </a>
           </div>
           <p className="launch-hint">
-            The React form is a thin client on top of the existing
-            <code> recap run</code> pipeline — no new pipeline path is
-            introduced. Legacy <code>/new</code> stays live as a
-            fallback.
+            Thin client on top of the existing{" "}
+            <code>recap run</code> pipeline. Legacy <code>/new</code>{" "}
+            stays live as a fallback.
           </p>
         </section>
       </section>

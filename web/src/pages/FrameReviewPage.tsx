@@ -291,23 +291,33 @@ export default function FrameReviewPage() {
       <header className="frames-header">
         <div className="frames-header-group">
           <p className="eyebrow">Frame review</p>
-          <h1 className="frames-title">{jobTitle}</h1>
+          <h1 className="frames-title" title={jobTitle}>
+            {jobTitle}
+          </h1>
           <p className="frames-sub">
-            <span>
-              {totals.total} candidates · {totals.shortlist} shortlist
-              {" "}· {totals.selected} selected · {totals.review} reviewed
+            <span className="detail-chip">
+              {totals.total} candidates
+            </span>
+            <span className="detail-chip">
+              {totals.shortlist} shortlist
+            </span>
+            <span className="detail-chip">
+              {totals.selected} selected
+            </span>
+            <span className="detail-chip">
+              {totals.review} reviewed
             </span>
           </p>
         </div>
         <div className="frames-actions">
-          <Link className="ghost-button" to={dashboardHref}>
-            ← Dashboard
+          <Link className="text-link" to={dashboardHref}>
+            ← Back to dashboard
           </Link>
           <Link
-            className="text-link"
+            className="text-link frames-actions-secondary"
             to={`/job/${encodeURIComponent(job.job_id)}/transcript`}
           >
-            Transcript workspace
+            Transcript
           </Link>
         </div>
       </header>

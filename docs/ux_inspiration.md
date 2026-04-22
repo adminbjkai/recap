@@ -176,3 +176,70 @@ Practical guardrails when pulling from any of the above:
 When pulling a pattern from any of the above, write one sentence in the
 slice PR description that names which inspiration you borrowed and
 why. That paper trail keeps this document honest.
+
+## Patterns borrowed in the 2026-04-21 premium redesign pass
+
+These are the concrete decisions taken when tightening the React
+product (commit **Redesign React product experience**). Each item
+maps the visual / hierarchy change back to the inspiration source.
+
+- **Single subtle warm background** (linear wash only, no competing
+  radial gradients). *Source:* Cap5's editorial workspace chrome;
+  Nord's calm-palette restraint. *Where:* `body` override in
+  `web/src/index.css`.
+- **Flat brand mark, no gradient, no drop shadow.** *Source:*
+  CapSoftware/Cap top-bar treatment. *Where:* `.recap-brand-mark`
+  override.
+- **One primary CTA per view, ink-strong button instead of warm
+  gradient.** *Source:* steipete/summarize's single-action surface;
+  Tabler's primary/ghost/text hierarchy. *Where:* `.primary-button`
+  override + hero action strips across `/app/`, `/app/new`,
+  `/app/job/:id`.
+- **Library hero = title + subline + one CTA.** The stats grid was
+  duplicated info (the same totals live in the Active/Archived tabs
+  and the "Showing N of M" subtitle). Removed. *Source:* Cap5's
+  quiet library screen; CapSoftware's "sell the next action" empty
+  state. *Where:* `pages/JobsIndexPage.tsx`.
+- **Job card state communicated as a 3 px accent stripe on the
+  left edge** (completed green, running terracotta, failed red),
+  not a colored fill. State word remains in the status chip so
+  nothing is color-only. *Source:* Tabler status stripes; Nord
+  restrained state accents. *Where:* `.job-card::before` override.
+- **Compact neutral chip for metadata, colored badges reserved for
+  status.** Engine / model / segments / project all render as flat
+  neutral chips; status carries the only colored badge. *Source:*
+  Tabler metadata rows, Cap5's compact meta line. *Where:*
+  `.detail-chip`, `.status-badge`, `.status-pill`.
+- **Detail-page hero split into a primary action strip + a quieter
+  organize strip** (Rename, Archive) on its own line. Report links
+  consolidated into a single labeled chip group instead of scattered
+  text links. *Source:* steipete/summarize's document header;
+  CapSoftware's "obvious primary action, quieter secondary" shape.
+  *Where:* `pages/JobDetailPage.tsx` + `.detail-hero-meta-actions`,
+  `.detail-hero-reports`.
+- **"What happens next" collapsed behind a summary** on `/app/new`.
+  The 4-step pipeline explanation was blocking the start button on
+  mobile. *Source:* CapSoftware's unobtrusive docs link. *Where:*
+  `<details className="next-steps-disclosure">` +
+  `.next-steps-disclosure`.
+- **Artifacts-on-disk disclosure** on the detail page keeps the
+  `ArtifactGrid` reachable but demoted below insights / chapters /
+  run actions. *Source:* Tabler's advanced-drawer pattern.
+  *Where:* `<details className="detail-disclosure">`.
+- **Segmented source-mode toggle** on `/app/new` ("Sources root" /
+  "Record screen" / "Absolute path") as a single pill control
+  instead of three full-width tabs. *Source:* CapSoftware's
+  recording-mode switcher. *Where:* `.mode-toggle` + `.mode-tab`.
+- **Transcript workspace header chips for engine / model / duration**
+  instead of a run-on meta sentence. *Source:* Cap5's metadata
+  chip row. *Where:* `pages/TranscriptWorkspacePage.tsx` +
+  `.workspace-meta-parts`.
+- **Frame review header chips for totals** instead of a dot-separated
+  string. Chapter-grouped cards keep their editorial `Chapter N —
+  display_title` heading. *Source:* steipete/summarize's chapter
+  cards. *Where:* `pages/FrameReviewPage.tsx`.
+- **Stronger focus ring** (3 px brand-tinted ring on every focusable
+  element) and responsive collapses at 960 / 640 px so layouts never
+  scroll horizontally. *Source:* ui-ux-pro-max accessibility pass;
+  Tabler responsive patterns. *Where:* `:focus-visible` override +
+  `@media (max-width: 960/640)` blocks.

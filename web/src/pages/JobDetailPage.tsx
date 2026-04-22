@@ -353,7 +353,7 @@ export default function JobDetailPage() {
               className="detail-hero-reports"
               aria-label="Open exported report"
             >
-              <span className="detail-hero-reports-label">Open report</span>
+              <span className="detail-hero-reports-label">Report</span>
               {reportLinks.map((link) => (
                 <a
                   key={link.label}
@@ -368,6 +368,15 @@ export default function JobDetailPage() {
               ))}
             </span>
           ) : null}
+          <a
+            className="text-link detail-hero-legacy"
+            href={legacyDetail}
+          >
+            Legacy detail page
+          </a>
+        </div>
+
+        <div className="detail-hero-meta-actions" role="group" aria-label="Organize">
           <button
             type="button"
             className="text-link detail-hero-organize"
@@ -387,6 +396,9 @@ export default function JobDetailPage() {
           >
             {editingMetadata ? "Close organize" : "Rename / Project"}
           </button>
+          <span className="detail-hero-meta-sep" aria-hidden>
+            ·
+          </span>
           <button
             type="button"
             className="text-link detail-hero-archive"
@@ -397,12 +409,6 @@ export default function JobDetailPage() {
           >
             {archived ? "Unarchive" : "Archive"}
           </button>
-          <a
-            className="text-link detail-hero-legacy"
-            href={legacyDetail}
-          >
-            Legacy detail page
-          </a>
         </div>
 
         {editingMetadata ? (

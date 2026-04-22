@@ -376,7 +376,7 @@ export default function TranscriptWorkspacePage() {
       <header className="workspace-header">
         <div className="workspace-title-group">
           <p className="eyebrow">Transcript workspace</p>
-          <h1>{title}</h1>
+          <h1 title={title}>{title}</h1>
           <p className="workspace-meta">
             <span
               className={`status-badge status-${status}`}
@@ -385,21 +385,22 @@ export default function TranscriptWorkspacePage() {
               {status}
             </span>
             {transcriptMetaParts.length > 0 ? (
-              <>
-                <span className="sep" aria-hidden>
-                  ·
-                </span>
-                <span>{transcriptMetaParts.join(" · ")}</span>
-              </>
+              <span className="workspace-meta-parts">
+                {transcriptMetaParts.map((part, i) => (
+                  <span key={i} className="detail-chip">
+                    {part}
+                  </span>
+                ))}
+              </span>
             ) : null}
           </p>
         </div>
         <div className="workspace-actions">
           <Link
-            className="ghost-button"
+            className="text-link"
             to={`/job/${encodeURIComponent(job.job_id)}`}
           >
-            ← Dashboard
+            ← Back to dashboard
           </Link>
         </div>
       </header>

@@ -215,24 +215,6 @@ export default function JobsIndexPage() {
             New recording
           </Link>
         </div>
-        {libraryCounts.total > 0 ? (
-          <ul className="jobs-hero-stats" aria-label="Job totals">
-            <li className="jobs-stat">
-              <span className="jobs-stat-value">{libraryCounts.total}</span>
-              <span className="jobs-stat-label">Total</span>
-            </li>
-            <li className="jobs-stat">
-              <span className="jobs-stat-value">{libraryCounts.active}</span>
-              <span className="jobs-stat-label">Active</span>
-            </li>
-            <li className="jobs-stat">
-              <span className="jobs-stat-value">
-                {libraryCounts.archived}
-              </span>
-              <span className="jobs-stat-label">Archived</span>
-            </li>
-          </ul>
-        ) : null}
       </section>
 
       {libraryCounts.total > 0 ? (

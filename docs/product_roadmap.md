@@ -427,6 +427,66 @@ fallback, and empty-overlay byte-compat.
 the UI. This slice covers the non-destructive half — archive hides
 a job without touching the filesystem.
 
+## 12c. Premium React UI redesign — **done**
+
+**Shipped in:**
+- `Redesign React product experience`
+
+**Why:** the React app had all the right functionality after the
+library-organization slice but still felt like a dense admin
+dashboard. The ask for this slice was a cohesive editorial /
+premium feel — calmer surfaces, clearer hierarchy, one obvious CTA
+per view — without rewriting the component surface.
+
+**What it gives users:**
+- **Cohesive visual system** layered on top of the existing CSS:
+  calmer warm palette, flatter single-gradient background, tighter
+  radii, softer single-layer shadows, brand-tinted 3 px focus ring,
+  ink-strong primary button instead of a terracotta gradient.
+- **One primary CTA per view.** Library hero drops its stats grid;
+  detail-page hero now has a single primary action strip plus a
+  quieter organize strip for Rename / Archive; `/app/new` launch
+  bar keeps "Start job" primary and demotes "Use legacy /new" to a
+  small text link.
+- **Dense metadata moves behind disclosures.** The `/app/new`
+  "What happens next" explainer and the detail page's raw
+  artifacts-on-disk grid are now `<details>` disclosures.
+- **Status is never color-only.** `JobCard` gains a 3 px left-edge
+  accent stripe, but every card also renders the status word in a
+  neutral chip. Metadata chips are flat neutral; colored badges are
+  reserved for status.
+- **Segmented source-mode toggle** on `/app/new` replaces three
+  full-width tabs with a single pill control.
+- **Transcript workspace** renders engine / model / duration as a
+  chip row and demotes the "Back to dashboard" affordance to a
+  quiet text link.
+- **Frame review** header exposes `N candidates · N shortlist · N
+  selected · N reviewed` as chips and demotes the
+  dashboard/transcript nav links to text links.
+- **Responsive collapses at 960 / 640 px** — the detail grid, the
+  workspace grid, and the new-job grid all drop to a single column
+  on narrow viewports; action strips stack on mobile so the primary
+  button is always reachable and nothing scrolls horizontally.
+
+**Invariants preserved:**
+- No API or backend changes; `recap/job.py STAGES` and
+  `recap/cli.py cmd_run` composition unchanged.
+- No new runtime deps (Python or npm).
+- Every Vitest expectation (79 specs / 17 files) stays green —
+  critical button and chip text such as `Open job dashboard`,
+  `Transcript`, `Save review (n)`, `Legacy detail page`, the radio
+  labels `Completed / Running / Failed / Pending`, and the chips
+  `Engine · deepgram` / `42 segments` were all preserved.
+- Legacy HTML routes remain live.
+
+**Tests:** no new test files. Existing tests exercise the refreshed
+markup because all depended text and ARIA roles stayed put.
+
+**Docs:** [docs/ux_inspiration.md](docs/ux_inspiration.md) gains a
+"Patterns borrowed in the 2026-04-21 premium redesign pass" section
+mapping each visual change back to Cap5 / CapSoftware/Cap /
+steipete/summarize / Tabler / Nord / ui-ux-pro-max.
+
 ## 12b. Normalize reliability + MP4 fast path — **done**
 
 **Shipped in:**

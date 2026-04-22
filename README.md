@@ -655,6 +655,28 @@ for colors, typography, radii, elevation, and focus states, plus
 `prefers-reduced-motion` safeguards — no Tailwind and no component
 library.
 
+A follow-up **premium redesign pass** (2026-04-21, commit *Redesign
+React product experience*) layered a cohesive token-override
+section at the bottom of `web/src/index.css`: calmer warm palette,
+flatter single-gradient background, tighter radii, softer
+single-layer shadows, brand-tinted 3 px focus ring, ink-strong
+primary button instead of a warm gradient, neutral `.detail-chip`
+for metadata with colored badges reserved for status only, 3 px
+left-edge accent stripe for status on `JobCard` (with the status
+word still carried in a neutral chip so nothing is color-only), a
+segmented pill `.mode-toggle` on `/app/new`, and the "What happens
+next" 4-step explainer collapsed into a `<details>` disclosure so
+the Start-job button stays above the fold. The detail-page hero
+now splits into a primary action strip (transcript / screenshots /
+report chip group / legacy link) and a quieter organize strip
+(Rename / Archive). Responsive collapses at 960 px and 640 px drop
+the detail grid, workspace grid, and new-job grid to a single
+column and stack action strips so nothing scrolls horizontally on
+laptop or mobile widths. See
+[docs/ux_inspiration.md](docs/ux_inspiration.md) for the
+Cap5 / CapSoftware / steipete/summarize / Tabler / Nord patterns
+borrowed.
+
 The jobs index calls `GET /api/jobs`. The hero surfaces totals broken
 down by status (total / completed / running / failed / pending) and
 one-line summary. Each `JobCard` shows a top status stripe, a status

@@ -756,6 +756,30 @@ does and produces, read `HANDOFF.md`.
   exist.
 - `HANDOFF.md` is the definitive closeout document. It reflects the code
   on disk today.
+- **React app premium redesign pass (2026-04-21).** Frontend-only
+  follow-up after the normalize hardening: `web/src/index.css`
+  gains a cohesive token-override section at the bottom (calmer
+  warm palette, flatter background, softer shadows, tighter radii,
+  brand-tinted 3 px focus ring, ink-strong primary button, neutral
+  `.detail-chip` for metadata with colored badges reserved for
+  status only, left-edge accent stripe on `JobCard` without
+  color-only reliance), `AppShell` top bar simplified to a flat
+  brand mark + wordmark + one primary CTA + quieter Legacy link,
+  `JobsIndexPage` hero drops the stats grid, `JobDetailPage` hero
+  splits into a primary action strip + quieter organize strip and
+  consolidates report links into a single labeled chip group,
+  `NewJobPage` uses a segmented source-mode pill and hides "What
+  happens next" behind a `<details>`, `TranscriptWorkspacePage`
+  renders engine/model/duration as a chip row, `FrameReviewPage`
+  header totals render as chips; responsive collapses at 960/640
+  px drop to a single column so no layout scrolls horizontally on
+  laptop or mobile widths. No API or backend changes, no new
+  runtime deps, `recap/job.py STAGES` + `cmd_run` composition
+  unchanged, legacy HTML routes unchanged; all 79 Vitest specs +
+  the full verifier suite remain green.
+  [docs/ux_inspiration.md](docs/ux_inspiration.md) records the
+  concrete Cap5 / CapSoftware / steipete/summarize / Tabler / Nord
+  / ui-ux-pro-max patterns borrowed.
 
 ## What is implemented
 

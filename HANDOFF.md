@@ -1890,6 +1890,88 @@ FFmpeg itself is never invoked by the verifier — every failure path
 is simulated by function-level monkey patches so CI has no media
 dependency and no wall-clock exposure.
 
+## UX: premium React redesign pass (2026-04-21)
+
+After the normalize hardening landed, the React product was
+polished in a frontend-only pass whose ask was "it still looks
+utility, make it feel premium". The pass is intentionally layered
+on top of the previous visual system rather than a rewrite: every
+component class name still resolves; `web/src/index.css` gains a
+cohesive token-override block at the end plus a small set of new
+component rules; the pages make surgical JSX edits for hierarchy,
+not structural rewrites. No API or backend changes.
+
+Concrete before/after:
+
+- **Palette and elevation.** Warm off-white canvas softened
+  (`--surface-0` → `#f8f4ec`); body background collapsed to a
+  single linear wash instead of three radial overlays; shadow
+  tokens halved in weight; radii tightened one step; pills stay
+  pills. Focus ring promoted to a brand-tinted 3 px ring applied
+  globally via `:focus-visible`.
+- **Brand mark.** Lost its linear-gradient + shadow; now a flat
+  brand-colored square with the wordmark beside it. The "local-
+  first video docs" tagline is a quiet secondary label, not a
+  competing headline.
+- **Library hero (`/app/`).** Dropped the Total / Active / Archived
+  stats grid — the same counts already live in the Active /
+  Archived tabs and the "Showing N of M" subtitle. Hero is now
+  eyebrow + `Recordings & reports` H1 + subline + single primary
+  `New recording` CTA.
+- **Job card.** Status now rendered as both a status chip (word
+  never color-only) **and** a 3 px left-edge accent stripe on the
+  card. Metadata chips went flat / neutral; the primary
+  `Open job dashboard` button is the only filled element;
+  `Transcript`, `Edit`, `Archive` are text-link affordances in a
+  dashed-border action strip.
+- **New job (`/app/new`).** Source-mode switcher collapsed into a
+  single segmented pill (`Sources root` / `Record screen` /
+  `Absolute path`) instead of three full-width tabs. "What happens
+  next" moved behind a `<details>` so the launch action is always
+  visible. The `Start job` primary button stands alone on the
+  launch card; `Cancel` / `Use legacy /new` demoted to text links.
+- **Detail page (`/app/job/:id`).** Hero split into two rows: a
+  primary action strip (`Open transcript workspace`,
+  `Review screenshots`, report chip group, `Legacy detail page`)
+  and a quieter organize strip (`Rename / Project`, `Archive`).
+  Reports are no longer scattered text links — they render as a
+  single labeled chip group (`Report: HTML · Markdown · DOCX`).
+  Artifacts-on-disk grid moved behind a `<details>` disclosure
+  below run-actions / insights / chapters.
+- **Transcript workspace (`/app/job/:id/transcript`).** Header
+  dropped the ghost `← Dashboard` button for a quiet `← Back to
+  dashboard` text link, and renders engine / model / language /
+  duration as a row of flat neutral chips instead of a run-on
+  meta sentence.
+- **Frame review (`/app/job/:id/frames`).** Header totals render as
+  chips (`N candidates`, `N shortlist`, `N selected`,
+  `N reviewed`) and the nav becomes a pair of quiet text links.
+  Frame cards keep the chapter-grouped editorial layout from the
+  previous slice and add a subtle green / red border cue for
+  `keep` / `reject` decisions (status word still in the chip).
+- **Responsive.** `@media (max-width: 960px)` collapses the detail
+  grid, workspace grid, and new-job grid to a single column and
+  un-sticks the rails; `@media (max-width: 640px)` stacks every
+  action strip so the primary button is always full width. No page
+  scrolls horizontally on laptop or mobile widths.
+
+Invariants explicitly preserved:
+
+- `recap/job.py STAGES` and `recap/cli.py cmd_run` composition
+  unchanged (not touched by this slice).
+- No Python or npm runtime deps added.
+- Every Vitest expectation (79 specs / 17 files) stays green —
+  critical button text and chip content (`Open job dashboard`,
+  `Transcript`, `Save review (n)`, `Legacy detail page`,
+  `Engine · deepgram`, `42 segments`, status radio labels) were
+  all retained.
+- Legacy HTML routes unchanged.
+
+Inspiration map: [docs/ux_inspiration.md](docs/ux_inspiration.md)
+gains a "Patterns borrowed in the 2026-04-21 premium redesign
+pass" section naming Cap5, CapSoftware/Cap, steipete/summarize,
+Tabler, Nord, and ui-ux-pro-max as the sources for each change.
+
 ## Hardening: offline golden-path validation script
 
 `scripts/verify_reports.py` is a small stdlib+`python-docx` script

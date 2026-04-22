@@ -5,6 +5,12 @@ type Props = {
   children: ReactNode;
 };
 
+/**
+ * Topbar chrome.  Kept intentionally quiet: wordmark + one primary
+ * CTA. Secondary links (Library, Legacy) are subordinate so the
+ * primary "New recording" action is the obvious next step on every
+ * page.
+ */
 export default function AppShell({ children }: Props) {
   return (
     <div className="recap-app">
